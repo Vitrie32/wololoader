@@ -1,6 +1,6 @@
 # Wololoader
 
-**Website: https://wololoader.vercel.app** · [Download](../../releases/latest) · [Modding guide](MODDING.md)
+**Website: https://wololoader.vercel.app** · [Download](../../releases/latest) · [Modding guide](https://wololoader.vercel.app/guide/)
 
 A mod loader for **Age of Empires II HD** (Steam, version 5.8). It runs as a `version.dll` next to the
 game and adds, without changing the game's files:
@@ -45,7 +45,7 @@ Start the game: the main menu shows "Wololoader <version>", and the Mods button 
 
 ## Making mods
 
-See [MODDING.md](MODDING.md). Mods live in `<game>/wololoader/mods/<ModName>/` (`mod.json`, plus
+See the [Modding Guide](https://wololoader.vercel.app/guide/) (source: [MODDING.md](MODDING.md)). Mods live in `<game>/wololoader/mods/<ModName>/` (`mod.json`, plus
 `civs/*.json`, `scripts/main.lua`, `resources/`, `icons/`). The examples are in `wololoader/examples/`.
 
 ## Building from source
