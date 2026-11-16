@@ -29,91 +29,36 @@ Wololoader is a modular runtime mod loader and patcher for **Age of Empires II H
 11. [Multiplayer and Vanilla Mode](#11-multiplayer-and-vanilla-mode)
 12. [Scriptorium (Visual Mod Creator)](#12-scriptorium-visual-mod-creator)
 13. [Troubleshooting and Diagnostics](#13-troubleshooting-and-diagnostics)
-14. [Lua event scripts (experimental)](#14-lua-event-scripts-experimental)
+14. [Lua scripting](#14-lua-scripting)
+   - [Scripting API](#scripting-api)
+   - [Low-level `wl` API](#low-level-wl-api)
 
 ---
 
-### Scripting API (recommended)
-
-Every script also gets a simple high-level API, written on top of `wl.*` (which stays available):
-
-| Name | What it is |
-|---|---|
-| `Game.LocalPlayer`, `Game.Players()`, `Game.Player(id)` | players |
-| `Game.OnCommand(name, fn(building))` | a Lua button of a mod building was pressed (see unique_building `commands`) |
-| `Game.Time`, `Game.Selected()` | game time in seconds (stops while paused); the units you have selected (first 60) |
-| Player | `.Id`, `.IsLocal`, `.Food`, `.Wood`, `.Stone`, `.Gold`, `.Age` (0..3), `.AgeName` ("Dark".."Imperial"), `.Population`, `:IsEnemy(other)`, `:Units(filter)` |
-| `p:Units()` / `p:Units("Monk")` / `p:Units(function(u) ... end)` | units; class names: Archer, Trade, Building, Villager, Infantry, Cavalry, Siege, Monk, Transport, FishingShip, Warship, Wall, CavalryArcher, MonkWithRelic |
-| Unit | `.Id`, `.X`, `.Y`, `.Type` (dat unit id), `.Class`, `.ClassName`, `.IsBuilding`, `.Owner`, `:Delete()` |
-| `p:AddGold(n)`, `p:AddFood(n)`, `p:AddWood(n)`, `p:AddStone(n)`, `p:AddResource("Gold", n)` | give (or take, with a negative n) resources |
-| `p:CreateUnit(unitId, x, y)` | create a unit (dat unit id, e.g. 125 Monk, 4 Archer) at tile x, y |
-| `p:Research(techId)` | finish a technology instantly (skipped if already researched) |
-| `p:SetAge(age)` | `0`..`3` or `"Dark"`..`"Imperial"`. Up: the age-up techs are researched. Down: the age goes back and the age-ups can be researched again; units, buildings and bonuses already unlocked stay (the game cannot undo tech effects) |
-| `Game.OnStart(fn)`, `Game.OnSecond(fn)` | events; they return a connection with `:Disconnect()` |
-| `Game.OnAgeUp(fn(player, ageName))`, `Game.OnUnitCreated(fn(unit))`, `Game.OnUnitDied(fn(id, player))` | checked once a second (up to 1 s late); "died" also fires when a unit is converted or deleted |
-| `UI.Message(text, {Color=n})`, `UI.Chat(text, {From=, Color=})`, `UI.Dialog(text)` | screen output (Message color: a game palette index, default 36) |
-| `local c = UI:CreateCounter(text)` | a line in the countdown area: `c:SetText(t)`, `c:Hide()`, `c:Show()`, `c:Destroy()`; several counters share the line, joined with "  \|  " |
-| `UI:CreateFrame(props)`, `UI:CreateLabel(props)`, `UI:CreateButton(props)`, `UI:CreateTextBox(props)` | on-screen panels, text and buttons that do **not** pause the game (see below) |
-| `UI.Ask(text)` | Yes/No dialog, returns true/false (nil in multiplayer); `UI.Ask(text, fn)` for a callback |
-| `Sound.Play(name)` | `Chat`, `CantDo`, `Tribute`, `Attack`, `TownBell`, `TownRecall`, `Objective`, `Relic` |
-| `Time.Wait(s)`, `Time.After(s, fn)`, `Time.Every(s, fn)`, `Time.Cancel(h)` | timers in game seconds: they stop while the game is paused (F3, F10 menu) and follow the game speed (`Time.Wait` only inside events/timers) |
-
-Reading players and units never changes the game, so it is multiplayer safe. Examples: `examples/Monklanians/scripts/main.lua`, and `examples/DevPanel` (a testing panel: resources, ages, spawning, cloning, deleting).
-
-**On-screen UI.** Frames, labels and buttons are drawn over the game every frame; the game keeps running and you click them while playing. Create them once (at the top of `main.lua`) and change their properties later:
-
-```lua
-local panel = UI:CreateFrame({ Anchor = "TopRight", Position = {10, 60}, Size = {190, 70} })
-local label = UI:CreateLabel({ Parent = panel, Text = "Gold: 0", Position = {0, 6}, Size = {190, 22}, Align = "Center" })
-local button = UI:CreateButton({ Parent = panel, Text = "+50 gold", Position = {10, 34}, Size = {170, 28}, Hotkey = "F5" })
-button:OnClick(function(b) Game.LocalPlayer:AddGold(50); b.Text = "Done!" end)
-button:OnHover(function(b) b.TextColor = "#ffff00" end)
-button:OnLeave(function(b) b.TextColor = "#ffffff" end)
-Game.OnSecond(function() label.Text = "Gold: " .. math.floor(Game.LocalPlayer.Gold) end)
-```
-
-| Property | Value |
-|---|---|
-| `Text` | text (labels wrap, buttons are one centered line) |
-| `Position`, `Size` | `{x, y}` / `{w, h}` in pixels; Position is measured from the `Anchor` edge inwards |
-| `Anchor` | `TopLeft` (default), `Top`, `TopRight`, `Left`, `Center`, `Right`, `BottomLeft`, `Bottom`, `BottomRight`: where it sticks inside its parent (or the screen) |
-| `Parent` | another element: position is relative to it, it hides and is destroyed with it |
-| `Visible` | `true`/`false` (also `:Show()`, `:Hide()`) |
-| `Color`, `TextColor`, `BorderColor` | `"#RRGGBB"` or `{r, g, b}`; `Color = false` / `BorderColor = false` removes the background / border |
-| `Transparency` | background 0 (solid) .. 1 (invisible) |
-| `Placeholder`, `MaxLength`, `Numeric` | text boxes: grey hint while empty, max characters (default 32), digits only |
-| `TextSize`, `Bold`, `Align` | pixels (default 16), `true`/`false`, `Left`/`Center`/`Right` |
-| `Hotkey` | `"F5"`, `"A"`.`"Z"`, `"0"`.`"9"`, `"F1"`.`"F12"`, with optional `"Ctrl+"`, `"Shift+"`, `"Alt+"` prefixes (e.g. `"Ctrl+S"`, `"Alt+F4"`); fires a click when pressed while the button is shown |
-| `Image` | path to a PNG file relative to the mod folder (e.g. `"icons/gold.png"`); drawn scaled into the element rect; buttons with both text and image show the image left of the text |
-
-Text boxes: click to type (the game gets no keys meanwhile), Enter submits, Esc or a click elsewhere leaves; `box.Text` is the current text, `:OnChanged(fn(box, text))` fires on every edit, `:OnSubmit(fn(box, text))` on Enter, `:Focus()` puts the cursor in it.
-
-Methods: `:OnClick(fn(element))`, `:OnHover(fn(element))`, `:OnLeave(fn(element))` (buttons and frames; each returns a connection with `:Disconnect()`, and `Time.Wait` works inside the handlers), `:SetText(t)`, `:SetPosition(x, y)`, `:SetSize(w, h)`, `:Show()`, `:Hide()`, `:Destroy()`; `.Destroyed` tells whether it is gone. Clicks on frames and buttons do not reach the game below them; labels let clicks through. The UI is hidden automatically when another screen (F10 game menu, pause dialogs) is on top of the game screen. At most 256 elements, 64 cached images. The UI is local: each player sees only what the scripts on their own machine made, and click/hover handlers run only on the clicking player's machine, so game commands sent from a handler (like `AddGold` above, before any `Time.Wait`) are always sent from that machine.
-
-**Game commands** (`Add*`, `CreateUnit`, `Research`, `Delete`) go through the game's own command system, so in multiplayer every player sees the same result on the same turn. Every player runs the same scripts, so only one machine sends each command: the owner's machine for a human player, the lowest-numbered human player's machine for computer players and Gaia. The call returns `true` on the machine that sent it and `false` on the others; you can write `Game.Player(2):AddGold(100)` without checking `IsLocal`. Wrong arguments (unknown unit id, no game running) raise an error. At most 100 commands per second. All players need the same Wololoader version.
-
 ## 1. Install
 
-Wololoader runs as a `version.dll` proxy located directly in the game folder next to `AoK HD.exe`.
+Download the setup for your system from the [Releases page](https://github.com/Vitrie32/wololoader/releases/latest).
 
-### System Setup
-
-- **Windows**:
-  Place `version.dll` and the `wololoader\` folder directly into your Age of Empires II HD directory (e.g. `C:\Program Files (x86)\Steam\steamapps\common\Age2HD`).
-- **Linux / Steam Deck (Steam Proton)**:
-  Place `version.dll` and the `wololoader\` folder in your game directory. In Steam, right-click **Age of Empires II HD** &rarr; **Properties** &rarr; **General** &rarr; **Launch Options**, and specify:
+- **Windows**: run `wololoader-windows-setup.exe`. It finds the game through Steam (or pick the folder that holds `AoK HD.exe` with **Browse**) and installs `version.dll` and the `wololoader\` folder next to the game. Run it again to uninstall.
+- **Linux / Steam Deck (Steam Proton)**: in a terminal,
   ```bash
-  PROTON_NO_ESYNC=1 PROTON_NO_FSYNC=1 WINEDLLOVERRIDES="version=n,b" %command% -nostartup
+  curl -fsSL https://wololoader.vercel.app/install.sh | sh
   ```
-  *(The `WINEDLLOVERRIDES="version=n,b"` flag instructs Wine to load our local proxy `version.dll` before the system library).*
+  (or download `wololoader-linux-setup.sh` and run `sh wololoader-linux-setup.sh`; options: a game folder, `--no-examples`, `--uninstall`). Then, in Steam, right-click **Age of Empires II HD** &rarr; **Properties** &rarr; **Launch Options**, and put:
+  ```bash
+  WINEDLLOVERRIDES="version=n,b" %command%
+  ```
+  *(This makes Wine load Wololoader's `version.dll` before its own.)*
+
+Start the game: the main menu shows "Wololoader" with its version, and the **Mods** button lists the mods.
 
 ### Installing Mods
 
-Every mod lives in its own subdirectory inside:
+Every mod lives in its own folder inside:
 ```
 <game>/wololoader/mods/<ModFolder>/
 ```
-Whenever you launch the game, Wololoader automatically checks all folders inside `wololoader/mods/`, reads their `mod.json` manifests, detects file timestamp changes, and compiles the cache automatically.
+At every start Wololoader reads the `mod.json` of each folder, notices changed files and rebuilds its cache by itself. Turn mods on and off with the **Mods** button of the main menu (restart the game after a change).
 
 ---
 
@@ -909,6 +854,9 @@ Wololoader patches the hardcoded population limits in the executable:
 
 ## 12. Scriptorium (Visual Mod Creator)
 
+> [!NOTE]
+> Scriptorium is not part of the 0.3 release yet. It can be built from source (`make` builds `build/Scriptorium.exe`); when `Scriptorium.exe` is in the `wololoader` folder, the Mods screen shows a **Mod Creator** button.
+
 Wololoader includes a dedicated visual editor: **Scriptorium** (`<game>/wololoader/Scriptorium.exe`).
 
 Runs natively on Windows and on Linux under Wine/Proton. Scriptorium provides an interactive web-based UI served locally to an application window.
@@ -954,7 +902,7 @@ Wololoader fingerprints your mods and civ files automatically. Whenever you modi
 
 ---
 
-## 14. Lua event scripts (experimental)
+## 14. Lua scripting
 
 A mod can ship a Lua 5.4 script that reacts to game events. Wololoader embeds the Lua runtime, so nothing has to be installed.
 
@@ -962,14 +910,77 @@ A mod can ship a Lua 5.4 script that reacts to game events. Wololoader embeds th
 <game>/wololoader/mods/MyMod/scripts/main.lua
 ```
 
-The file is run once at startup, after all mods are scanned (not in Vanilla Mode, and not for disabled mods). Use it to register handlers with `wl.on`. A working example is in `wololoader/examples/Monklanians/scripts/main.lua`.
+The file is run once at startup, after all mods are scanned (not in Vanilla Mode, and not for disabled mods). Working examples: `wololoader/examples/Monklanians/scripts/main.lua` and `wololoader/examples/DevPanel/scripts/main.lua`.
 
 ```lua
-wl.log("loaded " .. MOD.name)
-wl.on("game_start", function()
-    wl.message("Monklanians: Wololo!")
+print("loaded " .. MOD.name)
+Game.OnStart(function()
+    UI.Message("Monklanians: Wololo!")
 end)
 ```
+
+### Scripting API
+
+Every script also gets a simple high-level API, written on top of `wl.*` (which stays available):
+
+| Name | What it is |
+|---|---|
+| `Game.LocalPlayer`, `Game.Players()`, `Game.Player(id)` | players |
+| `Game.OnCommand(name, fn(building))` | a Lua button of a mod building was pressed (see unique_building `commands`) |
+| `Game.Time`, `Game.Selected()` | game time in seconds (stops while paused); the units you have selected (first 60) |
+| Player | `.Id`, `.IsLocal`, `.Food`, `.Wood`, `.Stone`, `.Gold`, `.Age` (0..3), `.AgeName` ("Dark".."Imperial"), `.Population`, `:IsEnemy(other)`, `:Units(filter)` |
+| `p:Units()` / `p:Units("Monk")` / `p:Units(function(u) ... end)` | units; class names: Archer, Trade, Building, Villager, Infantry, Cavalry, Siege, Monk, Transport, FishingShip, Warship, Wall, CavalryArcher, MonkWithRelic |
+| Unit | `.Id`, `.X`, `.Y`, `.Type` (dat unit id), `.Class`, `.ClassName`, `.IsBuilding`, `.Owner`, `:Delete()` |
+| `p:AddGold(n)`, `p:AddFood(n)`, `p:AddWood(n)`, `p:AddStone(n)`, `p:AddResource("Gold", n)` | give (or take, with a negative n) resources |
+| `p:CreateUnit(unitId, x, y)` | create a unit (dat unit id, e.g. 125 Monk, 4 Archer) at tile x, y |
+| `p:Research(techId)` | finish a technology instantly (skipped if already researched) |
+| `p:SetAge(age)` | `0`..`3` or `"Dark"`..`"Imperial"`. Up: the age-up techs are researched. Down: the age goes back and the age-ups can be researched again; units, buildings and bonuses already unlocked stay (the game cannot undo tech effects) |
+| `Game.OnStart(fn)`, `Game.OnSecond(fn)` | events; they return a connection with `:Disconnect()` |
+| `Game.OnAgeUp(fn(player, ageName))`, `Game.OnUnitCreated(fn(unit))`, `Game.OnUnitDied(fn(id, player))` | checked once a second (up to 1 s late); "died" also fires when a unit is converted or deleted |
+| `UI.Message(text, {Color=n})`, `UI.Chat(text, {From=, Color=})`, `UI.Dialog(text)` | screen output (Message color: a game palette index, default 36) |
+| `local c = UI:CreateCounter(text)` | a line in the countdown area: `c:SetText(t)`, `c:Hide()`, `c:Show()`, `c:Destroy()`; several counters share the line, joined with "  \|  " |
+| `UI:CreateFrame(props)`, `UI:CreateLabel(props)`, `UI:CreateButton(props)`, `UI:CreateTextBox(props)` | on-screen panels, text and buttons that do **not** pause the game (see below) |
+| `UI.Ask(text)` | Yes/No dialog, returns true/false (nil in multiplayer); `UI.Ask(text, fn)` for a callback |
+| `Sound.Play(name)` | `Chat`, `CantDo`, `Tribute`, `Attack`, `TownBell`, `TownRecall`, `Objective`, `Relic` |
+| `Time.Wait(s)`, `Time.After(s, fn)`, `Time.Every(s, fn)`, `Time.Cancel(h)` | timers in game seconds: they stop while the game is paused (F3, F10 menu) and follow the game speed (`Time.Wait` only inside events/timers) |
+
+Reading players and units never changes the game, so it is multiplayer safe. Examples: `examples/Monklanians/scripts/main.lua`, and `examples/DevPanel` (a testing panel: resources, ages, spawning, cloning, deleting).
+
+**On-screen UI.** Frames, labels and buttons are drawn over the game every frame; the game keeps running and you click them while playing. Create them once (at the top of `main.lua`) and change their properties later:
+
+```lua
+local panel = UI:CreateFrame({ Anchor = "TopRight", Position = {10, 60}, Size = {190, 70} })
+local label = UI:CreateLabel({ Parent = panel, Text = "Gold: 0", Position = {0, 6}, Size = {190, 22}, Align = "Center" })
+local button = UI:CreateButton({ Parent = panel, Text = "+50 gold", Position = {10, 34}, Size = {170, 28}, Hotkey = "F5" })
+button:OnClick(function(b) Game.LocalPlayer:AddGold(50); b.Text = "Done!" end)
+button:OnHover(function(b) b.TextColor = "#ffff00" end)
+button:OnLeave(function(b) b.TextColor = "#ffffff" end)
+Game.OnSecond(function() label.Text = "Gold: " .. math.floor(Game.LocalPlayer.Gold) end)
+```
+
+| Property | Value |
+|---|---|
+| `Text` | text (labels wrap, buttons are one centered line) |
+| `Position`, `Size` | `{x, y}` / `{w, h}` in pixels; Position is measured from the `Anchor` edge inwards |
+| `Anchor` | `TopLeft` (default), `Top`, `TopRight`, `Left`, `Center`, `Right`, `BottomLeft`, `Bottom`, `BottomRight`: where it sticks inside its parent (or the screen) |
+| `Parent` | another element: position is relative to it, it hides and is destroyed with it |
+| `Visible` | `true`/`false` (also `:Show()`, `:Hide()`) |
+| `Color`, `TextColor`, `BorderColor` | `"#RRGGBB"` or `{r, g, b}`; `Color = false` / `BorderColor = false` removes the background / border |
+| `Transparency` | background 0 (solid) .. 1 (invisible) |
+| `Placeholder`, `MaxLength`, `Numeric` | text boxes: grey hint while empty, max characters (default 32), digits only |
+| `TextSize`, `Bold`, `Align` | pixels (default 16), `true`/`false`, `Left`/`Center`/`Right` |
+| `Hotkey` | `"F5"`, `"A"`.`"Z"`, `"0"`.`"9"`, `"F1"`.`"F12"`, with optional `"Ctrl+"`, `"Shift+"`, `"Alt+"` prefixes (e.g. `"Ctrl+S"`, `"Alt+F4"`); fires a click when pressed while the button is shown |
+| `Image` | path to a PNG file relative to the mod folder (e.g. `"icons/gold.png"`); drawn scaled into the element rect; buttons with both text and image show the image left of the text |
+
+Text boxes: click to type (the game gets no keys meanwhile), Enter submits, Esc or a click elsewhere leaves; `box.Text` is the current text, `:OnChanged(fn(box, text))` fires on every edit, `:OnSubmit(fn(box, text))` on Enter, `:Focus()` puts the cursor in it.
+
+Methods: `:OnClick(fn(element))`, `:OnHover(fn(element))`, `:OnLeave(fn(element))` (buttons and frames; each returns a connection with `:Disconnect()`, and `Time.Wait` works inside the handlers), `:SetText(t)`, `:SetPosition(x, y)`, `:SetSize(w, h)`, `:Show()`, `:Hide()`, `:Destroy()`; `.Destroyed` tells whether it is gone. Clicks on frames and buttons do not reach the game below them; labels let clicks through. The UI is hidden automatically when another screen (F10 game menu, pause dialogs) is on top of the game screen. At most 256 elements, 64 cached images. The UI is local: each player sees only what the scripts on their own machine made, and click/hover handlers run only on the clicking player's machine, so game commands sent from a handler (like `AddGold` above, before any `Time.Wait`) are always sent from that machine.
+
+**Game commands** (`Add*`, `CreateUnit`, `Research`, `Delete`) go through the game's own command system, so in multiplayer every player sees the same result on the same turn. Every player runs the same scripts, so only one machine sends each command: the owner's machine for a human player, the lowest-numbered human player's machine for computer players and Gaia. The call returns `true` on the machine that sent it and `false` on the others; you can write `Game.Player(2):AddGold(100)` without checking `IsLocal`. Wrong arguments (unknown unit id, no game running) raise an error. At most 100 commands per second. All players need the same Wololoader version.
+
+### Low-level `wl` API
+
+The Scripting API above is built on these functions; they stay available.
 
 ### Sandbox
 
@@ -991,32 +1002,29 @@ end)
 |---|---|
 | `wl.log(...)` | Writes the arguments (tab separated, like `print`) to `wololoader.log` as `[lua:<mod id>] ...`. |
 | `wl.on(event, fn)` | Registers `fn` for the event. Several handlers per event and per mod are allowed; they run in mod order, then registration order. Events with an integer argument pass it to `fn`. |
-| `wl.message(text)` | Shows a short message in the game. Until the in-game backend is wired it only logs `[lua] message: ...`. |
+| `wl.message(text)` | Shows a short message in the game.  |
 | `wl.dialog(text)` | Shows a dialog box with the text. Same fallback as `wl.message`. |
 | `wl.chat(text [, sender [, player]])` | Adds a line to the in-game chat history. `sender` is the name shown before the text (default: none, a system line). `player` 1..8 uses that player's colour (default and out-of-range values: the game's neutral system colour). |
 | `wl.ask(text, callback)` | Shows a Yes/No dialog and later calls `callback(true)` (Yes) or `callback(false)` (No). One dialog is open at a time, shared with `wl.dialog`; more are queued. **In multiplayer no dialog is opened**: the text appears as a notification and `callback(nil)` is called on the next frame. Always handle `nil`. |
-
-- `wl.sound(name_or_id)`: plays a game UI sound now. Names: `chat`, `cantdo`, `tribute`, `attack`, `townbell`, `townrecall`, `objective`, `relic`; or an id 0..50 (full table in `re/research/sound_counter.md`). Only the local player hears it.
-- `wl.counter(text)`: shows one line of your own text in the game's countdown-clock area (where `Wonder: 300 Years` appears) and keeps showing it until you change it; call it again as often as you like (e.g. from `wl.every(1, ...)`) to update the text. `wl.counter(nil)` or `wl.counter("")` hides it. Text is cut to 100 characters. There is one line per game (the last panel of the game's ten timer panels): if the game itself shows ten timers at once, your line is not shown. It is cleared when a new game starts. Local to each player.
+| `wl.sound(name_or_id)` | plays a game UI sound now. Names: `chat`, `cantdo`, `tribute`, `attack`, `townbell`, `townrecall`, `objective`, `relic`; or an id 0..50 (full table in `re/research/sound_counter.md`). Only the local player hears it. |
+| `wl.counter(text)` | shows one line of your own text in the game's countdown-clock area (where `Wonder: 300 Years` appears) and keeps showing it until you change it; call it again as often as you like (e.g. from `wl.every(1, ...)`) to update the text. `wl.counter(nil)` or `wl.counter("")` hides it. Text is cut to 100 characters. There is one line per game (the last panel of the game's ten timer panels): if the game itself shows ten timers at once, your line is not shown. It is cleared when a new game starts. Local to each player. |
 | `wl.after(seconds, fn)` | Calls `fn()` once after `seconds` (game time). Returns a handle. |
 | `wl.every(seconds, fn)` | Calls `fn()` every `seconds` (game time, minimum 0.05). Returns a handle. |
 | `wl.cancel(handle)` | Cancels a timer from `wl.after` / `wl.every`. Returns `true` if it was still active. |
-| `wl.wait(seconds)` | Pauses the running event handler or timer callback for `seconds` (real time) and then continues. Only works inside handlers, timer callbacks and ask callbacks (they run as coroutines); calling it at the top level of `main.lua` raises an error. Call it directly from the handler, not from your own `coroutine.create` threads. |
+| `wl.wait(seconds)` | Pauses the running event handler or timer callback for `seconds` (game time) and then continues. Only works inside handlers, timer callbacks and ask callbacks (they run as coroutines); calling it at the top level of `main.lua` raises an error. Call it directly from the handler, not from your own `coroutine.create` threads. |
 | `wl.version` | The Wololoader version string, for example `"0.3"`. |
 
 ### Timers, waiting and multiplayer
 
-- Timers and `wl.wait` use **real time**, not game time (they keep running while the game is paused, and the game speed does not change them). They are driven from the game screen's per-frame update, starting about 2 seconds after a game started.
+- Timers and `wl.wait` use **game time**: they stop while the game is paused (F3, F10 menu) and follow the game speed. They are driven from the game screen's per-frame update.
 - All timers, waiting coroutines and open questions are dropped when a new game starts or the game screen goes away. Create them from `game_start` (or later), not at the top level of `main.lua`.
 - An error in a timer callback or in a coroutine after a `wl.wait` is logged and ends only that call (a repeating timer keeps running). The 10 million instruction limit applies to every resume separately. At most 64 timers, 64 waiting coroutines and 16 open questions per game.
-- **Multiplayer**: dialogs that pause or block the game are never shown (`wl.dialog` and `wl.ask` become notification lines, see above). Real-time timers fire at different moments on each player's machine, so **do not change game state from timers or `wl.wait` in multiplayer**; use them for messages and chat only.
+- **Multiplayer**: dialogs that pause or block the game are never shown (`wl.dialog` and `wl.ask` become notification lines, see above). Timers run on each player's machine separately; to change the game, use the game commands of the Scripting API (`AddGold`, `CreateUnit`, ...), which are sent from one machine only and arrive for everyone on the same turn.
 
 ### Events
 
 | Event | Argument | Status |
 |---|---|---|
-| `game_start` | none | planned, not wired yet |
-| `game_end` | none | planned, not wired yet |
-| `every_second` | none | planned, not wired yet |
-
-The runtime already dispatches events by name, but the game-side hooks that fire these events are not connected yet, so the handlers will not run in the game for now. The API above may still change while this feature is experimental.
+| `game_start` | none | fired when a game starts (`Game.OnStart`) |
+| `every_second` | none | fired once per game second (`Game.OnSecond`) |
+| `game_end` | none | planned, not fired yet |

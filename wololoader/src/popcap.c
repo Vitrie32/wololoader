@@ -3,7 +3,7 @@
 // Only takes effect when a player picks 1000; every other value behaves exactly
 // as before. All players of a multiplayer game need the same Wololoader.
 //
-// Verified in the disassembly (2026-11-14, see re/FINDINGS.md "Nüfus limiti"):
+// Verified in the disassembly (2026-11-14, see re/FINDINGS.md "Population limit"):
 //  - 0x47b690  dropdown AddItem: __thiscall(list, const char *text, int value), ret 8.
 //  - 0x64d337  game setup screen: `call 0x47b690` that adds "500" (last entry;
 //              the list is a 25..200 loop followed by 250, 300, 400, 500).

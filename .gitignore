@@ -11,3 +11,4 @@ re/out/
 *.mp3
 *.mkv
 wololoader/local.mk
+.claude/

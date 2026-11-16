@@ -1,7 +1,7 @@
 // In-game "Mods" screen, opened from the main menu's Steam Workshop button.
 // Minecraft-Forge-style layout: clickable mod list on the left with icons,
 // and detail pane on the right with full mod metadata and big icon.
-// Addresses: AoK HD.exe 5.8, see re/FINDINGS.md ("Mods ekranı v2").
+// Addresses: AoK HD.exe 5.8, see re/FINDINGS.md ("Mods screen v2").
 #include "wololoader.h"
 #include <stdio.h>
 #include <string.h>

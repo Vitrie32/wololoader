@@ -256,6 +256,6 @@ No function classified FALSE was hit at runtime — the FALSE decisions appear s
 
 3. **`0x0074f490`** iterates `selected[60]` using `player+0x254` as the bound. It has no `0x3c` literal — the loop is dynamically bounded — so it will iterate up to the new count automatically, but it still reads through the `player+0x160` array pointer, which must be redirected.
 
-4. **`+0x15c`-only readers** (`0x6bd5e0`, `0x6be710`, `0x6c6490`, `0x7547f0`, `0x87cc60`) read the primary selected unit pointer but do **not** iterate the array. If `player+0x15c` stays in place (plan option in `plan_agy.md` §6 Adım 1), these need no patch. If `+0x15c` is also relocated, all five need updating.
+4. **`+0x15c`-only readers** (`0x6bd5e0`, `0x6be710`, `0x6c6490`, `0x7547f0`, `0x87cc60`) read the primary selected unit pointer but do **not** iterate the array. If `player+0x15c` stays in place (plan option in `plan_agy.md` §6 Step 1), these need no patch. If `+0x15c` is also relocated, all five need updating.
 
 5. All functions that were marked TRUE in the static list and are present in the trace behaved exactly as described. No static TRUE function was absent from the trace (consistent with the brief test session capturing normal gameplay selection events).

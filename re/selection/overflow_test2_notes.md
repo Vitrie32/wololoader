@@ -3,7 +3,7 @@
 **Date:** 2026-11-15 (02:38 - 03:00 UTC+3)  
 **Game:** Age of Empires II HD 5.8 (Proton / Xvfb :77)  
 **Binary:** Wololoader v0.3 with overflow selection Stage 2 (`wl_install_overflow()`)  
-**Raw logs:** [overflow_test2.txt](../../re/selection/overflow_test2.txt)
+**Raw logs:** [overflow_test2.txt](overflow_test2.txt)
 
 ---
 
