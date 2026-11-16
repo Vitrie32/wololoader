@@ -1,0 +1,19 @@
+[02:39:01] overflow: stage 2 (clone live for types 00/02/03/10), 5/5 hooks installed
+[02:56:36] overflow: caught unit id=2517 type=83 (overflow list 1, would show 61 selected)
+[02:56:36] overflow: caught unit id=2518 type=83 (overflow list 2, would show 62 selected)
+[02:56:36] overflow: caught unit id=2519 type=293 (overflow list 3, would show 63 selected)
+[02:56:36] overflow: caught unit id=2520 type=293 (overflow list 4, would show 64 selected)
+[02:56:36] overflow: caught unit id=2521 type=83 (overflow list 5, would show 65 selected)
+[02:56:36] overflow: caught unit id=2538 type=83 (overflow list 10, would show 70 selected)
+[02:56:36] overflow: caught unit id=2549 type=293 (overflow list 20, would show 80 selected)
+[02:56:36] overflow: caught unit id=2589 type=83 (overflow list 30, would show 90 selected)
+[02:56:37] overflow: select burst: refused@60=33 caught=33 already_listed=0 not_own_or_dead=0 list_full=0 (list now 33)
+[02:56:37] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:56:37] overflow: order type=0x66 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:56:38] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:56:59] overflow: sent clone type=0x00 units=33 (order had 60 ids, selected=60, overflow=33)
+[02:57:56] overflow: sent clone type=0x03 units=33 (order had 60 ids, selected=60, overflow=33)
+[02:58:02] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:58:40] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:58:47] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:58:53] overflow: sent clone type=0x00 units=33 (order had 60 ids, selected=60, overflow=33)

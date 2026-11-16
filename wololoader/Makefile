@@ -1,0 +1,103 @@
+CC      = i686-w64-mingw32-gcc
+CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc
+LDFLAGS = -shared -static -Wl,--enable-stdcall-fixup -Wl,--kill-at -lshell32 -lgdi32 -luser32 -lole32 -lwindowscodecs -luuid
+SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/civs.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/buildpage.c src/iconmerge.c src/proxy_version.S
+
+# Embedded Lua 5.4 (third_party/lua, unmodified). Only the core and the safe
+# libraries: no lua.c/luac.c, no linit.c (script.c opens libs itself), no
+# io/os/package/debug libs. Built with relaxed warnings (third-party code); our
+# own sources keep -Wall -Wextra.
+LUA_DIR  = third_party/lua/src
+LUA_SRCS = lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser \
+           lstate lstring ltable ltm lundump lvm lzio lauxlib lbaselib lcorolib lmathlib \
+           lstrlib ltablib lutf8lib
+LUA_OBJ  = $(addprefix build/lua/,$(addsuffix .o,$(LUA_SRCS)))
+LUA_CFLAGS = -O2 -std=gnu99 -w
+
+build/lua/%.o: $(LUA_DIR)/%.c
+	mkdir -p build/lua
+	$(CC) $(LUA_CFLAGS) -c -o $@ $<
+
+# TRACE=1 enables runtime selection field access tracing
+ifdef TRACE
+CFLAGS  += -DWL_SELTRACE
+SRC     += src/seltrace.c
+endif
+# Game folder: set GAME in wololoader/local.mk (not in git) or on the command line.
+-include local.mk
+GAME   ?= $(HOME)/.steam/steam/steamapps/common/Age2HD
+
+# Scriptorium v2 (mod creator HTTP server & launcher) sources and flags
+SC_CATALOG_SRC = $(if $(wildcard scriptorium/catalog.c),scriptorium/catalog.c,scriptorium/catalog_stub.c)
+SC_SRC  = scriptorium/main.c scriptorium/server.c scriptorium/api.c scriptorium/launcher.c \
+          scriptorium/sc_zlib.c scriptorium/modio.c \
+          $(SC_CATALOG_SRC) src/json.c src/datbuild.c
+SC_CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc -Iscriptorium -Ibuild -Isrc
+SC_LDFLAGS = -mwindows -static -lws2_32 -lshell32
+
+all: build/version.dll build/Scriptorium.exe
+
+build/wl_icon.o: src/version.rc art/wololoader.ico
+	mkdir -p build
+	i686-w64-mingw32-windres src/version.rc -O coff -o $@
+
+# Rebuild when switching between normal and TRACE=1 builds (the stamp records which).
+BUILD_KIND := $(if $(TRACE),trace,normal)
+build/kind.$(BUILD_KIND):
+	mkdir -p build
+	rm -f build/kind.*
+	touch $@
+
+build/version.dll: build/kind.$(BUILD_KIND) $(SRC) $(LUA_OBJ) build/wl_icon.o src/wololoader.h src/datbuild.h src/json.h src/version.def
+	mkdir -p build
+	$(CC) $(CFLAGS) -I$(LUA_DIR) -o $@ $(SRC) $(LUA_OBJ) build/wl_icon.o src/version.def $(LDFLAGS)
+
+build/ui_files.h: $(wildcard scriptorium/ui/*) tools/gen_ui_files.py
+	mkdir -p build
+	python3 tools/gen_ui_files.py scriptorium/ui build/ui_files.h
+
+scriptorium: build/Scriptorium.exe
+
+build/sc_icon.o: scriptorium/scriptorium.rc art/wololoader.ico
+	mkdir -p build
+	i686-w64-mingw32-windres scriptorium/scriptorium.rc -O coff -o $@
+
+build/Scriptorium.exe: build/sc_icon.o build/ui_files.h $(SC_SRC) scriptorium/server.h scriptorium/api.h scriptorium/launcher.h scriptorium/catalog.h scriptorium/sc_zlib.h scriptorium/modio.h src/json.h src/datbuild.h
+	mkdir -p build
+	$(CC) $(SC_CFLAGS) -o $@ $(SC_SRC) build/sc_icon.o $(SC_LDFLAGS)
+
+install: build/version.dll build/Scriptorium.exe
+	cp build/version.dll "$(GAME)/version.dll"
+	mkdir -p "$(GAME)/wololoader/mods"
+	cp build/Scriptorium.exe "$(GAME)/wololoader/Scriptorium.exe"
+	rsvg-convert -h 66 art/wololoader_mark.svg -o build/menu_mark.png
+	python3 -I tools/make_menu_icon.py "$(GAME)" build/menu_mark.png
+	# Wololoader Base mod (feature switches): created once, never overwritten.
+	test -e "$(GAME)/wololoader/mods/WololoaderBase/mod.json" || { mkdir -p "$(GAME)/wololoader/mods/WololoaderBase" && cp base_mod/mod.json "$(GAME)/wololoader/mods/WololoaderBase/mod.json"; }
+	cp art/logo_256.png "$(GAME)/wololoader/mods/WololoaderBase/icon.png"
+	# Wololoader's own command icons (iconmerge.c appends them to the game's sheets)
+	mkdir -p "$(GAME)/wololoader/mods/WololoaderBase/icons/50721"
+	cp base_mod/icons/50721/*.slp "$(GAME)/wololoader/mods/WololoaderBase/icons/50721/"
+
+# Release installers (needs `make install` once: the Mods button images come from the game folder).
+VERSION := $(shell sed -n 's/^\#define WOLOLOADER_VERSION "\(.*\)"/\1/p' src/wololoader.h)
+
+build/setup_res.o: installer/wlsetup.rc installer/wlsetup.manifest art/wololoader.ico
+	mkdir -p build
+	cd installer && i686-w64-mingw32-windres wlsetup.rc -O coff -o ../$@
+
+build/wlsetup_stub.exe: installer/wlsetup.c build/setup_res.o
+	$(CC) -O2 -Wall -Wextra -std=c11 -municode -mwindows -DWL_VERSION='"$(VERSION)"' -o $@ $^ -static -lcomctl32 -lshell32 -lole32 -ladvapi32
+	i686-w64-mingw32-strip $@
+
+release: build/version.dll build/wlsetup_stub.exe installer/install.sh.in tools/package.py
+	python3 -I tools/package.py "$(VERSION)" "$(GAME)" build/release build/wlsetup_stub.exe
+
+uninstall:
+	rm -f "$(GAME)/version.dll"
+	rm -f "$(GAME)/wololoader/Scriptorium.exe"
+
+clean:
+	rm -rf build
+
+.PHONY: all scriptorium install uninstall clean release

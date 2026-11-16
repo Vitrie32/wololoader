@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scriptorium — Wololoader Mod Creator</title>
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- Hidden element for JS error capture in headless test dumps -->
+  <div id="errors" style="display:none;" aria-hidden="true"></div>
+
+  <!-- Toast Notifications Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Generic Modal Dialog Container -->
+  <div id="modal-container" class="modal-overlay" style="display:none;"></div>
+
+  <!-- Outer Window Frame -->
+  <div id="app" class="app-layout">
+    <!-- Top Window Title Bar -->
+    <div class="window-title-bar">
+      <div class="window-title-left">
+        <span class="window-app-crest">W</span>
+        <span class="window-app-title">Scriptorium</span>
+        <span class="window-app-subtitle">Wololoader Mod Creator</span>
+      </div>
+      <div class="window-title-right">
+        <span id="ping-dot" class="status-dot connected" title="Server Status"></span>
+        <span id="ping-text" class="status-text">Connected</span>
+        <span class="status-sep">|</span>
+        <span class="app-version" id="app-version">v2.0</span>
+      </div>
+    </div>
+
+    <!-- Main Content Grid -->
+    <div class="main-container">
+      <!-- Sidebar / Left Column: Mod List & Actions -->
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-top-bar">
+          <span class="sidebar-heading">Installed Mods</span>
+        </div>
+
+        <div class="sidebar-actions">
+          <button id="btn-new-mod" class="btn btn-wood btn-sm">+ New Mod</button>
+          <button id="btn-open-mods-dir" class="btn btn-wood btn-sm" title="Open Mods Folder">Mods Folder</button>
+        </div>
+
+        <div class="sidebar-search">
+          <div class="search-input-wrapper">
+            <input type="text" id="mod-search" placeholder="Search mods..." autocomplete="off">
+            <button id="mod-search-clear" class="btn-clear" style="display:none;" title="Clear search">&times;</button>
+          </div>
+        </div>
+
+        <div id="mods-list" class="mods-list">
+          <!-- Populated dynamically -->
+        </div>
+      </aside>
+
+      <!-- Workspace / Right Column: Big Parchment Sheet -->
+      <main id="workspace" class="workspace">
+        <!-- Empty state when no mod is selected -->
+        <div id="empty-state" class="empty-state">
+          <div class="empty-state-card">
+            <h2 class="empty-title">Scriptorium</h2>
+            <p class="empty-subtitle">Wololoader Civilization & Mod Creator for Age of Empires II HD 5.8</p>
+            <p class="empty-desc">Select an installed mod from the list on the left to inspect and balance its civilizations, or create a brand new mod package.</p>
+            <div class="empty-state-buttons">
+              <button id="btn-empty-new-mod" class="btn btn-wood">+ Create New Mod</button>
+              <button id="btn-empty-open-folder" class="btn btn-wood">Open Mods Folder</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Mod Workspace (when a mod is loaded) -->
+        <div id="mod-workspace" class="mod-workspace" style="display:none;">
+          <!-- Mod Header -->
+          <header id="mod-header" class="mod-header">
+            <div class="mod-header-left">
+              <div class="mod-badge-container" id="mod-badge-container">
+                <div class="mod-badge" id="mod-header-badge">M</div>
+              </div>
+              <div class="mod-header-meta">
+                <div class="mod-title-row">
+                  <h2 id="mod-header-name" class="mod-header-name">Mod Name</h2>
+                  <span id="mod-header-version" class="mod-ver-tag">[v0.1]</span>
+                  <span id="unsaved-badge" class="badge-unsaved" style="display:none;">[Unsaved Changes]</span>
+                </div>
+                <div class="mod-sub-row">
+                  <span class="mod-author" id="mod-header-author">by Author</span>
+                  <span class="meta-sep">&bull;</span>
+                  <label class="toggle-control" title="Enable or disable mod in Wololoader">
+                    <input type="checkbox" id="mod-enabled-toggle">
+                    <span class="toggle-checkbox-custom"></span>
+                    <span class="toggle-label" id="mod-enabled-label">Enabled in Wololoader</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="mod-header-actions">
+              <button id="btn-revert" class="btn btn-wood btn-sm" title="Revert all unsaved changes" disabled>Revert</button>
+              <button id="btn-validate" class="btn btn-wood btn-sm" title="Test building this mod into dat with wl_dat_build">Validate</button>
+              <button id="btn-save" class="btn btn-wood btn-sm btn-save" title="Save mod changes (Ctrl+S)">
+                <span>Save</span>
+                <kbd class="kbd-hint">Ctrl+S</kbd>
+              </button>
+              <button id="btn-open-mod-folder" class="btn btn-wood btn-sm" title="Open this mod's folder">Folder</button>
+            </div>
+          </header>
+
+          <!-- Navigation Tabs & Civ Switcher -->
+          <nav class="nav-bar">
+            <div class="tabs-group" id="nav-tabs" role="tablist">
+              <button class="nav-tab active" data-tab="overview" role="tab" aria-selected="true">Overview</button>
+              <button class="nav-tab civ-tab" data-tab="identity" role="tab" aria-selected="false">Identity</button>
+              <button class="nav-tab civ-tab" data-tab="bonuses" role="tab" aria-selected="false">Bonuses</button>
+              <button class="nav-tab civ-tab" data-tab="units" role="tab" aria-selected="false">Units</button>
+              <button class="nav-tab civ-tab" data-tab="techtree" role="tab" aria-selected="false">Tech Tree</button>
+            </div>
+
+            <div class="civ-selector-container" id="civ-selector-container">
+              <label for="civ-select-dropdown" class="civ-select-label">Civilization:</label>
+              <select id="civ-select-dropdown" class="select-civ">
+                <!-- Populated dynamically -->
+              </select>
+              <button id="btn-quick-new-civ" class="btn btn-wood btn-xs" title="Add new civilization to this mod">+ New Civ</button>
+            </div>
+          </nav>
+
+          <!-- View: Overview -->
+          <div id="view-overview" class="tab-view active" role="tabpanel">
+            <div class="view-scroll-content">
+              <!-- Mod Information Card -->
+              <div class="card card-parchment">
+                <div class="card-header">
+                  <h3 class="card-title">Mod Details</h3>
+                  <span class="card-hint">Attributes stored in mod.json</span>
+                </div>
+                <div class="card-body">
+                  <div class="form-grid-3">
+                    <div class="form-group">
+                      <label for="mod-input-name">Mod Name</label>
+                      <input type="text" id="mod-input-name" class="form-input" placeholder="e.g. Monklanians">
+                    </div>
+                    <div class="form-group">
+                      <label for="mod-input-version">Version</label>
+                      <input type="text" id="mod-input-version" class="form-input" placeholder="0.1">
+                    </div>
+                    <div class="form-group">
+                      <label for="mod-input-author">Author</label>
+                      <input type="text" id="mod-input-author" class="form-input" placeholder="Your name or handle">
+                    </div>
+                  </div>
+                  <div class="form-group mt-3">
+                    <label for="mod-input-description">Mod Description</label>
+                    <textarea id="mod-input-description" class="form-textarea" rows="3" placeholder="Describe the mod and its changes..."></textarea>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Civilizations List Section -->
+              <div class="section-header-row mt-4">
+                <div>
+                  <h3 class="section-title">Civilizations</h3>
+                  <span class="section-subtitle" id="civs-count-label">0 civilizations in this mod</span>
+                </div>
+                <button id="btn-overview-new-civ" class="btn btn-wood btn-sm">+ New Civilization</button>
+              </div>
+
+              <div id="civs-cards-grid" class="civs-grid mt-3">
+                <!-- Populated dynamically with civ cards -->
+              </div>
+            </div>
+          </div>
+
+          <!-- View: Identity -->
+          <div id="view-identity" class="tab-view" role="tabpanel">
+            <div class="view-scroll-content">
+              <!-- Basic Civ Identity -->
+              <div class="card card-parchment">
+                <div class="card-header">
+                  <h3 class="card-title">Civilization Identity</h3>
+                  <span class="card-hint">Identity & Dat attributes</span>
+                </div>
+                <div class="card-body">
+                  <div class="form-grid-3">
+                    <div class="form-group">
+                      <label for="civ-input-name">Display Name <span class="required">*</span></label>
+                      <input type="text" id="civ-input-name" class="form-input" placeholder="e.g. Monklanians">
+                    </div>
+                    <div class="form-group">
+                      <label for="civ-input-dat-name">DAT Name (ASCII, max 19) <span class="required">*</span></label>
+                      <div class="input-with-button">
+                        <input type="text" id="civ-input-dat-name" class="form-input font-mono" maxlength="19" placeholder="e.g. Monklanians">
+                        <button id="btn-sync-dat-name" class="btn btn-wood btn-xs" title="Auto-generate from display name">Sync</button>
+                      </div>
+                    </div>
+                    <div class="form-group">
+                      <label for="civ-select-base">Base Civilization <span class="required">*</span></label>
+                      <select id="civ-select-base" class="form-select">
+                        <!-- Populated from catalog civs 1..31 -->
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Description & History -->
+              <div class="card card-parchment mt-4">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">In-Game Civilization Description</h3>
+                    <span class="card-hint">Shown on history & tech tree screens. Supports &lt;b&gt;bold&lt;b&gt; and line breaks.</span>
+                  </div>
+                  <button id="btn-generate-description" class="btn btn-wood btn-sm">Generate from Bonuses</button>
+                </div>
+                <div class="card-body">
+                  <div class="desc-editor-grid">
+                    <div class="desc-editor-pane">
+                      <div class="pane-label">Raw Text (Wololoader format)</div>
+                      <textarea id="civ-input-description" class="form-textarea desc-textarea font-mono" rows="10" placeholder="<b>Civ Name<b>&#10;Archetype&#10;&#10;· Civ bonus 1&#10;· Civ bonus 2&#10;&#10;<b>Team Bonus:<b>&#10;Team bonus description"></textarea>
+                      <div class="editor-quick-inserts">
+                        <button type="button" class="btn-tag" data-insert="<b>bold<b>">Insert &lt;b&gt;bold&lt;b&gt;</button>
+                        <button type="button" class="btn-tag" data-insert="· ">Insert Bullet (·)</button>
+                        <button type="button" class="btn-tag" data-insert="<b>Team Bonus:<b>&#10;">Insert Team Bonus</button>
+                      </div>
+                    </div>
+                    <div class="desc-preview-pane">
+                      <div class="pane-label">In-Game Parchment Preview</div>
+                      <div id="civ-desc-preview" class="desc-preview-box">
+                        <!-- Live formatted preview -->
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- AI Names -->
+              <div class="card card-parchment mt-4">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">AI Player Names</h3>
+                    <span class="card-hint">Random ruler / leader names used when AI plays this civilization</span>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div id="civ-ai-names-chips" class="chips-container">
+                    <!-- Chips populated dynamically -->
+                  </div>
+                  <div class="add-chip-row mt-3">
+                    <input type="text" id="civ-new-ai-name" class="form-input" placeholder="New AI name (e.g. Abbot Wololo)">
+                    <button id="btn-add-ai-name" class="btn btn-wood btn-sm">Add Name</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Custom Sound & Interface SLP -->
+              <div class="card card-parchment mt-4">
+                <div class="card-header">
+                  <h3 class="card-title">Custom Audio & Interface Art</h3>
+                  <span class="card-hint">Copied directly into the mod folder</span>
+                </div>
+                <div class="card-body">
+                  <div class="form-grid-2">
+                    <div class="asset-picker-box">
+                      <div class="asset-title">Civilization Sound</div>
+                      <p class="asset-desc">Played when selecting civilization in lobby (e.g. select.mp3 / wav).</p>
+                      <div class="asset-file-status">
+                        <span class="font-mono text-bold" id="civ-sound-filename">(None configured)</span>
+                      </div>
+                      <div class="asset-btn-row">
+                        <label class="btn btn-wood btn-sm btn-upload">
+                          Browse & Upload
+                          <input type="file" id="civ-sound-file-input" accept=".mp3,.wav,.ogg" style="display:none;">
+                        </label>
+                        <button id="btn-clear-civ-sound" class="btn btn-wood btn-sm" style="display:none;">Clear</button>
+                      </div>
+                    </div>
+
+                    <div class="asset-picker-box">
+                      <div class="asset-title">Interface SLP Art</div>
+                      <p class="asset-desc">Custom civ emblem / interface frame (e.g. game_b.slp).</p>
+                      <div class="asset-file-status">
+                        <span class="font-mono text-bold" id="civ-slp-filename">(None configured)</span>
+                      </div>
+                      <div class="asset-btn-row">
+                        <label class="btn btn-wood btn-sm btn-upload">
+                          Browse & Upload
+                          <input type="file" id="civ-slp-file-input" accept=".slp,.png" style="display:none;">
+                        </label>
+                        <button id="btn-clear-civ-slp" class="btn btn-wood btn-sm" style="display:none;">Clear</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- View: Bonuses -->
+          <div id="view-bonuses" class="tab-view" role="tabpanel">
+            <div class="view-scroll-content">
+              <!-- Preset Bonuses -->
+              <div class="card card-parchment">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Preset Civilization & Team Bonuses</h3>
+                    <span class="card-hint">Standard AoE2 civilization modifiers compiled automatically into effects</span>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="presets-grid" id="presets-grid">
+                    <!-- Generated dynamically from preset definitions -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Advanced Effects Table -->
+              <div class="card card-parchment mt-4">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Advanced Effects</h3>
+                    <span class="card-hint">Raw effect commands (effects & team_bonus_effects). Preserves custom effects.</span>
+                  </div>
+                  <button id="btn-add-effect" class="btn btn-wood btn-sm">+ Add Effect</button>
+                </div>
+                <div class="card-body">
+                  <div class="effects-table-wrapper">
+                    <table class="effects-table" id="effects-table">
+                      <thead>
+                        <tr>
+                          <th style="width: 130px;">Scope</th>
+                          <th style="width: 190px;">Effect Type</th>
+                          <th style="width: 110px;">a (Unit/Res)</th>
+                          <th style="width: 110px;">b (Class/Mode)</th>
+                          <th style="width: 110px;">c (Attribute)</th>
+                          <th style="width: 120px;">d (Amount/Mult)</th>
+                          <th style="width: 70px; text-align: center;">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody id="effects-tbody">
+                        <!-- Populated dynamically -->
+                      </tbody>
+                    </table>
+                    <div id="effects-empty" class="table-empty-msg" style="display:none;">
+                      No custom advanced effects. Use presets above or click "+ Add Effect".
+                    </div>
+                  </div>
+
+                  <div class="effects-help-box mt-3">
+                    <span class="help-title">Quick Effect Cheat Sheet:</span>
+                    <span class="help-text"><strong>0</strong> Set attribute &bull; <strong>1</strong> Resource (a=res, b=0 set/1 add, d=amount) &bull; <strong>2</strong> Enable unit &bull; <strong>3</strong> Upgrade unit &bull; <strong>4</strong> Add attr &bull; <strong>5</strong> Multiply attr (a=unit, b=class, c=attr, d=mult) &bull; <strong>6</strong> Mult resource &bull; <strong>101</strong> Tech cost &bull; <strong>102</strong> Disable tech &bull; <strong>103</strong> Tech time</span>
+                    <div class="help-subtext">Attrs: 0=HP, 1=LOS, 5=Speed, 10=Reload, 12=Range, 13=Work Rate. Res: 0=Food, 1=Wood, 2=Stone, 3=Gold.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- View: Units -->
+          <div id="view-units" class="tab-view" role="tabpanel">
+            <div class="units-split-layout">
+              <!-- Left: Virtualized Units List -->
+              <div class="units-list-panel">
+                <div class="panel-header">
+                  <div class="search-input-wrapper">
+                    <input type="text" id="units-search" placeholder="Search units by name, internal, or ID..." autocomplete="off">
+                    <button id="units-search-clear" class="btn-clear" style="display:none;">&times;</button>
+                  </div>
+                  <div class="units-filter-bar">
+                    <label class="checkbox-label" title="Show only units overridden in this civilization">
+                      <input type="checkbox" id="units-filter-modified">
+                      <span>Modified only</span>
+                    </label>
+                    <span class="units-count" id="units-count-display">0 units</span>
+                  </div>
+                </div>
+
+                <!-- Virtual scroll container -->
+                <div id="units-virtual-viewport" class="virtual-scroll-viewport">
+                  <div id="units-phantom-spacer" class="virtual-phantom-spacer"></div>
+                  <div id="units-visible-rows" class="virtual-rows-container">
+                    <!-- Virtual rows rendered dynamically -->
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right: Unit Stat Overrides Detail Panel -->
+              <div class="unit-detail-panel" id="unit-detail-panel">
+                <div id="unit-detail-empty" class="panel-empty-placeholder">
+                  <h4>Select a unit to inspect & edit stats</h4>
+                  <p>Choose any unit from the catalog on the left to override its base stats for this civilization.</p>
+                </div>
+
+                <div id="unit-detail-content" class="unit-detail-content" style="display:none;">
+                  <div class="unit-detail-header">
+                    <div>
+                      <div class="unit-title-row">
+                        <h3 class="unit-detail-name" id="unit-detail-name">Unit Name</h3>
+                        <span class="unit-id-tag" id="unit-detail-id">#0</span>
+                      </div>
+                      <div class="unit-meta-row">
+                        <span class="font-mono text-muted" id="unit-detail-internal">INTERNAL</span>
+                        <span class="meta-sep">&bull;</span>
+                        <span class="text-muted" id="unit-detail-class">Class: 0</span>
+                      </div>
+                    </div>
+                    <button id="btn-reset-unit" class="btn btn-wood btn-sm" title="Remove all custom stat overrides for this unit">Reset Unit</button>
+                  </div>
+
+                  <div class="unit-stats-container mt-3">
+                    <div class="stats-table-header">
+                      <span>Stat Attribute</span>
+                      <span>Base Value</span>
+                      <span>Civ Override Value</span>
+                      <span>Action</span>
+                    </div>
+                    <div id="unit-stats-fields-list" class="stats-fields-list">
+                      <!-- Stat fields populated dynamically -->
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- View: Tech Tree -->
+          <div id="view-techtree" class="tab-view" role="tabpanel">
+            <div class="view-scroll-content">
+              <!-- Unique Technologies Card -->
+              <div class="card card-parchment">
+                <div class="card-header">
+                  <div>
+                    <h3 class="card-title">Unique Technologies</h3>
+                    <span class="card-hint">Castle Age & Imperial Age unique techs researched at Castle</span>
+                  </div>
+                </div>
+                <div class="card-body">
+                  <div class="form-grid-2">
+                    <div class="form-group">
+                      <label for="select-unique-castle">Castle Age Unique Tech</label>
+                      <select id="select-unique-castle" class="form-select font-mono">
+                        <!-- Populated from catalog techs -->
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label for="select-unique-imp">Imperial Age Unique Tech</label>
+                      <select id="select-unique-imp" class="form-select font-mono">
+                        <!-- Populated from catalog techs -->
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Two Columns: Tech Availability & Units Availability -->
+              <div class="techtree-split-grid mt-4">
+                <!-- Column 1: Techs Availability -->
+                <div class="card card-parchment">
+                  <div class="card-header techtree-card-header">
+                    <div>
+                      <h3 class="card-title">Technologies</h3>
+                      <span class="card-hint">Enable / Disable researches for this civ</span>
+                    </div>
+                    <div class="segmented-filter">
+                      <button class="seg-btn active" data-filter="tech-all">All</button>
+                      <button class="seg-btn" data-filter="tech-changed">Changed</button>
+                    </div>
+                  </div>
+                  <div class="card-body p-0">
+                    <div class="p-3 border-bottom">
+                      <div class="search-input-wrapper">
+                        <input type="text" id="tt-techs-search" placeholder="Filter technologies..." autocomplete="off">
+                        <button id="tt-techs-search-clear" class="btn-clear" style="display:none;">&times;</button>
+                      </div>
+                    </div>
+                    <div class="techtree-items-list" id="tt-techs-list">
+                      <!-- Populated dynamically -->
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Column 2: Units Availability -->
+                <div class="card card-parchment">
+                  <div class="card-header techtree-card-header">
+                    <div>
+                      <h3 class="card-title">Units Availability</h3>
+                      <span class="card-hint">Enable / Disable units in the tech tree</span>
+                    </div>
+                    <div class="segmented-filter">
+                      <button class="seg-btn active" data-filter="unit-all">All</button>
+                      <button class="seg-btn" data-filter="unit-changed">Changed</button>
+                    </div>
+                  </div>
+                  <div class="card-body p-0">
+                    <div class="p-3 border-bottom">
+                      <div class="search-input-wrapper">
+                        <input type="text" id="tt-units-search" placeholder="Filter units..." autocomplete="off">
+                        <button id="tt-units-search-clear" class="btn-clear" style="display:none;">&times;</button>
+                      </div>
+                    </div>
+                    <div class="techtree-items-list" id="tt-units-list">
+                      <!-- Populated dynamically -->
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

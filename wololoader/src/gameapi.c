@@ -1,0 +1,105 @@
+// Read-only game state for the Lua API (script.c reaches it through the
+// WlGameApi table, so the native test can run without the game). Reading only:
+// nothing here changes the game, so it is multiplayer safe.
+//
+// Verified addresses (2026-11-15, see monk.c and re/research/monk_autoconvert.md):
+// - world = [[0xaf2c58]+0xc8]; players: [world+0x184]..[world+0x188], 8 bytes each,
+//   player pointer first; local player id [world+0x174] (0x540c90).
+// - player units: list [player+0x18], units [list+4], count [list+8].
+// - player resources: float array at [player+0x3c] (0x748055: mov 0x3c(%edi),%eax;
+//   0x748060: movss 0x80(%eax) = resource 32). Ids: 0 food, 1 wood, 2 stone, 3 gold,
+//   4 population headroom, 6 current age, 11 current population, 32 bonus pop cap.
+// - is_enemy 0x74f320 __thiscall(player, id) ret 4.
+// - unit: id [unit+8], owner [unit+0x10], master [unit+0xc] (class int16 +0x16, type byte
+//   +4: 80 = building), position floats [unit+0x3c]/[unit+0x40], alive [unit+0x4c] < 7
+//   and [unit+0x24] == 0.
+#include "wololoader.h"
+
+#define RDP(p, o) (*(void **)((char *)(p) + (o)))
+#define RD32(p, o) (*(DWORD *)((char *)(p) + (o)))
+typedef int (__thiscall *IsEnemy_t)(void *player, int id);
+
+static char *ptab(int *n) {
+    DWORD game = *(DWORD *)0xaf2c58;
+    void *world = game ? RDP((void *)game, 0xc8) : NULL;
+    char *tab = world ? (char *)RDP(world, 0x184) : NULL, *end = world ? (char *)RDP(world, 0x188) : NULL;
+    *n = tab && end > tab ? (int)((end - tab) / 8) : 0;
+    return tab;
+}
+
+static void *player(int id) {
+    int n;
+    char *tab = ptab(&n);
+    return (tab && id >= 0 && id < n) ? *(void **)(tab + id * 8) : NULL;
+}
+
+static int ga_local(void) {
+    DWORD game = *(DWORD *)0xaf2c58;
+    void *world = game ? RDP((void *)game, 0xc8) : NULL;
+    return world ? (int)RD32(world, 0x174) : -1;
+}
+
+static int ga_count(void) { int n; ptab(&n); return n; }
+
+static int ga_resource(int pid, int res, float *out) {
+    void *p = player(pid);
+    float *arr = p ? (float *)RDP(p, 0x3c) : NULL;
+    if (!arr || res < 0 || res > 255) return 0;
+    *out = arr[res];
+    return 1;
+}
+
+static int ga_is_enemy(int a, int b) {
+    void *p = player(a);
+    return (p && b > 0 && b < ga_count()) ? ((IsEnemy_t)0x74f320)(p, b) != 0 : 0;
+}
+
+// One unit's info; FALSE for dead/removed units. Unit type id = master int16 at +0x10 (the
+// index into the player's masters array [player+0x14], 0x8c48af..0x8c48b9); owner id =
+// [[unit+0x10]+0x1adc] (player id, 0x812695..0x8126a1).
+static int unit_info(void *x, WlUnitInfo *o) {
+    if (!x || *(unsigned char *)((char *)x + 0x4c) >= 7 || RD32(x, 0x24) != 0) return 0;
+    void *m = RDP(x, 0xc), *own = RDP(x, 0x10);
+    o->id = (int)RD32(x, 8);
+    o->x = *(float *)((char *)x + 0x3c);
+    o->y = *(float *)((char *)x + 0x40);
+    o->cls = m ? *(short *)((char *)m + 0x16) : -1;
+    o->building = m ? *(unsigned char *)((char *)m + 4) == 80 : 0;
+    o->type = m ? *(short *)((char *)m + 0x10) : -1;
+    o->owner = own ? (int)RD32(own, 0x1adc) : -1;
+    return 1;
+}
+
+static int ga_units(int pid, WlUnitInfo *out, int max) {
+    void *p = player(pid);
+    char *list = p ? (char *)RDP(p, 0x18) : NULL;
+    if (!list) return 0;
+    void **u = (void **)RDP(list, 4);
+    int count = (int)RD32(list, 8), n = 0;
+    for (int i = 0; i < count && n < max; i++)
+        if (unit_info(u[i], &out[n])) n++;
+    return n;
+}
+
+// Selection of the local player: player+0x160 selected[60] unit pointers, count int at +0x254
+// (overflow.c PLAYER_SEL / PLAYER_CNT; the units beyond 60 of selection_250 are not included).
+static int ga_selected(WlUnitInfo *out, int max) {
+    void *p = player(ga_local());
+    if (!p) return 0;
+    int cnt = (int)RD32(p, 0x254), n = 0;
+    void **sel = (void **)((char *)p + 0x160);
+    for (int i = 0; i < cnt && i < 60 && n < max; i++)
+        if (unit_info(sel[i], &out[n])) n++;
+    return n;
+}
+
+// Game time: [world+0x178] in ms (see luagame.c game_clock).
+static double ga_time(void) {
+    DWORD game = *(DWORD *)0xaf2c58;
+    void *world = game ? RDP((void *)game, 0xc8) : NULL;
+    return world ? RD32(world, 0x178) / 1000.0 : -1.0;
+}
+
+static const WlGameApi k_api = { ga_local, ga_count, ga_resource, ga_is_enemy, ga_units,
+    wl_cmd_add_resource, wl_cmd_research, wl_cmd_spawn, wl_cmd_delete, ga_selected, ga_time, wl_cmd_set_age };
+const WlGameApi *wl_game_api(void) { return &k_api; }

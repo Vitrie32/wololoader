@@ -1,0 +1,6 @@
+{
+  "name": "Dev Panel",
+  "version": "0.1",
+  "author": "ali",
+  "description": "A developer panel for testing: resources, ages, spawning, cloning and deleting units, killing enemies. Toggle with the DEV button or Ctrl+Shift+D. Single player testing tool."
+}

@@ -1,0 +1,124 @@
+[02:09:17] overflow: stage 1b dry run, 5/5 hooks installed
+[02:23:17] overflow: caught unit id=2149 type=83 (overflow list 1, would show 61 selected)
+[02:23:18] overflow: caught unit id=2148 type=293 (overflow list 2, would show 62 selected)
+[02:23:18] overflow: caught unit id=2150 type=293 (overflow list 3, would show 63 selected)
+[02:23:18] overflow: caught unit id=2516 type=293 (overflow list 4, would show 64 selected)
+[02:23:18] overflow: caught unit id=2521 type=83 (overflow list 5, would show 65 selected)
+[02:23:18] overflow: caught unit id=2526 type=293 (overflow list 10, would show 70 selected)
+[02:23:18] overflow: caught unit id=2579 type=83 (overflow list 20, would show 80 selected)
+[02:23:22] overflow: select burst: refused@60=28 caught=25 already_listed=3 not_own_or_dead=0 list_full=0 (list now 25)
+[02:23:22] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:26] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:31] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:35] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:39] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f2 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:42] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f1 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:43] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f2 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:44] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f1 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:44] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f2 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:45] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f1 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:45] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f2 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:46] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f1 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:47] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f2 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:48] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f1 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:48] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 9d 09 00 00 bc 02 64 00 f2 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:49] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:49] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:50] overflow: diag packet type=0x64 size=16 bytes[64 00 00 00 5f 08 00 00 02 00 53 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:50] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 85 09 00 00 01 00 00 00 00 00 ab 42 ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:23:50] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:23:50] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 5f 08 00 00 c2 02 64 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=0 flag=0 in_selection=0 | overflow=25
+[02:24:05] overflow: diag packet type=0x03 size=260 bytes[03 01 00 00 ff ff ff ff 3c 00 00 00 55 b5 14 42 ] selected_ids_in_packet=60 | cmd cache count=60 flag=0 in_selection=60 | overflow=25
+[02:24:05] overflow: order type=0x03 units_in_packet=60 selected=60 overflow=25 -> would send 1 extra packet(s) (DRY RUN, nothing sent)
+[02:24:09] overflow: diag packet type=0x03 size=20 bytes[03 01 00 00 ff ff ff ff ff 00 00 00 ab 0a 13 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:09] overflow: order type=0x03 units_in_packet=60 (same list as last order, ids from cmd cache) selected=60 overflow=25 -> would send 1 extra packet(s) (DRY RUN, nothing sent)
+[02:24:11] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 7c 09 00 00 01 00 00 00 00 00 df 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:11] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:11] overflow: diag packet type=0x66 size=28 bytes[66 01 02 00 00 00 fb 42 00 00 bb 42 32 00 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:11] overflow: order type=0x66 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:11] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 68 0a 00 00 01 00 00 00 00 00 fb 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:11] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:12] overflow: diag packet type=0x03 size=20 bytes[03 01 00 00 ff ff ff ff ff 00 00 00 00 a0 17 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:12] overflow: order type=0x03 units_in_packet=60 (same list as last order, ids from cmd cache) selected=60 overflow=25 -> would send 1 extra packet(s) (DRY RUN, nothing sent)
+[02:24:12] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 7c 09 00 00 01 00 00 00 00 00 df 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:12] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:12] overflow: diag packet type=0x66 size=28 bytes[66 01 02 00 00 00 f5 42 00 00 bf 42 32 00 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:12] overflow: order type=0x66 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:12] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 6a 0a 00 00 01 00 00 00 00 00 f5 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:12] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:15] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 7c 09 00 00 01 00 00 00 00 00 df 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:15] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:15] overflow: diag packet type=0x66 size=28 bytes[66 01 02 00 00 00 fb 42 00 00 b5 42 32 00 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:15] overflow: order type=0x66 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:15] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 6c 0a 00 00 01 00 00 00 00 00 fb 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:15] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:19] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 7c 09 00 00 01 00 00 00 00 00 df 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:19] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:19] overflow: diag packet type=0x66 size=28 bytes[66 01 02 00 00 00 f3 42 00 00 b1 42 32 00 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:19] overflow: order type=0x66 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:20] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 6f 0a 00 00 01 00 00 00 00 00 f3 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:20] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:21] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:22] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 7c 09 00 00 01 00 00 00 00 00 df 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:22] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:23] overflow: diag packet type=0x66 size=28 bytes[66 01 02 00 00 00 ef 42 00 00 bf 42 32 00 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:23] overflow: order type=0x66 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:24] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 71 0a 00 00 01 00 00 00 00 00 ef 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:24] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:25] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:28] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 7c 09 00 00 01 00 00 00 00 00 df 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:28] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:28] overflow: diag packet type=0x66 size=28 bytes[66 01 02 00 00 00 ed 42 00 00 b9 42 32 00 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:28] overflow: order type=0x66 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:28] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 74 0a 00 00 01 00 00 00 00 00 ed 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:28] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:30] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:34] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:35] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 f0 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:35] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 ef 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:36] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 f0 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:36] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 ef 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:37] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 f0 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:38] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 ef 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:39] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 f0 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:39] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 ef 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:40] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 f0 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:40] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 ef 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:41] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 f0 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:42] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 ef 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:42] overflow: diag packet type=0x00 size=20 bytes[00 01 00 00 d6 08 00 00 ff 00 00 00 00 00 1e 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:42] overflow: order type=0x00 units_in_packet=60 (same list as last order, ids from cmd cache) selected=60 overflow=25 -> would send 1 extra packet(s) (DRY RUN, nothing sent)
+[02:24:43] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 69 08 00 00 bc 02 64 00 f0 08 00 00 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:43] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:43] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:45] overflow: diag packet type=0x64 size=16 bytes[64 00 00 00 5f 08 00 00 02 00 53 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:45] overflow: diag packet type=0x02 size=24 bytes[02 00 00 00 7c 09 00 00 01 00 00 00 00 00 df 42 ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:24:45] overflow: order type=0x02 ids=1, only 0 are in selected[]: not a selection order, ignored
+[02:24:45] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 5f 08 00 00 c2 02 64 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:24] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:29] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:33] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:37] overflow: select burst: refused@60=22 caught=0 already_listed=22 not_own_or_dead=0 list_full=0 (list now 25)
+[02:25:37] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:42] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:46] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:50] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:55] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:25:59] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:05] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:10] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:14] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:18] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:22] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:27] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:31] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:35] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:40] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:44] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:49] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:53] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:26:57] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:27:02] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:27:06] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:27:10] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25
+[02:27:14] overflow: diag packet type=0x0a size=40 bytes[0a 01 02 02 97 09 00 00 c1 02 01 00 ff ff ff ff ] selected_ids_in_packet=0 | cmd cache count=60 flag=1 in_selection=60 | overflow=25

@@ -1,0 +1,13 @@
+# Build output
+wololoader/build/
+__pycache__/
+*.pyc
+
+# Decompiled game code and Ghidra output (derived from the commercial exe; not shared)
+re/out/
+
+# Media and anything else dropped into this folder
+*.mp4
+*.mp3
+*.mkv
+wololoader/local.mk

@@ -1,0 +1,170 @@
+{
+  "name": "Monklanians",
+  "dat_name": "Monklanians",
+  "base": 1,
+  "description": "<b>Monklanians<b> \nMonk civilization \n\n· Unique Unit: Wololo Monk (Castle) \n· Monks have +50% HP (45) and move 20% faster \n· Monks convert from +2 range and see +1 further \n· Start with +100 gold \n· Redemption and Bloodlines enabled \n· Cavalier disabled \n· Villagers have 40 HP \n\n<b>Team Bonus:<b> \nMonasteries work 20% faster",
+  "ai_names": [
+    "Abbot Wololo",
+    "Sister Ayoyo",
+    "Brother Rogan",
+    "Prior Halleluja",
+    "Father Mumbles"
+  ],
+  "sound": "select.mp3",
+  "interface_slp": "game_b.slp",
+  "unique_unit": {
+    "copy_from": 125,
+    "name": "Wololo Monk",
+    "help": "Tough castle monk of the Monklanians.",
+    "units": {
+      "hit_points": 60,
+      "max_range": 11
+    },
+    "elite_units": {
+      "hit_points": 80
+    }
+  },
+  "enabled_techs": [
+    316,
+    435
+  ],
+  "disabled_techs": [
+    209
+  ],
+  "disabled_units": [
+    283
+  ],
+  "effects": [
+    {
+      "type": 1,
+      "a": 3,
+      "b": 1,
+      "c": -1,
+      "d": 100.0
+    }
+  ],
+  "team_bonus_effects": [
+    {
+      "type": 5,
+      "a": 104,
+      "b": -1,
+      "c": 13,
+      "d": 1.2
+    },
+    {
+      "type": 5,
+      "a": 30,
+      "b": -1,
+      "c": 13,
+      "d": 1.2
+    }
+  ],
+  "unique_techs": [
+    3,
+    461
+  ],
+  "units": {
+    "125": {
+      "hit_points": 45,
+      "speed": 0.84,
+      "max_range": 11,
+      "line_of_sight": 12,
+      "search_radius": 12
+    },
+    "286": {
+      "hit_points": 45,
+      "speed": 0.84,
+      "max_range": 11,
+      "line_of_sight": 12,
+      "search_radius": 12
+    },
+    "56": {
+      "hit_points": 40
+    },
+    "57": {
+      "hit_points": 40
+    },
+    "83": {
+      "hit_points": 40
+    },
+    "118": {
+      "hit_points": 40
+    },
+    "120": {
+      "hit_points": 40
+    },
+    "122": {
+      "hit_points": 40
+    },
+    "124": {
+      "hit_points": 40
+    },
+    "156": {
+      "hit_points": 40
+    },
+    "206": {
+      "hit_points": 40
+    },
+    "293": {
+      "hit_points": 40
+    }
+  },
+  "unique_building": {
+    "copy_from": 104,
+    "name": "Abbey",
+    "help": "The great abbey of the Monklanians: a monastery with a bell tower, built in the Castle Age.",
+    "page": "mods",
+    "button": 1,
+    "age": 2,
+    "slp": 15001,
+    "units": {
+      "hit_points": 2400
+    },
+    "commands": [
+      {
+        "button": 1,
+        "train": 125
+      },
+      {
+        "button": 2,
+        "train": {
+          "copy_from": 125,
+          "name": "Abbot",
+          "help": "A senior monk with more hit points and a longer reach.",
+          "units": {
+            "hit_points": 60,
+            "max_range": 11
+          }
+        }
+      },
+      {
+        "button": 6,
+        "research": {
+          "name": "Holy Bells",
+          "help": "Monks get +20 hit points.",
+          "cost": {
+            "food": 100,
+            "gold": 200
+          },
+          "time": 40,
+          "effects": [
+            {
+              "type": 4,
+              "a": -1,
+              "b": 18,
+              "c": 0,
+              "d": 20
+            }
+          ]
+        }
+      },
+      {
+        "button": 11,
+        "lua": "Bless",
+        "text": "Bless",
+        "help": "Pay 50 gold: a monk comes to the abbey.",
+        "icon": 49
+      }
+    ]
+  }
+}

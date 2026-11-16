@@ -1,0 +1,13 @@
+{
+  "name": "Wololoader Base",
+  "version": "1.0",
+  "author": "Wololoader",
+  "description": "Wololoader's own gameplay and UI features. Turn the whole mod off, or set single features to false below.",
+  "features": {
+    "popcap_1000": true,
+    "selection_250": true,
+    "borderless": true,
+    "formations_tab": true,
+    "monk_autoconvert": false
+  }
+}

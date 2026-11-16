@@ -1,0 +1,1692 @@
+/* ==========================================================================
+   Scriptorium v2 — Age of Empires II HD Authentic Game Stylesheet
+   Designed around Age of Empires II HD 5.8 art, fonts, and dialog aesthetics.
+   Zero AI slop: no pill badges, no SaaS icons, no drop shadows, no rounded corners.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   Game Fonts (Loaded at runtime from /asset/fonts/ with graceful fallbacks)
+   -------------------------------------------------------------------------- */
+@font-face {
+  font-family: 'AoE2-Blackletter';
+  src: url('/asset/fonts/lblack.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'AoE2-Georgia';
+  src: url('/asset/fonts/georgia.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'AoE2-Georgia';
+  src: url('/asset/fonts/georgiab.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'AoE2-Centaur';
+  src: url('/asset/fonts/centrg_.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'AoE2-Centaur';
+  src: url('/asset/fonts/centbd_.ttf') format('truetype');
+  font-weight: bold;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --------------------------------------------------------------------------
+   AoE2 Design Tokens
+   -------------------------------------------------------------------------- */
+:root {
+  /* Fonts */
+  --font-title: 'AoE2-Blackletter', 'Old English Text MT', Georgia, serif;
+  --font-serif: 'AoE2-Georgia', Georgia, 'Palatino Linotype', serif;
+  --font-body: 'AoE2-Centaur', 'AoE2-Georgia', Georgia, 'Palatino Linotype', serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+
+  /* AoE2 Wood Palette */
+  --wood-950: #0d0703;
+  --wood-900: #170d06;
+  --wood-850: #201309;
+  --wood-800: #29180c;
+  --wood-750: #331f10;
+  --wood-700: #3e2615;
+  --wood-600: #50331e;
+  --wood-border: #4a2f1a;
+  --wood-border-light: #7a5a3a;
+  --wood-border-dark: #100803;
+
+  /* AoE2 Parchment Palette */
+  --parch-light: #f7efe2;
+  --parch-base: #dfceb0;
+  --parch-dark: #caa980;
+  --parch-border: #876949;
+  --parch-border-dark: #5c432a;
+  --parch-border-light: #b39775;
+  --parch-card-bg: rgba(235, 221, 196, 0.85);
+
+  /* AoE2 Gold / Brass Accent */
+  --gold-highlight: #f8e8ba;
+  --gold-text: #cca85c;
+  --gold-border: #8f723c;
+
+  /* Functional Status Colors (Muted Historical Tints) */
+  --state-green: #22562c;
+  --state-green-border: #3d7d49;
+  --state-green-text: #dbf8de;
+  --state-red: #6e1c1c;
+  --state-red-border: #9b3939;
+  --state-red-text: #f8dede;
+
+  /* Text Colors */
+  --text-dark: #221207;
+  --text-dark-muted: #59422f;
+  --text-light: #eee3d0;
+  --text-light-dim: #b8a58e;
+}
+
+/* --------------------------------------------------------------------------
+   Reset & Base Layout
+   -------------------------------------------------------------------------- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-radius: 0 !important; /* Hard rule: NO rounded corners above 2px */
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-dark);
+  background-color: var(--wood-900);
+  background-image: url('/asset/textures/ui/main-menu/default/background.jpg');
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  padding: 10px 14px; /* Frames dialog against game background art */
+}
+
+/* Dense Scrollbars (AoE2 Wood & Parchment style) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--wood-900);
+  border: 1px solid var(--wood-border);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--wood-750);
+  border: 1px solid var(--wood-border-light);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--wood-600);
+}
+
+.workspace ::-webkit-scrollbar-track {
+  background: var(--parch-dark);
+  border: 1px solid var(--parch-border);
+}
+.workspace ::-webkit-scrollbar-thumb {
+  background: var(--parch-border);
+  border: 1px solid var(--parch-border-dark);
+}
+.workspace ::-webkit-scrollbar-thumb:hover {
+  background: var(--parch-border-dark);
+}
+
+/* --------------------------------------------------------------------------
+   Main Window Layout (Fit for 1280x820)
+   Framed inside the window with beveled wood borders
+   -------------------------------------------------------------------------- */
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  border: 2px solid #6b4d30;
+  outline: 1px solid #140b05;
+  box-shadow: 0 0 0 1px #3a2515, 0 8px 30px rgba(0, 0, 0, 0.75);
+  background: var(--wood-900);
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   Top Window Title Bar
+   -------------------------------------------------------------------------- */
+.window-title-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 42px;
+  padding: 0 16px;
+  background-color: var(--wood-900);
+  border-bottom: 2px solid var(--wood-border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
+  z-index: 20;
+}
+
+.window-title-left {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.window-app-crest {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: var(--wood-800);
+  border: 1px solid var(--gold-border);
+  color: var(--gold-highlight);
+  font-family: var(--font-title);
+  font-size: 17px;
+  font-weight: bold;
+  text-shadow: 1px 1px 0 #000;
+  vertical-align: middle;
+}
+
+.window-app-title {
+  font-family: var(--font-title);
+  font-size: 26px;
+  color: var(--gold-highlight);
+  text-shadow: 1px 1px 2px #000;
+  letter-spacing: 1px;
+  line-height: 1;
+}
+
+.window-app-subtitle {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+  color: var(--text-light-dim);
+  letter-spacing: 0.5px;
+}
+
+.window-title-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  color: var(--text-light-dim);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  display: inline-block;
+  background: #4caf50;
+  border: 1px solid #2e7d32;
+}
+.status-dot.connected {
+  background: #55b658;
+}
+
+.status-sep {
+  color: var(--wood-border);
+}
+
+.app-version {
+  color: var(--gold-text);
+  font-weight: bold;
+}
+
+/* --------------------------------------------------------------------------
+   Main Container (Sidebar + Big Parchment Workspace)
+   -------------------------------------------------------------------------- */
+.main-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   Sidebar (Installed Mods List)
+   -------------------------------------------------------------------------- */
+.sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background-color: #1a0f07;
+  border-right: 2px solid var(--wood-border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-top-bar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--wood-border);
+  background: #24150c;
+}
+
+.sidebar-heading {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--gold-text);
+}
+
+.sidebar-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--wood-border);
+  background: #170d06;
+}
+
+.sidebar-search {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--wood-border);
+  background: #170d06;
+}
+
+.search-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.search-input-wrapper input {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  background: #100804;
+  border: 1px solid;
+  border-color: #2e1c0f #5a3c22 #5a3c22 #2e1c0f;
+  color: var(--text-light);
+  font-family: var(--font-serif);
+  font-size: 12px;
+}
+
+.search-input-wrapper input:focus {
+  outline: 1px solid var(--gold-border);
+  border-color: var(--gold-border);
+}
+
+.btn-clear {
+  position: absolute;
+  right: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-light-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.btn-clear:hover {
+  color: #fff;
+}
+
+.mods-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+/* Mod Card in Sidebar (AoE2 Menu Button Bevel) */
+.mod-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  margin-bottom: 5px;
+  background-color: #27170d;
+  border: 1px solid;
+  border-color: #6b4d32 #120904 #120904 #6b4d32;
+  color: var(--text-light);
+  cursor: pointer;
+}
+
+.mod-card:hover {
+  background-color: #342013;
+  border-color: #8c6744 #120904 #120904 #8c6744;
+}
+
+.mod-card.active {
+  background-color: #150b05;
+  border-color: #120904 #8c6744 #8c6744 #120904;
+  color: var(--gold-highlight);
+}
+
+.mod-card-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #120803;
+  border: 1px solid #4a2f1a;
+  font-family: var(--font-title);
+  font-size: 17px;
+  color: var(--gold-text);
+  overflow: hidden;
+}
+
+.mod-card-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mod-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.mod-card-name {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mod-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-light-dim);
+  margin-top: 1px;
+}
+
+.status-dot-enabled {
+  width: 6px;
+  height: 6px;
+  background: #55b658;
+  display: inline-block;
+}
+.status-dot-disabled {
+  width: 6px;
+  height: 6px;
+  background: #757575;
+  display: inline-block;
+}
+
+/* --------------------------------------------------------------------------
+   Parchment Workspace (Right Column)
+   -------------------------------------------------------------------------- */
+.workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--parch-base);
+  background-image: url('/asset/textures/ui/tech-tree-parchment-drop-down-background.png');
+  background-repeat: repeat;
+  background-size: auto;
+  position: relative;
+}
+
+/* Empty State */
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.empty-state-card {
+  max-width: 520px;
+  padding: 30px 40px;
+  background-color: var(--parch-card-bg);
+  border: 2px solid;
+  border-color: var(--parch-border-dark) var(--parch-border-light) var(--parch-border-light) var(--parch-border-dark);
+  text-align: center;
+}
+
+.empty-title {
+  font-family: var(--font-title);
+  font-size: 38px;
+  color: var(--wood-800);
+  margin-bottom: 6px;
+}
+
+.empty-subtitle {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--wood-700);
+  margin-bottom: 14px;
+}
+
+.empty-desc {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text-dark-muted);
+  line-height: 1.5;
+  margin-bottom: 24px;
+}
+
+.empty-state-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+/* Mod Workspace */
+.mod-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Mod Header Bar */
+.mod-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #201309;
+  border-bottom: 2px solid var(--wood-border);
+  color: var(--text-light);
+  flex-shrink: 0;
+}
+
+.mod-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.mod-badge-container {
+  display: none; /* Text-first, dense layout */
+}
+
+.mod-header-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.mod-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mod-header-name {
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: bold;
+  color: var(--gold-highlight);
+  text-shadow: 1px 1px 0 #000;
+}
+
+.mod-ver-tag {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--gold-text);
+}
+
+.badge-unsaved {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  color: #ff5252;
+  text-shadow: 1px 1px 0 #000;
+}
+
+.mod-sub-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-light-dim);
+}
+
+.toggle-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--text-light);
+}
+
+.toggle-control input {
+  accent-color: var(--gold-border);
+  cursor: pointer;
+}
+
+.mod-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --------------------------------------------------------------------------
+   Navigation Tabs & Civ Selector (AoE2 Game Tab Bar)
+   -------------------------------------------------------------------------- */
+.nav-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 6px 16px 0 16px;
+  background-color: #170d06;
+  border-bottom: 2px solid var(--parch-border);
+  flex-shrink: 0;
+}
+
+.tabs-group {
+  display: flex;
+  gap: 2px;
+}
+
+/* Rectangular AoE2 Dialog Tabs */
+.nav-tab {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 7px 18px;
+  background-color: #26160c;
+  border: 1px solid var(--wood-border);
+  border-bottom: none;
+  color: var(--text-light-dim);
+  cursor: pointer;
+  position: relative;
+  top: 1px;
+}
+
+.nav-tab:hover {
+  background-color: #331f11;
+  color: var(--text-light);
+}
+
+.nav-tab.active {
+  background-color: var(--parch-base);
+  border: 1px solid var(--parch-border);
+  border-bottom: 2px solid var(--parch-base);
+  color: var(--text-dark);
+  font-weight: bold;
+  margin-bottom: -2px;
+  z-index: 2;
+}
+
+.civ-selector-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 4px;
+}
+
+.civ-select-label {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--text-light-dim);
+}
+
+.select-civ {
+  height: 26px;
+  padding: 0 6px;
+  background: #24150c;
+  border: 1px solid var(--wood-border);
+  color: var(--text-light);
+  font-family: var(--font-serif);
+  font-size: 12px;
+}
+
+/* --------------------------------------------------------------------------
+   Buttons (AoE2 HD Menu Button Style: Wood Bevel, Plain Rectangular)
+   -------------------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  padding: 5px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.btn-wood, .btn-secondary {
+  background-color: #2a180e;
+  border: 1px solid;
+  border-color: #725234 #120904 #120904 #725234;
+  color: var(--text-light);
+  text-shadow: 1px 1px 0 #000;
+}
+
+.btn-wood:hover, .btn-secondary:hover {
+  background-color: #382114;
+  border-color: #926b45 #120904 #120904 #926b45;
+  color: #fff;
+}
+
+.btn-wood:active, .btn-secondary:active {
+  background-color: #170d06;
+  border-color: #120904 #725234 #725234 #120904;
+}
+
+.btn-wood:disabled, .btn-secondary:disabled {
+  background-color: #180e07;
+  border-color: #331f11;
+  color: #554433;
+  cursor: not-allowed;
+  text-shadow: none;
+}
+
+.btn-save, .btn-gold {
+  background-color: #321e10;
+  border: 1px solid;
+  border-color: var(--gold-border) #120904 #120904 var(--gold-border);
+  color: var(--gold-highlight);
+  text-shadow: 1px 1px 0 #000;
+}
+
+.btn-save:hover, .btn-gold:hover {
+  background-color: #3e2615;
+  border-color: var(--gold-highlight) #120904 #120904 var(--gold-highlight);
+  color: #fff;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.btn-xs {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.kbd-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: #140b05;
+  border: 1px solid var(--wood-border);
+  padding: 1px 3px;
+  color: var(--text-light-dim);
+}
+
+/* --------------------------------------------------------------------------
+   Tab Views & Parchment Cards
+   -------------------------------------------------------------------------- */
+.tab-view {
+  display: none;
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px;
+}
+
+.tab-view.active {
+  display: flex;
+  flex-direction: column;
+}
+
+.view-scroll-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Parchment Card Container with Inset Engraved Bevel */
+.card-parchment {
+  background-color: var(--parch-card-bg);
+  border: 1px solid;
+  border-color: var(--parch-border-dark) var(--parch-border-light) var(--parch-border-light) var(--parch-border-dark);
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(185, 155, 115, 0.35);
+  border-bottom: 1px solid var(--parch-border);
+}
+
+.card-title {
+  font-family: var(--font-serif);
+  font-size: 13px;
+  font-weight: bold;
+  color: var(--wood-900);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.card-hint {
+  font-size: 11px;
+  color: var(--text-dark-muted);
+}
+
+.card-body {
+  padding: 10px 12px;
+}
+
+/* Form Controls (Rectangular, Inset-beveled) */
+.form-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.form-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.form-group label {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--wood-900);
+}
+
+.required {
+  color: var(--state-red);
+}
+
+.form-input, .form-select, .form-textarea {
+  background-color: #fbf7ee;
+  border: 1px solid;
+  border-color: #5d432b #a89073 #a89073 #5d432b;
+  color: var(--text-dark);
+  font-family: var(--font-serif);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  outline: 1px solid var(--wood-700);
+  border-color: var(--wood-700);
+}
+
+.input-with-button {
+  display: flex;
+  gap: 4px;
+}
+.input-with-button input {
+  flex: 1;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.mt-3 { margin-top: 8px; }
+.mt-4 { margin-top: 12px; }
+.p-0 { padding: 0 !important; }
+.p-3 { padding: 8px 12px; }
+.border-bottom { border-bottom: 1px solid var(--parch-border); }
+
+/* --------------------------------------------------------------------------
+   Overview View (Civilization Cards Grid)
+   -------------------------------------------------------------------------- */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-weight: bold;
+  text-transform: uppercase;
+  color: var(--wood-900);
+  letter-spacing: 0.5px;
+}
+
+.section-subtitle {
+  font-size: 11px;
+  color: var(--text-dark-muted);
+}
+
+.civs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.civ-card {
+  background: var(--parch-card-bg);
+  border: 1px solid;
+  border-color: var(--parch-border-dark) var(--parch-border-light) var(--parch-border-light) var(--parch-border-dark);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.civ-card:hover {
+  border-color: var(--wood-border-light);
+}
+
+.civ-card.active {
+  border: 2px solid var(--wood-border);
+  background: rgba(225, 210, 185, 0.95);
+}
+
+.civ-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.civ-card-name {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--wood-900);
+}
+
+.civ-card-dat {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dark-muted);
+}
+
+.civ-base-tag {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-weight: bold;
+  padding: 2px 6px;
+  background: var(--wood-900);
+  border: 1px solid var(--wood-border);
+  color: var(--gold-highlight);
+}
+
+.civ-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 4px 0;
+}
+
+.civ-meta-tag {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.05);
+  border: 1px solid var(--parch-border);
+  color: var(--text-dark);
+}
+
+.civ-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* --------------------------------------------------------------------------
+   Identity View (Description Editor & AI Names)
+   -------------------------------------------------------------------------- */
+.desc-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.pane-label {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-weight: bold;
+  color: var(--wood-900);
+  margin-bottom: 4px;
+}
+
+.desc-textarea {
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.editor-quick-inserts {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.btn-tag {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: #ecdcc3;
+  border: 1px solid;
+  border-color: #b59b7b #5a3c22 #5a3c22 #b59b7b;
+  color: var(--wood-900);
+  cursor: pointer;
+}
+.btn-tag:hover {
+  background: #dfceb0;
+}
+
+.desc-preview-box {
+  background: #fbf7ee;
+  border: 1px solid;
+  border-color: #5d432b #a89073 #a89073 #5d432b;
+  padding: 10px 14px;
+  height: 180px;
+  overflow-y: auto;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dark);
+  white-space: pre-wrap;
+}
+
+/* AI Names Tags (Rectangular Medieval Nameplates) */
+.chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+  padding: 6px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--parch-border);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  background: #e2d1b6;
+  border: 1px solid;
+  border-color: #bfa583 #573a21 #573a21 #bfa583;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  color: var(--text-dark);
+}
+
+.btn-chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--state-red);
+  font-weight: bold;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.btn-chip-remove:hover {
+  color: #000;
+}
+
+.add-chip-row {
+  display: flex;
+  gap: 6px;
+}
+.add-chip-row input {
+  flex: 1;
+}
+
+/* Audio & SLP Asset Box */
+.asset-picker-box {
+  background: #ecdcc3;
+  border: 1px solid;
+  border-color: var(--parch-border-dark) var(--parch-border-light) var(--parch-border-light) var(--parch-border-dark);
+  padding: 10px 12px;
+}
+
+.asset-title {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--wood-900);
+}
+
+.asset-desc {
+  font-size: 11px;
+  color: var(--text-dark-muted);
+  margin: 2px 0 6px 0;
+}
+
+.asset-file-status {
+  padding: 4px 6px;
+  background: #fbf7ee;
+  border: 1px solid var(--parch-border);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.asset-btn-row {
+  display: flex;
+  gap: 6px;
+}
+
+/* --------------------------------------------------------------------------
+   Bonuses View (Presets & Effects Table)
+   -------------------------------------------------------------------------- */
+.presets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
+}
+
+.preset-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1px solid;
+  border-color: var(--parch-border-dark) var(--parch-border-light) var(--parch-border-light) var(--parch-border-dark);
+}
+
+.preset-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.preset-checkbox {
+  accent-color: var(--wood-800);
+}
+
+.preset-title {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  color: var(--text-dark);
+}
+
+.preset-input-wrap input {
+  width: 55px;
+  padding: 2px 4px;
+  text-align: right;
+}
+
+/* Effects Data Table (AoE2 HD Historical Table Style) */
+.effects-table-wrapper {
+  overflow-x: auto;
+  border: 1px solid var(--parch-border);
+}
+
+.effects-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.effects-table thead th {
+  background: #24140a;
+  color: var(--text-light);
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+  padding: 6px 8px;
+  border-right: 1px solid var(--wood-border);
+  text-align: left;
+}
+
+.effects-table tbody td {
+  padding: 4px 6px;
+  background: #fbf7ee;
+  border: 1px solid var(--parch-border);
+}
+
+.effects-table tbody tr:nth-child(even) td {
+  background: #f3ecde;
+}
+
+.effects-table select, .effects-table input {
+  width: 100%;
+  padding: 2px 4px;
+  font-size: 11px;
+  background: #fff;
+  border: 1px solid var(--parch-border);
+}
+
+.effects-help-box {
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--parch-border);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.help-title {
+  font-family: var(--font-serif);
+  font-weight: bold;
+  color: var(--wood-900);
+  margin-right: 4px;
+}
+
+.table-empty-msg {
+  padding: 20px;
+  text-align: center;
+  font-style: italic;
+  color: var(--text-dark-muted);
+}
+
+/* --------------------------------------------------------------------------
+   Units View (Split Virtualized List & Stat Overrides Panel)
+   Row height matches JS virtualizer: exactly 44px
+   -------------------------------------------------------------------------- */
+.units-split-layout {
+  display: flex;
+  gap: 12px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.units-list-panel {
+  width: 320px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--parch-card-bg);
+  border: 1px solid;
+  border-color: var(--parch-border-dark) var(--parch-border-light) var(--parch-border-light) var(--parch-border-dark);
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--parch-border);
+  background: rgba(0, 0, 0, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.units-filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.virtual-scroll-viewport {
+  flex: 1;
+  overflow-y: auto;
+  position: relative;
+}
+
+.virtual-phantom-spacer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.virtual-rows-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.unit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  height: 44px; /* Matches state.unitsVirtual.rowHeight */
+  border-bottom: 1px solid var(--parch-border);
+  cursor: pointer;
+  font-size: 12px;
+  background: #fbf7ee;
+}
+
+.unit-row:hover {
+  background: #f0e4cb;
+}
+
+.unit-row.selected {
+  background: #24140a;
+  color: var(--gold-highlight);
+  border-color: var(--wood-border);
+}
+
+.unit-row-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.unit-row-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  width: 38px;
+  flex-shrink: 0;
+  color: var(--text-dark-muted);
+}
+.unit-row.selected .unit-row-id {
+  color: var(--gold-text);
+}
+
+.unit-row-names {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.unit-row-name {
+  font-family: var(--font-serif);
+  font-size: 12px;
+  font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.unit-row-internal {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dark-muted);
+  line-height: 1.2;
+}
+.unit-row.selected .unit-row-internal {
+  color: var(--text-light-dim);
+}
+
+.badge-modified {
+  font-family: var(--font-serif);
+  font-size: 10px;
+  padding: 1px 4px;
+  background: var(--wood-800);
+  border: 1px solid var(--gold-border);
+  color: var(--gold-highlight);
+}
+
+/* Unit Stat Overrides Detail Panel */
+.unit-detail-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: var(--parch-card-bg);
+  border: 1px solid;
+  border-color: var(--parch-border-dark) var(--parch-border-light) var(--parch-border-light) var(--parch-border-dark);
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.panel-empty-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dark-muted);
+  text-align: center;
+  gap: 6px;
+}
+
+.unit-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--parch-border);
+  padding-bottom: 10px;
+}
+
+.unit-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.unit-detail-name {
+  font-family: var(--font-serif);
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--wood-900);
+}
+
+.unit-id-tag {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--wood-700);
+}
+
+.unit-meta-row {
+  font-size: 11px;
+  color: var(--text-dark-muted);
+  margin-top: 2px;
+}
+
+.stats-table-header {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 60px;
+  gap: 8px;
+  padding: 6px 8px;
+  background: #24140a;
+  color: var(--text-light);
+  font-family: var(--font-serif);
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+  border: 1px solid var(--wood-border);
+}
+
+.stats-fields-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--parch-border);
+  border-top: none;
+}
+
+.stat-field-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 60px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 8px;
+  background: #fbf7ee;
+  border-bottom: 1px solid var(--parch-border);
+  font-size: 12px;
+}
+
+.stat-field-row:nth-child(even) {
+  background: #f4ecdf;
+}
+
+.stat-field-row.is-override {
+  background: #fef7db;
+  border-left: 3px solid var(--gold-border);
+  font-weight: bold;
+}
+
+.stat-field-row input {
+  padding: 2px 4px;
+}
+
+/* --------------------------------------------------------------------------
+   Tech Tree View (Techs & Units 3-State Segmented Buttons)
+   -------------------------------------------------------------------------- */
+.techtree-split-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.techtree-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.segmented-filter {
+  display: flex;
+  gap: 2px;
+}
+
+.seg-btn {
+  font-family: var(--font-serif);
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--wood-800);
+  border: 1px solid var(--wood-border);
+  color: var(--text-light-dim);
+  cursor: pointer;
+}
+
+.seg-btn.active {
+  background: var(--parch-base);
+  border-color: var(--parch-border);
+  color: var(--text-dark);
+  font-weight: bold;
+}
+
+.techtree-items-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.tt-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--parch-border);
+  background: #fbf7ee;
+  font-size: 12px;
+}
+
+.tt-row:nth-child(even) {
+  background: #f4ecdf;
+}
+
+.tt-info {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.tt-name {
+  font-family: var(--font-serif);
+  font-weight: bold;
+  color: var(--text-dark);
+}
+
+.tt-id {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dark-muted);
+}
+
+/* 3-State Segmented Control: Base | Enabled | Disabled */
+.state-tri-toggle {
+  display: flex;
+  gap: 1px;
+  background: var(--wood-900);
+  border: 1px solid var(--wood-border);
+  padding: 1px;
+}
+
+.state-tri-btn {
+  font-family: var(--font-serif);
+  font-size: 10px;
+  font-weight: bold;
+  padding: 2px 7px;
+  background: #2a180e;
+  border: 1px solid transparent;
+  color: var(--text-light-dim);
+  cursor: pointer;
+}
+
+.state-tri-btn:hover {
+  color: #fff;
+}
+
+.techtree-split-grid .search-input-wrapper input,
+.units-list-panel .search-input-wrapper input {
+  background-color: #fbf7ee;
+  border: 1px solid;
+  border-color: #5d432b #a89073 #a89073 #5d432b;
+  color: var(--text-dark);
+}
+
+.techtree-split-grid .search-input-wrapper input:focus,
+.units-list-panel .search-input-wrapper input:focus {
+  outline: 1px solid var(--wood-700);
+  border-color: var(--wood-700);
+}
+
+.state-tri-btn.active-base {
+  background: #50331e;
+  color: var(--gold-highlight);
+  border: 1px solid #8e6d47;
+  text-shadow: 1px 1px 0 #000;
+}
+
+.state-tri-btn.active-enabled {
+  background: var(--state-green);
+  color: var(--state-green-text);
+  border: 1px solid var(--state-green-border);
+  text-shadow: 1px 1px 0 #000;
+}
+
+.state-tri-btn.active-disabled {
+  background: var(--state-red);
+  color: var(--state-red-text);
+  border: 1px solid var(--state-red-border);
+  text-shadow: 1px 1px 0 #000;
+}
+
+/* --------------------------------------------------------------------------
+   Modal Dialogs (Authentic AoE2 Beveled Wood Frame)
+   -------------------------------------------------------------------------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 6, 3, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.modal-dialog {
+  width: 520px;
+  max-width: 90vw;
+  background: var(--parch-base);
+  background-image: url('/asset/textures/ui/tech-tree-parchment-drop-down-background.png');
+  border: 2px solid;
+  border-color: var(--wood-border-light) var(--wood-border-dark) var(--wood-border-dark) var(--wood-border-light);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #1c0e06;
+  border-bottom: 2px solid var(--wood-border);
+}
+
+.modal-title {
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: bold;
+  color: var(--gold-highlight);
+  text-shadow: 1px 1px 0 #000;
+}
+
+.btn-modal-close {
+  background: transparent;
+  border: none;
+  color: var(--text-light-dim);
+  font-size: 20px;
+  cursor: pointer;
+}
+.btn-modal-close:hover {
+  color: #fff;
+}
+
+.modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.08);
+  border-top: 1px solid var(--parch-border);
+}
+
+/* --------------------------------------------------------------------------
+   Toast Notifications (Compact Rectangular Wood Boxes)
+   -------------------------------------------------------------------------- */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 200;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 260px;
+  padding: 8px 12px;
+  background: #1c0e06;
+  border: 1px solid var(--wood-border-light);
+  color: var(--text-light);
+  font-family: var(--font-serif);
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.toast-success {
+  border-left: 4px solid #55b658;
+}
+
+.toast-error {
+  border-left: 4px solid #e53935;
+}
+
+.btn-toast-close {
+  background: transparent;
+  border: none;
+  color: var(--text-light-dim);
+  cursor: pointer;
+  font-size: 14px;
+}
+.btn-toast-close:hover {
+  color: #fff;
+}

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="60 30 136 172" width="136" height="172">
+  <!-- Logo mark only (W + conversion waves), white: used as a mask by
+       tools/make_menu_icon.py to draw it as rusty metal on the Mods button. -->
+  <g fill="none" stroke="#fff" stroke-linecap="round">
+    <path d="M100 86 Q128 62 156 86" stroke-width="11"/>
+    <path d="M84 66 Q128 30 172 66" stroke-width="10"/>
+  </g>
+  <path d="M66 102 H98 L112 160 L128 116 L144 160 L158 102 H190 L158 198 H132 L128 184 L124 198 H98 Z" fill="#fff"/>
+</svg>

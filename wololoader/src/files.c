@@ -1,0 +1,451 @@
+// File redirection: patches the exe's file imports (CreateFileA/W,
+// FindFirstFileA, GetFileAttributesA) so that
+//  1. resources\_common\dat\empires2_x2_p1.dat opens wololoader\cache\ (built dat),
+//  2. names registered with wl_add_redirect (civ sound / interface art) open the mod file,
+//  3. asset override: any game file <game>\resources\X opens
+//     <mod>\resources\X when an enabled mod ships that file.
+//     The mod folder mirrors the game's resources\ tree. If several mods ship
+//     the same file, the mod that comes later in the mods list wins.
+#include "wololoader.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <wchar.h>
+
+typedef HANDLE (WINAPI *CreateFileA_t)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+typedef HANDLE (WINAPI *CreateFileW_t)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+static CreateFileA_t g_real_a;
+static CreateFileW_t g_real_w;
+
+static const char *k_redirect[] = { "empires2_x2_p1.dat" };
+
+// Extra file-name -> absolute path redirects registered by other modules
+// (e.g. civs.c: game_b35.slp -> the mod's interface art).
+#define MAX_EXTRA 64
+static struct { char name[64]; char path[MAX_PATH]; } g_extra[MAX_EXTRA];
+static int g_extra_count;
+
+void wl_add_redirect(const char *file_name, const char *path) {
+    if (g_extra_count >= MAX_EXTRA) return;
+    lstrcpynA(g_extra[g_extra_count].name, file_name, sizeof g_extra[0].name);
+    lstrcpynA(g_extra[g_extra_count].path, path, sizeof g_extra[0].path);
+    g_extra_count++;
+    wl_log("redirect rule: %s -> %s", file_name, path);
+}
+
+// ---- Asset override index -------------------------------------------------
+// Built once in wl_install_file_hooks (DllMain; only kernel32 + our own CRT are
+// used, which is safe there). Key = lower-case path relative to the resources
+// folder, backslash separators, e.g. "_common\\drs\\graphics\\123.slp".
+// Open-addressing hash table, FNV-1a, size is a power of two.
+typedef struct { char *key; char *path; } WlAsset;
+static WlAsset *g_assets;
+static unsigned g_asset_cap, g_asset_count;
+
+static unsigned fnv1a(const char *s) {
+    unsigned h = 2166136261u;
+    for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+    return h;
+}
+
+// Lower-case and turn '/' into '\\' (in place).
+static void normalize(char *s) {
+    for (; *s; s++) {
+        if (*s == '/') *s = '\\';
+        else if (*s >= 'A' && *s <= 'Z') *s += 32;
+    }
+}
+
+static WlAsset *asset_slot(const char *key) {
+    if (!g_asset_cap) return NULL;
+    unsigned i = fnv1a(key) & (g_asset_cap - 1);
+    while (g_assets[i].key && strcmp(g_assets[i].key, key) != 0) i = (i + 1) & (g_asset_cap - 1);
+    return &g_assets[i];
+}
+
+static void asset_put(const char *key, const char *path) {
+    if (g_asset_count * 2 >= g_asset_cap) {           // keep load factor < 0.5
+        unsigned old_cap = g_asset_cap;
+        WlAsset *old = g_assets;
+        g_asset_cap = old_cap ? old_cap * 2 : 256;
+        g_assets = calloc(g_asset_cap, sizeof *g_assets);
+        g_asset_count = 0;
+        for (unsigned i = 0; i < old_cap; i++)
+            if (old[i].key) { *asset_slot(old[i].key) = old[i]; g_asset_count++; }
+        free(old);
+    }
+    WlAsset *a = asset_slot(key);
+    if (a->key) { free(a->path); a->path = _strdup(path); return; }   // later mod wins
+    a->key = _strdup(key);
+    a->path = _strdup(path);
+    g_asset_count++;
+}
+
+// Walk <dir> recursively; `rel` is the key prefix ("" at resources\ itself).
+static void index_dir(const char *dir, const char *rel, int depth) {
+    if (depth > 12) return;
+    char pattern[MAX_PATH];
+    snprintf(pattern, MAX_PATH, "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        char full[MAX_PATH], key[MAX_PATH];
+        snprintf(full, MAX_PATH, "%s\\%s", dir, fd.cFileName);
+        snprintf(key, MAX_PATH, "%s%s%s", rel, rel[0] ? "\\" : "", fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) index_dir(full, key, depth + 1);
+        else { normalize(key); asset_put(key, full); }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static void build_asset_index(void) {
+    // Wololoader's own art first (e.g. the main-menu Mods button with our logo,
+    // made by tools/make_menu_icon.py at install). Mods are indexed after it,
+    // and later entries win, so a mod can still replace these files.
+    char own[MAX_PATH];
+    snprintf(own, MAX_PATH, "%s\\resources", g_wl.root);
+    index_dir(own, "", 0);
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        const WlMod *m = &g_wl.mods[i];
+        if (!m->enabled) continue;
+        char res[MAX_PATH];
+        snprintf(res, MAX_PATH, "%s\\resources", m->dir);
+        unsigned before = g_asset_count;
+        index_dir(res, "", 0);
+        if (g_asset_count != before) wl_log("asset override: %s ships %u file(s)", m->id, g_asset_count - before);
+    }
+    wl_log("asset override: %u file(s) indexed", g_asset_count);
+}
+
+// If `path` points into a resources\ folder of the game and a mod overrides
+// that file, copy the mod file's path to `out`.
+static BOOL asset_override(const char *path, char *out) {
+    if (!g_asset_count) return FALSE;
+    char low[MAX_PATH];
+    lstrcpynA(low, path, MAX_PATH);
+    normalize(low);
+    // Never redirect files that already live in wololoader\ (mods, cache).
+    if (strstr(low, "\\wololoader\\")) return FALSE;
+    const char *rel = NULL;
+    if (strncmp(low, "resources\\", 10) == 0) rel = low + 10;
+    else if ((rel = strstr(low, "\\resources\\")) != NULL) rel += 11;
+    if (!rel) return FALSE;
+    while (rel[0] == '.' && rel[1] == '\\') rel += 2;   // "resources\.\x"
+    WlAsset *a = asset_slot(rel);
+    if (!a || !a->key) return FALSE;
+    lstrcpynA(out, a->path, MAX_PATH);
+    return TRUE;
+}
+
+// Real FindFirstFileA / GetFileAttributesA (the hooks below are defined later).
+typedef HANDLE (WINAPI *FindFirstFileA_t_fwd)(LPCSTR, LPWIN32_FIND_DATAA);
+static DWORD (WINAPI *g_real_attr_fwd)(LPCSTR);
+
+// ---- New files in folder listings -------------------------------------------
+// Overriding only replaces files the game already has. To let a mod ADD files
+// (a new random map script, a new AI), folder listings must show them too:
+// when the game enumerates <game>\resources\<dir>\<wildcard>, every indexed
+// mod file in <dir> that matches the wildcard and does not exist in the game
+// folder is appended after the real results. Opening it then goes through
+// asset_override like any other file. Nothing is written to the game folder.
+
+// Case-insensitive wildcard match with '*' and '?' (both strings lower-case).
+static BOOL glob_match(const char *p, const char *s) {
+    if (!*p) return !*s;
+    if (*p == '*') return glob_match(p + 1, s) || (*s && glob_match(p, s + 1));
+    if (*s && (*p == '?' || *p == *s)) return glob_match(p + 1, s + 1);
+    return FALSE;
+}
+
+// A listing we extend: the real search handle plus the mod files to append.
+// The HANDLE we give the game is a pointer to this struct; g_enums holds the
+// live ones so FindNextFileA/FindClose can tell ours from real handles.
+typedef struct {
+    HANDLE real;            // real search handle, NULL once exhausted / none
+    int count, pos;
+    WIN32_FIND_DATAA items[];
+} WlEnum;
+#define MAX_ENUMS 32
+static WlEnum *g_enums[MAX_ENUMS];
+
+static BOOL is_our_enum(HANDLE h) {
+    for (int i = 0; i < MAX_ENUMS; i++) if (g_enums[i] && (HANDLE)g_enums[i] == h) return TRUE;
+    return FALSE;
+}
+
+static FindFirstFileA_t_fwd g_real_find_fwd;  // set in wl_install_file_hooks
+
+// Build the list of extra mod files for `pattern`, or NULL when there are none.
+static WlEnum *collect_extras(const char *pattern) {
+    if (!g_asset_count || !strpbrk(pattern, "*?")) return NULL;
+    char low[MAX_PATH];
+    lstrcpynA(low, pattern, MAX_PATH);
+    normalize(low);
+    if (strstr(low, "\\wololoader\\")) return NULL;
+    char *slash = strrchr(low, '\\');
+    if (!slash) return NULL;
+    *slash = 0;
+    const char *spec = slash + 1;
+    char dir[MAX_PATH];                        // dir relative to resources, may be ""
+    if (strcmp(low, "resources") == 0) dir[0] = 0;
+    else if (strncmp(low, "resources\\", 10) == 0) lstrcpynA(dir, low + 10, MAX_PATH);
+    else {
+        const char *r = strstr(low, "\\resources");
+        if (!r || (r[10] && r[10] != '\\')) return NULL;
+        lstrcpynA(dir, r[10] ? r + 11 : "", MAX_PATH);
+    }
+    size_t dlen = strlen(dir);
+    // Original folder part of the pattern (game spelling) to test existence.
+    char orig_dir[MAX_PATH];
+    lstrcpynA(orig_dir, pattern, MAX_PATH);
+    char *os = strrchr(orig_dir, '\\'), *os2 = strrchr(orig_dir, '/');
+    if (os2 > os) os = os2;
+    if (os) *os = 0;
+
+    WlEnum *e = NULL;
+    for (unsigned i = 0; i < g_asset_cap; i++) {
+        const WlAsset *a = &g_assets[i];
+        if (!a->key) continue;
+        const char *name = a->key;
+        if (dlen) {
+            if (strncmp(name, dir, dlen) != 0 || name[dlen] != '\\') continue;
+            name += dlen + 1;
+        }
+        if (strchr(name, '\\') || !glob_match(spec, name)) continue;
+        char game_path[MAX_PATH];
+        snprintf(game_path, MAX_PATH, "%s\\%s", orig_dir, name);
+        if (g_real_attr_fwd(game_path) != INVALID_FILE_ATTRIBUTES) continue;  // already listed by the game
+        WIN32_FIND_DATAA fd;
+        HANDLE h = g_real_find_fwd(a->path, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        FindClose(h);
+        int n = e ? e->count : 0;
+        WlEnum *grown = realloc(e, sizeof *e + (n + 1) * sizeof(WIN32_FIND_DATAA));
+        if (!grown) break;
+        if (!e) { grown->real = NULL; grown->count = 0; grown->pos = 0; }
+        e = grown;
+        e->items[e->count++] = fd;
+    }
+    return e;
+}
+
+// Start a listing: `real` is what the game's own call returned.
+// Returns the handle to give the game (ours when we add files).
+static HANDLE start_enum(const char *pattern, HANDLE real, WIN32_FIND_DATAA *fd) {
+    WlEnum *e = collect_extras(pattern);
+    if (!e) return real;
+    int slot = -1;
+    for (int i = 0; i < MAX_ENUMS; i++) if (!g_enums[i]) { slot = i; break; }
+    if (slot < 0) { free(e); return real; }
+    wl_log("listing %s: +%d mod file(s)", pattern, e->count);
+    if (real != INVALID_HANDLE_VALUE) {
+        e->real = real;                       // the game already got the first real entry
+    } else {
+        *fd = e->items[e->pos++];             // empty folder in the game: start with ours
+    }
+    g_enums[slot] = e;
+    return (HANDLE)e;
+}
+
+// Returns TRUE and fills `out` when `path` should be redirected.
+static BOOL redirect_target(const char *path, char *out) {
+    const char *slash = strrchr(path, '\\');
+    const char *slash2 = strrchr(path, '/');
+    if (slash2 > slash) slash = slash2;
+    const char *file = slash ? slash + 1 : path;
+    for (size_t i = 0; i < sizeof k_redirect / sizeof *k_redirect; i++) {
+        if (_stricmp(file, k_redirect[i]) != 0) continue;
+        wl_civs_ensure();  // first open of the dat: build the cache now (not in DllMain)
+        snprintf(out, MAX_PATH, "%s\\cache\\%s", g_wl.root, k_redirect[i]);
+        return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    }
+    for (int i = 0; i < g_extra_count; i++) {
+        if (_stricmp(file, g_extra[i].name) != 0) continue;
+        lstrcpynA(out, g_extra[i].path, MAX_PATH);
+        return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    }
+    return asset_override(path, out);
+}
+
+// The SLP loader probes a file with FindFirstFileA before opening it
+// (0x824b71), so redirected files must be visible to the probe as well.
+typedef HANDLE (WINAPI *FindFirstFileA_t)(LPCSTR, LPWIN32_FIND_DATAA);
+static FindFirstFileA_t g_real_find;
+
+static HANDLE WINAPI hook_find_first_file_a(LPCSTR name, LPWIN32_FIND_DATAA fd) {
+    char alt[MAX_PATH];
+    if (name && !strchr(name, '*') && !strchr(name, '?') && redirect_target(name, alt)) {
+        HANDLE h = g_real_find(alt, fd);
+        wl_log("redirect probe %s -> %s (%s)", name, alt, h != INVALID_HANDLE_VALUE ? "found" : "missing");
+        if (h != INVALID_HANDLE_VALUE) {
+            // Report the name the game asked for, not the mod's file name.
+            const char *s = strrchr(name, '\\');
+            lstrcpynA(fd->cFileName, s ? s + 1 : name, MAX_PATH);
+        }
+        return h;
+    }
+    HANDLE h = g_real_find(name, fd);
+    if (name && strpbrk(name, "*?")) return start_enum(name, h, fd);
+    return h;
+}
+
+static BOOL WINAPI hook_find_next_file_a(HANDLE h, LPWIN32_FIND_DATAA fd) {
+    if (!is_our_enum(h)) return FindNextFileA(h, fd);
+    WlEnum *e = (WlEnum *)h;
+    if (e->real) {
+        if (FindNextFileA(e->real, fd)) return TRUE;
+        FindClose(e->real);                   // real results done, now ours
+        e->real = NULL;
+    }
+    if (e->pos < e->count) { *fd = e->items[e->pos++]; return TRUE; }
+    SetLastError(ERROR_NO_MORE_FILES);
+    return FALSE;
+}
+
+static BOOL WINAPI hook_find_close(HANDLE h) {
+    for (int i = 0; i < MAX_ENUMS; i++) {
+        if (!g_enums[i] || (HANDLE)g_enums[i] != h) continue;
+        if (g_enums[i]->real) FindClose(g_enums[i]->real);
+        free(g_enums[i]);
+        g_enums[i] = NULL;
+        return TRUE;
+    }
+    return FindClose(h);
+}
+
+// The static CRT (_findfirst, stat) uses FindFirstFileExA.
+typedef HANDLE (WINAPI *FindFirstFileExA_t)(LPCSTR, FINDEX_INFO_LEVELS, LPVOID, FINDEX_SEARCH_OPS, LPVOID, DWORD);
+static FindFirstFileExA_t g_real_find_ex;
+
+static HANDLE WINAPI hook_find_first_file_ex_a(LPCSTR name, FINDEX_INFO_LEVELS lvl, LPVOID data,
+                                               FINDEX_SEARCH_OPS op, LPVOID filter, DWORD flags) {
+    char alt[MAX_PATH];
+    if (name && !strpbrk(name, "*?") && redirect_target(name, alt)) {
+        HANDLE h = g_real_find_ex(alt, lvl, data, op, filter, flags);
+        if (h != INVALID_HANDLE_VALUE) {
+            const char *s = strrchr(name, '\\');
+            lstrcpynA(((WIN32_FIND_DATAA *)data)->cFileName, s ? s + 1 : name, MAX_PATH);
+        }
+        return h;
+    }
+    HANDLE h = g_real_find_ex(name, lvl, data, op, filter, flags);
+    // Only plain name searches get mod files (not "directories only").
+    if (name && op == FindExSearchNameMatch && strpbrk(name, "*?"))
+        return start_enum(name, h, (WIN32_FIND_DATAA *)data);
+    return h;
+}
+
+// Existence checks (the game asks before loading some files).
+typedef DWORD (WINAPI *GetFileAttributesA_t)(LPCSTR);
+static GetFileAttributesA_t g_real_attr;
+
+static DWORD WINAPI hook_get_file_attributes_a(LPCSTR name) {
+    char alt[MAX_PATH];
+    if (name && redirect_target(name, alt)) return g_real_attr(alt);
+    return g_real_attr(name);
+}
+
+static HANDLE WINAPI hook_create_file_a(LPCSTR name, DWORD acc, DWORD share, LPSECURITY_ATTRIBUTES sa,
+                                        DWORD disp, DWORD flags, HANDLE tmpl) {
+    char alt[MAX_PATH];
+    if (name && !(acc & GENERIC_WRITE) && redirect_target(name, alt)) {
+        wl_log("redirect %s -> %s", name, alt);
+        name = alt;
+    }
+    return g_real_a(name, acc, share, sa, disp, flags, tmpl);
+}
+
+static HANDLE WINAPI hook_create_file_w(LPCWSTR name, DWORD acc, DWORD share, LPSECURITY_ATTRIBUTES sa,
+                                        DWORD disp, DWORD flags, HANDLE tmpl) {
+    char narrow[MAX_PATH * 2], alt[MAX_PATH];
+    WCHAR walt[MAX_PATH];
+    if (name && !(acc & GENERIC_WRITE) &&
+        WideCharToMultiByte(CP_UTF8, 0, name, -1, narrow, sizeof narrow, NULL, NULL) &&
+        redirect_target(narrow, alt)) {
+        wl_log("redirect %s -> %s", narrow, alt);
+        MultiByteToWideChar(CP_UTF8, 0, alt, -1, walt, MAX_PATH);
+        name = walt;
+    }
+    return g_real_w(name, acc, share, sa, disp, flags, tmpl);
+}
+
+// UI textures (main menu buttons etc.) are not opened with CreateFile by the
+// exe but loaded by d3dx9_43.dll (its own file calls, not our IAT hooks):
+// the exe imports D3DXCreateTextureFromFileExA (14 args, stdcall). Swap the
+// path for a mod/loader override and pass everything else through.
+typedef long (WINAPI *D3DXTexEx_t)(void *dev, const char *file, unsigned w, unsigned h, unsigned mips,
+                                    DWORD usage, int fmt, int pool, DWORD filter, DWORD mipfilter,
+                                    DWORD colorkey, void *info, void *palette, void **tex);
+static D3DXTexEx_t g_real_texex;
+static long WINAPI hook_d3dx_tex_ex(void *dev, const char *file, unsigned w, unsigned h, unsigned mips,
+                                    DWORD usage, int fmt, int pool, DWORD filter, DWORD mipfilter,
+                                    DWORD colorkey, void *info, void *palette, void **tex) {
+    char over[MAX_PATH];
+    if (file && asset_override(file, over)) file = over;
+    return g_real_texex(dev, file, w, h, mips, usage, fmt, pool, filter, mipfilter, colorkey, info, palette, tex);
+}
+
+// Replace one import of the main exe; returns the original function.
+static void *patch_iat(const char *dll, const char *func, void *hook) {
+    BYTE *base = (BYTE *)GetModuleHandleA(NULL);
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+    IMAGE_DATA_DIRECTORY dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    for (IMAGE_IMPORT_DESCRIPTOR *d = (void *)(base + dir.VirtualAddress); d->Name; d++) {
+        if (_stricmp((char *)(base + d->Name), dll) != 0) continue;
+        IMAGE_THUNK_DATA *names = (void *)(base + d->OriginalFirstThunk);
+        IMAGE_THUNK_DATA *slots = (void *)(base + d->FirstThunk);
+        for (; names->u1.AddressOfData; names++, slots++) {
+            if (IMAGE_SNAP_BY_ORDINAL(names->u1.Ordinal)) continue;
+            IMAGE_IMPORT_BY_NAME *ibn = (void *)(base + names->u1.AddressOfData);
+            if (strcmp((char *)ibn->Name, func) != 0) continue;
+            DWORD old;
+            void *orig = (void *)slots->u1.Function;
+            VirtualProtect(&slots->u1.Function, 4, PAGE_READWRITE, &old);
+            slots->u1.Function = (DWORD)hook;
+            VirtualProtect(&slots->u1.Function, 4, old, &old);
+            return orig;
+        }
+    }
+    return NULL;
+}
+
+// Vanilla Mode: only Wololoader's own UI art (the Mods button image) through the
+// D3DX texture import; no mod files, no dat redirect, no file listing changes.
+void wl_install_ui_textures_only(void) {
+    char own[MAX_PATH];
+    snprintf(own, MAX_PATH, "%s\\resources", g_wl.root);
+    index_dir(own, "", 0);
+    if (g_asset_count)
+        g_real_texex = patch_iat("d3dx9_43.dll", "D3DXCreateTextureFromFileExA", hook_d3dx_tex_ex);
+    wl_log("vanilla: own UI art %u file(s), D3DX hook %s", g_asset_count, g_real_texex ? "ok" : "off");
+}
+
+void wl_install_file_hooks(void) {
+    build_asset_index();   // needs g_wl.mods: wl_scan_mods runs before us in DllMain
+    g_real_a = patch_iat("KERNEL32.dll", "CreateFileA", hook_create_file_a);
+    g_real_w = patch_iat("KERNEL32.dll", "CreateFileW", hook_create_file_w);
+    g_real_find = patch_iat("KERNEL32.dll", "FindFirstFileA", hook_find_first_file_a);
+    if (!g_real_find) g_real_find = (FindFirstFileA_t)FindFirstFileA;
+    g_real_attr = patch_iat("KERNEL32.dll", "GetFileAttributesA", hook_get_file_attributes_a);
+    if (!g_real_attr) g_real_attr = (GetFileAttributesA_t)GetFileAttributesA;
+    g_real_attr_fwd = g_real_attr;
+    g_real_find_fwd = g_real_find;
+    if (g_asset_count) {
+        g_real_texex = patch_iat("d3dx9_43.dll", "D3DXCreateTextureFromFileExA", hook_d3dx_tex_ex);
+        wl_log("asset override: D3DX texture hook %s", g_real_texex ? "ok" : "missing");
+    }
+    // Listings: only hooked when some mod ships files, so without asset mods
+    // the game's folder enumeration stays completely untouched.
+    if (g_asset_count) {
+        g_real_find_ex = patch_iat("KERNEL32.dll", "FindFirstFileExA", hook_find_first_file_ex_a);
+        if (!g_real_find_ex) g_real_find_ex = (FindFirstFileExA_t)FindFirstFileExA;
+        patch_iat("KERNEL32.dll", "FindNextFileA", hook_find_next_file_a);
+        patch_iat("KERNEL32.dll", "FindClose", hook_find_close);
+    }
+    wl_log("file hooks: CreateFileA %s, CreateFileW %s", g_real_a ? "ok" : "missing",
+           g_real_w ? "ok" : "missing");
+    if (!g_real_a) g_real_a = (CreateFileA_t)CreateFileA;
+    if (!g_real_w) g_real_w = (CreateFileW_t)CreateFileW;
+}

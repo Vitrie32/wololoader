@@ -1,0 +1,21 @@
+LIBRARY version.dll
+EXPORTS
+  GetFileVersionInfoA=wl_GetFileVersionInfoA
+  GetFileVersionInfoByHandle=wl_GetFileVersionInfoByHandle
+  GetFileVersionInfoExA=wl_GetFileVersionInfoExA
+  GetFileVersionInfoExW=wl_GetFileVersionInfoExW
+  GetFileVersionInfoSizeA=wl_GetFileVersionInfoSizeA
+  GetFileVersionInfoSizeExA=wl_GetFileVersionInfoSizeExA
+  GetFileVersionInfoSizeExW=wl_GetFileVersionInfoSizeExW
+  GetFileVersionInfoSizeW=wl_GetFileVersionInfoSizeW
+  GetFileVersionInfoW=wl_GetFileVersionInfoW
+  VerFindFileA=wl_VerFindFileA
+  VerFindFileW=wl_VerFindFileW
+  VerInstallFileA=wl_VerInstallFileA
+  VerInstallFileW=wl_VerInstallFileW
+  VerLanguageNameA=wl_VerLanguageNameA
+  VerLanguageNameW=wl_VerLanguageNameW
+  VerQueryValueA=wl_VerQueryValueA
+  VerQueryValueW=wl_VerQueryValueW
+  Wololoader_GetModCount
+  Wololoader_GetVersion

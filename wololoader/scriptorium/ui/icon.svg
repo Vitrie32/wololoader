@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Wololoader logo: a heraldic shield with a gold "W" and the monk's
+       conversion waves ("wololo") rising from it. Readable down to 32 px. -->
+  <defs>
+    <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a3a1e"/>
+      <stop offset="1" stop-color="#2b1a0c"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe9a3"/>
+      <stop offset="0.55" stop-color="#e2b04a"/>
+      <stop offset="1" stop-color="#9c6b1c"/>
+    </linearGradient>
+  </defs>
+  <!-- shield -->
+  <path d="M128 14 L226 46 V122 C226 182 184 222 128 244 C72 222 30 182 30 122 V46 Z"
+        fill="url(#wood)" stroke="url(#gold)" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M128 34 L208 60 V122 C208 172 174 205 128 224 C82 205 48 172 48 122 V60 Z"
+        fill="none" stroke="#c9963a" stroke-opacity="0.45" stroke-width="3"/>
+  <!-- conversion waves -->
+  <g fill="none" stroke="#7fd3ff" stroke-linecap="round">
+    <path d="M100 86 Q128 62 156 86" stroke-width="7"/>
+    <path d="M84 70 Q128 34 172 70" stroke-width="6" stroke-opacity="0.75"/>
+  </g>
+  <!-- W -->
+  <path d="M70 104 H96 L112 168 L128 120 L144 168 L160 104 H186 L156 196 H134 L128 176 L122 196 H100 Z"
+        fill="url(#gold)" stroke="#3a2410" stroke-width="4" stroke-linejoin="round"/>
+</svg>

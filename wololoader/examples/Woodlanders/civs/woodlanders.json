@@ -1,0 +1,32 @@
+{
+  "name": "Woodlanders",
+  "dat_name": "Woodlanders",
+  "base": 4,
+  "description": "<b>Woodlanders<b> \nCavalry and economy civilization \n\n· Unique Unit: Axe Rider (Castle) \n· Lumberjacks work 15% faster \n· Start with +100 wood \n· Scout Cavalry +2 line of sight \n· Villagers have 30 HP \n\n<b>Team Bonus:<b> \nArchers +1 line of sight",
+  "ai_names": ["Old Birch", "Hilda Oakheart", "Sven Barkbeard", "Lady Willow", "Brother Acorn"],
+  "unique_unit": {
+    "copy_from": 38,
+    "name": "Axe Rider",
+    "help": "Heavy forest cavalry of the Woodlanders. Strong against buildings and infantry.",
+    "units": {
+      "hit_points": 110,
+      "line_of_sight": 6
+    },
+    "elite_units": {
+      "hit_points": 140
+    }
+  },
+  "effects": [
+    { "type": 1, "a": 1, "b": 1, "c": -1, "d": 100.0 },
+    { "type": 5, "a": 123, "b": -1, "c": 13, "d": 1.15 },
+    { "type": 5, "a": 218, "b": -1, "c": 13, "d": 1.15 },
+    { "type": 4, "a": 448, "b": -1, "c": 1, "d": 2.0 }
+  ],
+  "team_bonus_effects": [
+    { "type": 4, "a": -1, "b": 0, "c": 1, "d": 1.0 }
+  ],
+  "units": {
+    "83":  { "hit_points": 30 }, "293": { "hit_points": 30 },
+    "123": { "hit_points": 30 }, "218": { "hit_points": 30 }
+  }
+}
