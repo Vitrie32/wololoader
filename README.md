@@ -1,5 +1,7 @@
 # Wololoader
 
+**Website: https://wololoader.vercel.app** · [Download](../../releases/latest) · [Modding guide](MODDING.md)
+
 A mod loader for **Age of Empires II HD** (Steam, version 5.8). It runs as a `version.dll` next to the
 game and adds, without changing the game's files:
 
@@ -21,11 +23,14 @@ Download the setup for your system from the [Releases](../../releases) page.
 **Windows:** run `wololoader-windows-setup.exe`. It finds the game through Steam (or pick the
 folder with Browse) and installs. Uninstall with the same file.
 
-**Linux (Steam + Proton):**
+**Linux (Steam + Proton), one command:**
 
 ```bash
-sh wololoader-linux-setup.sh
+curl -fsSL https://wololoader.vercel.app/install.sh | sh
 ```
+
+or download `wololoader-linux-setup.sh` and run `sh wololoader-linux-setup.sh`
+(`wololoader/installer/get.sh` is the one-command script).
 
 Then add this to the game's launch options in Steam (right-click the game > Properties):
 
@@ -33,7 +38,8 @@ Then add this to the game's launch options in Steam (right-click the game > Prop
 WINEDLLOVERRIDES="version=n,b" %command%
 ```
 
-Options: a game folder as argument, `--no-examples`, `--uninstall`, `--yes`.
+Options: a game folder as argument, `--no-examples`, `--uninstall`, `--yes`
+(with the one-command install: `... | sh -s -- --no-examples`).
 
 Start the game: the main menu shows "Wololoader <version>", and the Mods button lists the mods.
 
