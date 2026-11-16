@@ -211,6 +211,59 @@ static int get_game(wchar_t *game) {
     return 1;
 }
 
+// ASLR: AoK HD.exe has DYNAMIC_BASE (DllCharacteristics 0x40) and relocations, so real Windows loads
+// it at a random address, while Wololoader patches fixed addresses of the 0x400000 image (Wine/Proton
+// always uses 0x400000). Install clears that one flag so Windows loads it at 0x400000 too; the first
+// time, the exe is copied to wololoader\backup\. Uninstall sets the flag again.
+// Returns 1 changed, 0 already as wanted, -1 error (err filled).
+static int exe_aslr(const wchar_t *game, int enable, wchar_t *err, size_t errcap) {
+    wchar_t exe[MAX_PATH];
+    _snwprintf(exe, MAX_PATH, L"%s\\%s", game, GAME_EXE);
+    exe[MAX_PATH - 1] = 0;
+    // 1. read the header (read-only: CopyFile below must be able to open the exe too)
+    HANDLE f = CreateFileW(exe, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        _snwprintf(err, errcap, L"Cannot open %s (error %lu).", exe, GetLastError());
+        return -1;
+    }
+    unsigned char h[1024];
+    DWORD got = 0;
+    BOOL rd = ReadFile(f, h, sizeof h, &got, NULL);
+    CloseHandle(f);
+    if (!rd || got < 0x200) { _snwprintf(err, errcap, L"Cannot read %s.", exe); return -1; }
+    DWORD pe = *(DWORD *)(h + 0x3c);
+    if (pe + 24 + 72 > got || memcmp(h + pe, "PE\0\0", 4) != 0 || *(WORD *)(h + pe + 24) != 0x10b) {
+        _snwprintf(err, errcap, L"%s is not the expected 32-bit game exe.", exe);
+        return -1;
+    }
+    DWORD at = pe + 24 + 70;                       // IMAGE_OPTIONAL_HEADER32.DllCharacteristics
+    WORD dc = *(WORD *)(h + at), want = enable ? (WORD)(dc | 0x40) : (WORD)(dc & ~0x40);
+    if (dc == want) return 0;
+    // 2. first change: keep a copy of the untouched exe
+    if (!enable) {
+        wchar_t bak[MAX_PATH];
+        _snwprintf(bak, MAX_PATH, L"%s\\wololoader\\backup\\%s", game, GAME_EXE);
+        bak[MAX_PATH - 1] = 0;
+        make_dirs_for(bak);
+        if (GetFileAttributesW(bak) == INVALID_FILE_ATTRIBUTES && !CopyFileW(exe, bak, TRUE)) {
+            _snwprintf(err, errcap, L"Cannot back up %s (error %lu).", exe, GetLastError());
+            return -1;
+        }
+    }
+    // 3. write the two bytes
+    f = CreateFileW(exe, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        _snwprintf(err, errcap, L"Cannot open %s for writing (error %lu).", exe, GetLastError());
+        return -1;
+    }
+    DWORD put = 0;
+    BOOL ok = SetFilePointer(f, (LONG)at, NULL, FILE_BEGIN) == at && WriteFile(f, &want, 2, &put, NULL) && put == 2;
+    DWORD e = GetLastError();
+    CloseHandle(f);
+    if (!ok) { _snwprintf(err, errcap, L"Cannot write %s (error %lu).", exe, e); return -1; }
+    return 1;
+}
+
 static void do_install(void) {
     wchar_t game[MAX_PATH];
     if (!get_game(game)) return;
@@ -242,6 +295,17 @@ static void do_install(void) {
         }
         written++;
     }
+    wchar_t err[600];
+    if (exe_aslr(game, 0, err, 600) < 0) {
+        wchar_t msg[800];
+        _snwprintf(msg, 800, L"The files are installed, but the game exe could not be prepared:\n%s\n\n"
+                             L"Without it Windows loads the game at a random address and Wololoader stays off. "
+                             L"Try running Setup as administrator.", err);
+        msg[799] = 0;
+        MessageBoxW(g_wnd, msg, APP_TITLE, MB_ICONERROR);
+        status(L"Installed, but the exe was not prepared.");
+        return;
+    }
     status(L"Installed: %d files (%d settings kept).", written, kept);
     MessageBoxW(g_wnd, L"Wololoader is installed.\n\nStart Age of Empires II HD: the main menu shows "
                        L"\"Wololoader " TEXT(WL_VERSION) L"\" and the Mods button opens the mod list.",
@@ -251,8 +315,14 @@ static void do_install(void) {
 static void do_uninstall(void) {
     wchar_t game[MAX_PATH];
     if (!get_game(game)) return;
-    if (MessageBoxW(g_wnd, L"Move version.dll and the wololoader folder (with all mods in it) to the Recycle Bin?",
+    if (MessageBoxW(g_wnd, L"Move version.dll and the wololoader folder (with all mods in it) to the Recycle Bin?\n\n"
+                       L"The game exe gets its original header flag back.",
                     APP_TITLE, MB_ICONQUESTION | MB_YESNO) != IDYES) return;
+    wchar_t err[600];
+    if (exe_aslr(game, 1, err, 600) < 0) {   // give the exe its ASLR flag back
+        MessageBoxW(g_wnd, err, APP_TITLE, MB_ICONERROR);
+        return;
+    }
     // SHFileOperation wants a double-NUL-terminated list
     wchar_t list[2 * MAX_PATH + 4] = { 0 };
     int n = _snwprintf(list, MAX_PATH, L"%s\\version.dll", game) + 1;

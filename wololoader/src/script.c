@@ -80,6 +80,7 @@ static int api_raw_is_enemy(lua_State *L);
 static int api_raw_units(lua_State *L);
 static int api_raw_cmd(lua_State *L);
 static int api_raw_selected(lua_State *L);
+static int api_raw_researched(lua_State *L);
 static int api_raw_time(lua_State *L);
 static int api_raw_ui_create(lua_State *L);
 static int api_raw_ui_set(lua_State *L);
@@ -496,6 +497,7 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_units);    lua_setfield(L, -2, "raw_units");
     lua_pushcfunction(L, api_raw_cmd);      lua_setfield(L, -2, "raw_cmd");
     lua_pushcfunction(L, api_raw_selected); lua_setfield(L, -2, "raw_selected");
+    lua_pushcfunction(L, api_raw_researched); lua_setfield(L, -2, "raw_researched");
     lua_pushcfunction(L, api_raw_time);     lua_setfield(L, -2, "raw_time");
     lua_pushcfunction(L, api_raw_ui_create);  lua_setfield(L, -2, "raw_ui_create");
     lua_pushcfunction(L, api_raw_ui_set);     lua_setfield(L, -2, "raw_ui_set");
@@ -537,6 +539,7 @@ static void push_units(lua_State *L, const WlUnitInfo *buf, int n) {
         lua_pushboolean(L, buf[i].building); lua_setfield(L, -2, "building");
         lua_pushinteger(L, buf[i].type);  lua_setfield(L, -2, "type");
         lua_pushinteger(L, buf[i].owner); lua_setfield(L, -2, "owner");
+        lua_pushboolean(L, buf[i].state == 2); lua_setfield(L, -2, "ready");
         lua_rawseti(L, -2, i + 1);
     }
 }
@@ -544,6 +547,14 @@ static WlUnitInfo g_ubuf[2048];
 static int api_raw_units(lua_State *L) {
     int n = g_game ? g_game->units((int)luaL_checkinteger(L, 1), g_ubuf, 2048) : 0;
     push_units(L, g_ubuf, n);
+    return 1;
+}
+// wl.raw_researched(pid) -> array of researched tech ids
+static int api_raw_researched(lua_State *L) {
+    static short ids[4096];
+    int n = (g_game && g_game->researched) ? g_game->researched((int)luaL_checkinteger(L, 1), ids, 4096) : 0;
+    lua_createtable(L, n, 0);
+    for (int i = 0; i < n; i++) { lua_pushinteger(L, ids[i]); lua_rawseti(L, -2, i + 1); }
     return 1;
 }
 static int api_raw_selected(lua_State *L) {
@@ -671,7 +682,7 @@ static const char k_prelude[] =
 "  local out = {}\n"
 "  for _, u in ipairs(wl.raw_units(self.Id)) do\n"
 "    local unit = { Id = u.id, X = u.x, Y = u.y, Class = u.class, ClassName = CLASS_NAME[u.class],\n"
-"      IsBuilding = u.building, Type = u.type, Owner = self }\n"
+"      IsBuilding = u.building, Built = u.building and u.ready, Type = u.type, Owner = self }\n"
 "    setmetatable(unit, Unit)\n"
 "    if (want and u.class == want) or (type(filter) == 'function' and filter(unit)) or filter == nil then\n"
 "      out[#out + 1] = unit\n"
@@ -691,7 +702,7 @@ static const char k_prelude[] =
 "  local out = {}\n"
 "  for _, u in ipairs(wl.raw_selected()) do\n"
 "    out[#out + 1] = setmetatable({ Id = u.id, X = u.x, Y = u.y, Class = u.class, ClassName = CLASS_NAME[u.class],\n"
-"      IsBuilding = u.building, Type = u.type, Owner = player(u.owner) }, Unit)\n"
+"      IsBuilding = u.building, Built = u.building and u.ready, Type = u.type, Owner = player(u.owner) }, Unit)\n"
 "  end\n"
 "  return out\n"
 "end\n"
@@ -710,9 +721,10 @@ static const char k_prelude[] =
 "end\n"
 "function Game.OnSecond(fn) return on('every_second', fn) end\n"
 "-- Polled events (checked once a second from the game's frame; reading only, MP safe):\n"
-"-- Game.OnAgeUp(fn(player, ageName)), Game.OnUnitCreated(fn(unit)), Game.OnUnitDied(fn(id, player))\n"
-"local watchers = { age = {}, born = {}, died = {} }\n"
-"local lastAge, lastUnits = {}, {}\n"
+"-- Game.OnAgeUp(fn(player, ageName)), Game.OnUnitCreated(fn(unit)), Game.OnUnitDied(fn(id, player)),\n"
+"-- Game.OnResearch(fn(player, techId)), Game.OnBuildingDone(fn(unit))\n"
+"local watchers = { age = {}, born = {}, died = {}, tech = {}, built = {} }\n"
+"local lastAge, lastUnits, lastTech, lastBuilt = {}, {}, {}, {}\n"
 "local function add(list, fn)\n"
 "  local c = { Connected = true }\n"
 "  function c:Disconnect() c.Connected = false end\n"
@@ -722,24 +734,38 @@ static const char k_prelude[] =
 "function Game.OnAgeUp(fn) return add(watchers.age, fn) end\n"
 "function Game.OnUnitCreated(fn) return add(watchers.born, fn) end\n"
 "function Game.OnUnitDied(fn) return add(watchers.died, fn) end\n"
-"wl.on('game_start', function() lastAge, lastUnits = {}, {} end)\n"
+"function Game.OnResearch(fn) return add(watchers.tech, fn) end\n"
+"function Game.OnBuildingDone(fn) return add(watchers.built, fn) end\n"
+"wl.on('game_start', function() lastAge, lastUnits, lastTech, lastBuilt = {}, {}, {}, {} end)\n"
 "wl.on('every_second', function()\n"
-"  local wantUnits = #watchers.born > 0 or #watchers.died > 0\n"
-"  if #watchers.age == 0 and not wantUnits then return end\n"
+"  local wantUnits = #watchers.born > 0 or #watchers.died > 0 or #watchers.built > 0\n"
+"  if #watchers.age == 0 and #watchers.tech == 0 and not wantUnits then return end\n"
 "  for _, p in ipairs(Game.Players()) do\n"
 "    local a = p.Age\n"
 "    if a then\n"
 "      if lastAge[p.Id] and a > lastAge[p.Id] then fire(watchers.age, p, AGES[a]) end\n"
 "      lastAge[p.Id] = a\n"
 "    end\n"
+"    if #watchers.tech > 0 then\n"
+"      local now, seen = {}, lastTech[p.Id]\n"
+"      for _, id in ipairs(wl.raw_researched(p.Id)) do\n"
+"        now[id] = true\n"
+"        if seen and not seen[id] then fire(watchers.tech, p, id) end\n"
+"      end\n"
+"      lastTech[p.Id] = now\n"
+"    end\n"
 "    if wantUnits then\n"
-"      local now, seen = {}, lastUnits[p.Id]\n"
+"      local now, seen, built, wasBuilt = {}, lastUnits[p.Id], {}, lastBuilt[p.Id]\n"
 "      for _, u in ipairs(p:Units()) do\n"
 "        now[u.Id] = true\n"
 "        if seen and not seen[u.Id] then fire(watchers.born, u) end\n"
+"        if u.Built then\n"
+"          built[u.Id] = true\n"
+"          if wasBuilt and not wasBuilt[u.Id] then fire(watchers.built, u) end\n"
+"        end\n"
 "      end\n"
 "      if seen then for id in pairs(seen) do if not now[id] then fire(watchers.died, id, p) end end end\n"
-"      lastUnits[p.Id] = now\n"
+"      lastUnits[p.Id], lastBuilt[p.Id] = now, built\n"
 "    end\n"
 "  end\n"
 "end)\n"

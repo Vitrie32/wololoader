@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.3"
+#define WOLOLOADER_VERSION "0.3.1"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -97,7 +97,7 @@ void wl_script_frame(DWORD now_ms);
 void wl_script_game_reset(DWORD now_ms);
 void wl_script_set_sound(void (*sound)(int id));
 // Read-only game state for Lua (gameapi.c; script.c uses it through this table)
-typedef struct { int id; float x, y; int cls; int building; int type; int owner; } WlUnitInfo;
+typedef struct { int id; float x, y; int cls; int building; int type; int owner; int state; } WlUnitInfo;  // state: [unit+0x4c], 2 = ready (a building: finished)
 typedef struct {
     int (*local_player)(void);
     int (*player_count)(void);
@@ -112,6 +112,7 @@ typedef struct {
     int (*selected)(WlUnitInfo *out, int max);   // the local player's selection (first 60)
     double (*game_time)(void);                   // game time in seconds, -1 = no game
     int (*set_age)(int pid, int age);
+    int (*researched)(int pid, short *out, int max);   // ids of the techs the player has researched
 } WlGameApi;
 void wl_script_set_game(const WlGameApi *api);
 const WlGameApi *wl_game_api(void);

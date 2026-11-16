@@ -3,7 +3,7 @@
 **Website: https://wololoader.vercel.app** · [Download](../../releases/latest) · [Modding guide](https://wololoader.vercel.app/guide/)
 
 A mod loader for **Age of Empires II HD** (Steam, version 5.8). It runs as a `version.dll` next to the
-game and adds, without changing the game's files:
+game and adds, without replacing the game's data files:
 
 - **Custom civilizations** (civ id 35 and up) with their own units, unique unit, techs, names and AI names.
 - **Unique buildings** with their own art, on a villager "Mod Buildings" page, with train / research /
@@ -21,7 +21,10 @@ developer panel: resources, ages, units).
 Download the setup for your system from the [Releases](../../releases) page.
 
 **Windows:** run `wololoader-windows-setup.exe`. It finds the game through Steam (or pick the
-folder with Browse) and installs. Uninstall with the same file.
+folder with Browse) and installs. Uninstall with the same file. The setup also turns off one flag
+in the header of `AoK HD.exe` (ASLR), so Windows loads the game at the fixed address Wololoader
+patches; the untouched exe is kept in `wololoader/backup/`, and Uninstall sets the flag back. If Steam
+updates or verifies the game, run the setup again.
 
 **Linux (Steam + Proton), one command:**
 

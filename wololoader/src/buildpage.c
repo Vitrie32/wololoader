@@ -67,13 +67,7 @@ static int is_mod_building(const BYTE *master) {
 }
 
 // page 0 = economy, 1 = military function. Returns 1 add, 0 skip, 2 economy's own else branch.
-static int g_diag;   // a few log lines per kind, to see the filter work in game
 int __cdecl wl_bp_accept(const BYTE *master, int page) {
-    if (master && *(const short *)(master + 0x10) >= 1300 && g_diag < 20) {
-        g_diag++;
-        wl_log("buildpage: filter page %d mods=%d unit %d type %d attr %d -> mod %d", page, g_mods_page,
-               *(const short *)(master + 0x10), master[4], master[0x97], is_mod_building(master));
-    }
     if (page == 0) {
         if (is_mod_building(master)) return 0;
         return master[0x97] == 2 ? 1 : 2;
@@ -112,22 +106,17 @@ static int has_mod_buildings(void *screen) {
     int count = *(short *)(s + 0xd74);
     BYTE **masters = *(BYTE ***)((char *)player + 0x14);
     int nmasters = *(int *)((char *)player + 0x10);
-    if (!list || !masters) { wl_log("buildpage: no build list"); return 0; }
-    int found = 0, maxid = -1;
+    if (!list || !masters) return 0;
     for (int i = 0; i < count; i++) {
         int id = *(short *)(list + i * 0x38 + 4);
-        if (id > maxid) maxid = id;
-        if (id >= 0 && id < nmasters && is_mod_building(masters[id])) found = 1;
+        if (id >= 0 && id < nmasters && is_mod_building(masters[id])) return 1;
     }
-    static int logged;
-    if (logged++ < 10) wl_log("buildpage: %d buildable, highest id %d, mod building %s", count, maxid, found ? "yes" : "no");
-    return found;
+    return 0;
 }
 
 static void __fastcall page_toggle(void *screen, void *edx) {
     (void)edx;
     int mode = *(int *)((char *)screen + 0x1288);
-    wl_log("buildpage: next page from mode %d (mods page %d)", mode, g_mods_page);
     if (mode == 3) {                                   // economy -> military
         g_mods_page = 0;
         mil_page(screen);
@@ -170,8 +159,6 @@ static void __fastcall add_repair_and_mods(void *screen, void *edx, DWORD sheet,
     (void)edx;
     AddButton_t add = (AddButton_t)0x6c9200;
     add(screen, sheet, slot, icon, cmd, z, h0, h1, h2, h3, h4, m1, z1, z2, z3, z4, z5);   // repair
-    static int seen;
-    if (seen++ < 5) wl_log("buildpage: villager panel (repair button added)");
     if (!has_mod_buildings(screen)) return;
     int ic = wl_icon_index("50721", "modbuildings");
     add(screen, sheet, WL_MODS_SLOT, ic >= 0 ? (DWORD)ic : 32, WL_MODS_CMD, 0,

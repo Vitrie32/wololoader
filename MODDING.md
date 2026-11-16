@@ -1,6 +1,6 @@
 # Wololoader Modding Guide
 
-Wololoader is a modular runtime mod loader and patcher for **Age of Empires II HD (Edition 5.8)** (`AoK HD.exe`, 32-bit). It hooks file operations and game routines via a `version.dll` proxy, allowing you to add **brand new civilizations** beyond the hardcoded 31-civ limit, customize unit stats, create unique bonuses and tech trees, replace or add game assets, script random maps and AIs, and raise the population cap to 1000 — all **without permanently modifying your original game files**.
+Wololoader is a modular runtime mod loader and patcher for **Age of Empires II HD (Edition 5.8)** (`AoK HD.exe`, 32-bit). It hooks file operations and game routines via a `version.dll` proxy, allowing you to add **brand new civilizations** beyond the hardcoded 31-civ limit, customize unit stats, create unique bonuses and tech trees, replace or add game assets, script random maps and AIs, and raise the population cap to 1000 — all **without replacing your original game data files**.
 
 ---
 
@@ -40,6 +40,7 @@ Wololoader is a modular runtime mod loader and patcher for **Age of Empires II H
 Download the setup for your system from the [Releases page](https://github.com/Vitrie32/wololoader/releases/latest).
 
 - **Windows**: run `wololoader-windows-setup.exe`. It finds the game through Steam (or pick the folder that holds `AoK HD.exe` with **Browse**) and installs `version.dll` and the `wololoader\` folder next to the game. Run it again to uninstall.
+  On Windows the setup also clears the ASLR flag in the header of `AoK HD.exe` (one bit; the untouched exe is kept in `wololoader\backup\`, Uninstall sets the flag back): Wololoader patches the game at fixed addresses, and with ASLR Windows loads the game somewhere else. After Steam updates or verifies the game files, run the setup again (Wololoader tells you so when the game starts).
 - **Linux / Steam Deck (Steam Proton)**: in a terminal,
   ```bash
   curl -fsSL https://wololoader.vercel.app/install.sh | sh
@@ -930,13 +931,14 @@ Every script also gets a simple high-level API, written on top of `wl.*` (which 
 | `Game.Time`, `Game.Selected()` | game time in seconds (stops while paused); the units you have selected (first 60) |
 | Player | `.Id`, `.IsLocal`, `.Food`, `.Wood`, `.Stone`, `.Gold`, `.Age` (0..3), `.AgeName` ("Dark".."Imperial"), `.Population`, `:IsEnemy(other)`, `:Units(filter)` |
 | `p:Units()` / `p:Units("Monk")` / `p:Units(function(u) ... end)` | units; class names: Archer, Trade, Building, Villager, Infantry, Cavalry, Siege, Monk, Transport, FishingShip, Warship, Wall, CavalryArcher, MonkWithRelic |
-| Unit | `.Id`, `.X`, `.Y`, `.Type` (dat unit id), `.Class`, `.ClassName`, `.IsBuilding`, `.Owner`, `:Delete()` |
+| Unit | `.Id`, `.X`, `.Y`, `.Type` (dat unit id), `.Class`, `.ClassName`, `.IsBuilding`, `.Built` (a finished building, not a foundation), `.Owner`, `:Delete()` |
 | `p:AddGold(n)`, `p:AddFood(n)`, `p:AddWood(n)`, `p:AddStone(n)`, `p:AddResource("Gold", n)` | give (or take, with a negative n) resources |
 | `p:CreateUnit(unitId, x, y)` | create a unit (dat unit id, e.g. 125 Monk, 4 Archer) at tile x, y |
 | `p:Research(techId)` | finish a technology instantly (skipped if already researched) |
 | `p:SetAge(age)` | `0`..`3` or `"Dark"`..`"Imperial"`. Up: the age-up techs are researched. Down: the age goes back and the age-ups can be researched again; units, buildings and bonuses already unlocked stay (the game cannot undo tech effects) |
 | `Game.OnStart(fn)`, `Game.OnSecond(fn)` | events; they return a connection with `:Disconnect()` |
 | `Game.OnAgeUp(fn(player, ageName))`, `Game.OnUnitCreated(fn(unit))`, `Game.OnUnitDied(fn(id, player))` | checked once a second (up to 1 s late); "died" also fires when a unit is converted or deleted |
+| `Game.OnResearch(fn(player, techId))`, `Game.OnBuildingDone(fn(unit))` | a technology was researched (also age-ups and free techs); a building was finished (not when its foundation is placed). Checked once a second; what a player has at the start of a game does not fire |
 | `UI.Message(text, {Color=n})`, `UI.Chat(text, {From=, Color=})`, `UI.Dialog(text)` | screen output (Message color: a game palette index, default 36) |
 | `local c = UI:CreateCounter(text)` | a line in the countdown area: `c:SetText(t)`, `c:Hide()`, `c:Show()`, `c:Destroy()`; several counters share the line, joined with "  \|  " |
 | `UI:CreateFrame(props)`, `UI:CreateLabel(props)`, `UI:CreateButton(props)`, `UI:CreateTextBox(props)` | on-screen panels, text and buttons that do **not** pause the game (see below) |

@@ -82,6 +82,26 @@ static int g_counter_calls;
 static void ui_counter(const char *t) { snprintf(g_last_counter, sizeof g_last_counter, "%s", t ? t : "(null)"); g_counter_calls++; }
 static void ui_message(const char *t) { snprintf(g_last_msg, sizeof g_last_msg, "%s", t); }
 
+// fake game for the polled events: player 1 with units and researched techs the test changes
+static WlUnitInfo g_fu[8];
+static int g_nfu;
+static short g_ftech[8];
+static int g_nftech;
+static int fg_local(void) { return 1; }
+static int fg_count(void) { return 2; }
+static int fg_resource(int pid, int res, float *out) { (void)pid; *out = res == 6 ? 0.0f : 100.0f; return 1; }
+static int fg_is_enemy(int a, int b) { (void)a; (void)b; return 0; }
+static int fg_units(int pid, WlUnitInfo *out, int max) {
+    int n = 0;
+    for (int i = 0; i < g_nfu && n < max; i++) if (pid == 1) out[n++] = g_fu[i];
+    return n;
+}
+static int fg_researched(int pid, short *out, int max) {
+    int n = 0;
+    for (int i = 0; i < g_nftech && n < max; i++) if (pid == 1) out[n++] = g_ftech[i];
+    return n;
+}
+
 int main(void) {
     const char *home = getenv("HOME");
     char base[MAX_PATH];
@@ -162,6 +182,12 @@ int main(void) {
         "local tb = UI:CreateTextBox({ Numeric = true, MaxLength = 4, Placeholder = 'count', OnChanged = function(b, t) wl.log('CHANGED', t, b.Text) end })\n"
         "tb:OnSubmit(function(b, t) wl.log('SUBMIT', t) end)\n"
         "wl.on('ui_kill', function() f:Destroy() wl.log('killed', tostring(b.Destroyed), tostring(l.Destroyed)) end)\n");
+
+    write_mod(6, "events",
+        "Game.OnResearch(function(p, id) wl.log('RESEARCH', p.Id, id) end)\n"
+        "Game.OnBuildingDone(function(u) wl.log('BUILT', u.Id, u.Type, tostring(u.Built)) end)\n"
+        "wl.on('t_units', function() for _, u in ipairs(Game.LocalPlayer:Units()) do\n"
+        "  wl.log('UNIT', u.Id, tostring(u.IsBuilding), tostring(u.Built)) end end)\n");
 
     wl_script_event("game_start");  // before init: must be a harmless no-op
     static const WlUiApi fui = { fui_create, fui_destroy, fui_set, fui_text };
@@ -311,6 +337,39 @@ int main(void) {
     CHECK(has_line("[lua:uitest] CHANGED\t42\t42"));
     wl_script_event_int("ui_submit", 4);
     CHECK(has_line("[lua:uitest] SUBMIT\t42"));
+    // ---- polled events: OnResearch, OnBuildingDone ----------------------------------
+    printf("-- research / building done\n");
+    static WlGameApi fg;
+    memset(&fg, 0, sizeof fg);
+    fg.local_player = fg_local; fg.player_count = fg_count; fg.resource = fg_resource;
+    fg.is_enemy = fg_is_enemy; fg.units = fg_units; fg.researched = fg_researched;
+    wl_script_set_game(&fg);
+    g_fu[0] = (WlUnitInfo){ 10, 1, 1, 80, 1, 109, 1, 2 };   // town center, ready
+    g_fu[1] = (WlUnitInfo){ 11, 2, 2, 80, 1, 12, 1, 0 };    // barracks, foundation
+    g_fu[2] = (WlUnitInfo){ 12, 3, 3, 4, 0, 83, 1, 2 };     // villager
+    g_nfu = 3;
+    g_ftech[0] = 104; g_nftech = 1;                          // dark age
+    wl_script_event("game_start");
+    wl_script_event("every_second");                          // first look: nothing fires
+    CHECK(!has_line("[lua:events] RESEARCH") && !has_line("[lua:events] BUILT"));
+    wl_script_event("t_units");
+    CHECK(has_line("[lua:events] UNIT\t10\ttrue\ttrue") && has_line("[lua:events] UNIT\t11\ttrue\tfalse"));
+    CHECK(has_line("[lua:events] UNIT\t12\tfalse\tfalse"));
+    g_fu[1].state = 2;                                        // barracks finished
+    g_fu[3] = (WlUnitInfo){ 13, 4, 4, 80, 1, 70, 1, 2 };     // a house placed and finished within a second
+    g_nfu = 4;
+    g_ftech[1] = 22; g_nftech = 2;                            // loom
+    wl_script_event("every_second");
+    CHECK(has_line("[lua:events] RESEARCH\t1\t22") && !has_line("[lua:events] RESEARCH\t1\t104"));
+    CHECK(has_line("[lua:events] BUILT\t11\t12\ttrue") && has_line("[lua:events] BUILT\t13\t70\ttrue"));
+    CHECK(!has_line("[lua:events] BUILT\t10"));
+    int built = count_line("[lua:events] BUILT"), researched = count_line("[lua:events] RESEARCH");
+    wl_script_event("every_second");                          // nothing new: no repeats
+    CHECK(count_line("[lua:events] BUILT") == built && count_line("[lua:events] RESEARCH") == researched);
+    wl_script_event("game_start");                            // new game: first look again
+    wl_script_event("every_second");
+    CHECK(count_line("[lua:events] BUILT") == built && count_line("[lua:events] RESEARCH") == researched);
+    wl_script_set_game(NULL);
     printf(g_fail ? "TEST FAILED\n" : "TEST PASSED\n");
     return g_fail;
 }

@@ -67,6 +67,7 @@ static int unit_info(void *x, WlUnitInfo *o) {
     o->building = m ? *(unsigned char *)((char *)m + 4) == 80 : 0;
     o->type = m ? *(short *)((char *)m + 0x10) : -1;
     o->owner = own ? (int)RD32(own, 0x1adc) : -1;
+    o->state = *(unsigned char *)((char *)x + 0x4c);   // 2 = ready; a building below 2 is still a foundation
     return 1;
 }
 
@@ -100,6 +101,19 @@ static double ga_time(void) {
     return world ? RD32(world, 0x178) / 1000.0 : -1.0;
 }
 
+// Researched techs: tech tree [player+0x1ae8], entries [tt] 16 bytes each with status int16 at +4
+// (3 = researched), count int16 at [tt+4] (complete_tech 0x84d300, see gamecmd.c).
+static int ga_researched(int pid, short *out, int max) {
+    void *p = player(pid);
+    void *tt = p ? RDP(p, 0x1ae8) : NULL;
+    BYTE *ent = tt ? (BYTE *)RDP(tt, 0) : NULL;
+    if (!ent) return 0;
+    int count = *(short *)((BYTE *)tt + 4), n = 0;
+    for (int i = 0; i < count && n < max; i++)
+        if (*(short *)(ent + i * 16 + 4) == 3) out[n++] = (short)i;
+    return n;
+}
+
 static const WlGameApi k_api = { ga_local, ga_count, ga_resource, ga_is_enemy, ga_units,
-    wl_cmd_add_resource, wl_cmd_research, wl_cmd_spawn, wl_cmd_delete, ga_selected, ga_time, wl_cmd_set_age };
+    wl_cmd_add_resource, wl_cmd_research, wl_cmd_spawn, wl_cmd_delete, ga_selected, ga_time, wl_cmd_set_age, ga_researched };
 const WlGameApi *wl_game_api(void) { return &k_api; }

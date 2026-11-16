@@ -34,6 +34,13 @@ Game.OnUnitCreated(function(unit)
     if unit.ClassName == "Monk" and unit.Owner.IsLocal then UI.Message("A new monk joins the order.") end
 end)
 
+-- The Abbey (unit 1400, the first mod building slot) is finished.
+Game.OnBuildingDone(function(b)
+    if b.Type == 1400 and b.Owner == Game.LocalPlayer then
+        UI.Message("The Abbey is finished: train monks and Abbots there.")
+    end
+end)
+
 -- The Abbey's "Bless" button (unique_building commands, "lua": "Bless" in the civ JSON).
 Game.OnCommand("Bless", function(abbey)
     local me = Game.LocalPlayer

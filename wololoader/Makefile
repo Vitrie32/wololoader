@@ -86,8 +86,8 @@ build/setup_res.o: installer/wlsetup.rc installer/wlsetup.manifest art/wololoade
 	mkdir -p build
 	cd installer && i686-w64-mingw32-windres wlsetup.rc -O coff -o ../$@
 
-build/wlsetup_stub.exe: installer/wlsetup.c build/setup_res.o
-	$(CC) -O2 -Wall -Wextra -std=c11 -municode -mwindows -DWL_VERSION='"$(VERSION)"' -o $@ $^ -static -lcomctl32 -lshell32 -lole32 -ladvapi32
+build/wlsetup_stub.exe: installer/wlsetup.c build/setup_res.o src/wololoader.h
+	$(CC) -O2 -Wall -Wextra -std=c11 -municode -mwindows -DWL_VERSION='"$(VERSION)"' -o $@ $(filter %.c %.o,$^) -static -lcomctl32 -lshell32 -lole32 -ladvapi32
 	i686-w64-mingw32-strip $@
 
 release: build/version.dll build/wlsetup_stub.exe installer/install.sh.in tools/package.py

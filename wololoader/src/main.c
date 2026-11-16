@@ -33,6 +33,26 @@ static BOOL is_supported_exe(void) {
     return (DWORD)exe == 0x400000 && nt->OptionalHeader.SizeOfCode == 0x5ab000;
 }
 
+// stamp == 0: the right exe, but Windows loaded it at a random address (ASLR, see installer/wlsetup.c).
+static DWORD WINAPI unsupported_notice(LPVOID stamp) {
+    char msg[600];
+    if (!stamp)
+        snprintf(msg, sizeof msg,
+                 "Wololoader %s is off: Windows started the game at a random memory address.\n\n"
+                 "Run the Wololoader setup again and press Install: it prepares the game exe for Wololoader. "
+                 "(This happens after Steam updates or verifies the game files.)\n\nThe game starts normally, without mods.",
+                 WOLOLOADER_VERSION);
+    else
+    snprintf(msg, sizeof msg,
+             "Wololoader %s does not support this build of Age of Empires II HD (build stamp %08lx).\n\n"
+             "The game starts normally, without mods.\n\n"
+             "Please report it at github.com/Vitrie32/wololoader/issues with this number, "
+             "or remove version.dll from the game folder to stop this message.",
+             WOLOLOADER_VERSION, (unsigned long)(DWORD_PTR)stamp);
+    MessageBoxA(NULL, msg, "Wololoader", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    return 0;
+}
+
 static void init_paths(void) {
     GetModuleFileNameA(NULL, g_wl.game_dir, MAX_PATH);
     char *slash = strrchr(g_wl.game_dir, '\\');
@@ -59,7 +79,14 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     wl_log("Wololoader v%s starting in %s", WOLOLOADER_VERSION, g_wl.game_dir);
     wl_scan_mods();
     if (!is_supported_exe()) {
-        wl_log("Unsupported AoK HD.exe build, hooks disabled.");
+        HMODULE m = GetModuleHandleA(NULL);
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)m + ((IMAGE_DOS_HEADER *)m)->e_lfanew);
+        int relocated = (DWORD)m != 0x400000 && nt->OptionalHeader.SizeOfCode == 0x5ab000;
+        wl_log("Unsupported AoK HD.exe %s (base %p, SizeOfCode 0x%lx, TimeDateStamp 0x%lx), hooks disabled.",
+               relocated ? "load address" : "build", (void *)m, nt->OptionalHeader.SizeOfCode, nt->FileHeader.TimeDateStamp);
+        // Tell the player once (the game itself runs normally, without mods). A thread: no
+        // user32 calls in DllMain; it runs after the loader lock is released.
+        CreateThread(NULL, 0, unsupported_notice, relocated ? NULL : (LPVOID)(DWORD_PTR)nt->FileHeader.TimeDateStamp, 0, NULL);
         return TRUE;
     }
     wl_install_crash_logger();
