@@ -12,6 +12,7 @@ Wololoader is a modular runtime mod loader and patcher for **Age of Empires II H
 4. [Adding a Civilization](#4-adding-a-civilization)
 5. [Units](#5-units)
    - [Supported Unit Fields Table](#supported-unit-fields-table)
+   - [Unit graphics](#unit-graphics-graphics)
    - [Common Unit IDs Table](#common-unit-ids-table)
    - [Common Unit Classes Table](#common-unit-classes-table)
 6. [Effects and Bonuses](#6-effects-and-bonuses)
@@ -312,6 +313,28 @@ The Genie engine uses an inheritance hierarchy across unit types:
 > **Read-Only / Structured Fields**: Fields with complex nested sub-structures (`damage_graphics`, `attacks`, `armours`, `annexes`, `resource_costs`, `resource_storages`, and `name`) cannot be overridden via simple JSON values in `units`. Overriding them will trigger a build validation error. Use [civ effects](#6-effects-and-bonuses) to modify attack, armor, or costs instead.
 
 ---
+
+### Unit graphics (`graphics`)
+
+A unit can get its own sprites. Put `"graphics"` in a unit's override (`"units": {"125": {"graphics": {...}}}`), in `unique_unit` (also `"elite_graphics"` for the elite; without it the elite gets the same), or in a unique building's `train` command:
+
+```json
+"graphics": {
+  "standing": 15010,
+  "walking": 15011,
+  "attack": { "slp": 15012, "frames": 12 },
+  "dying": 15013
+}
+```
+
+| Animation | Unit field | Notes |
+|---|---|---|
+| `standing`, `standing2` | `standing_graphic` [0], [1] | every unit |
+| `dying`, `decay` | `dying_graphic` [0], [1] | `decay` = the corpse left behind |
+| `walking`, `running` | `walking_graphic` [0], [1] | moving units |
+| `attack` | `attack_graphic` | combat units |
+
+For each animation Wololoader copies the unit's current graphic and points the copy at your SLP, `<mod>/resources/_common/drs/graphics/<slp>.slp`. Everything else comes from the copied graphic: frame and angle counts, speed, sounds, and its extra parts (shadows, the monk's halo, ...). So draw your SLP with the same number of frames and angles as the game's one, or set `"frames"` (1..1000) and `"angles"` (1..64) in the object form; when `angles` changes, the per-angle attack sounds of the copy are dropped. The easiest start is to export the game's own SLP for that animation and repaint it, keeping its frame layout. SLP ids from 15000 up are unused by the game. The unit must already have the animation (a unit without a running graphic cannot get `running`).
 
 ### Common Unit IDs Table
 
@@ -978,7 +1001,7 @@ Text boxes: click to type (the game gets no keys meanwhile), Enter submits, Esc 
 
 Methods: `:OnClick(fn(element))`, `:OnHover(fn(element))`, `:OnLeave(fn(element))` (buttons and frames; each returns a connection with `:Disconnect()`, and `Time.Wait` works inside the handlers), `:SetText(t)`, `:SetPosition(x, y)`, `:SetSize(w, h)`, `:Show()`, `:Hide()`, `:Destroy()`; `.Destroyed` tells whether it is gone. Clicks on frames and buttons do not reach the game below them; labels let clicks through. The UI is hidden automatically when another screen (F10 game menu, pause dialogs) is on top of the game screen. At most 256 elements, 64 cached images. The UI is local: each player sees only what the scripts on their own machine made, and click/hover handlers run only on the clicking player's machine, so game commands sent from a handler (like `AddGold` above, before any `Time.Wait`) are always sent from that machine.
 
-**Game commands** (`Add*`, `CreateUnit`, `Research`, `Delete`) go through the game's own command system, so in multiplayer every player sees the same result on the same turn. Every player runs the same scripts, so only one machine sends each command: the owner's machine for a human player, the lowest-numbered human player's machine for computer players and Gaia. The call returns `true` on the machine that sent it and `false` on the others; you can write `Game.Player(2):AddGold(100)` without checking `IsLocal`. Wrong arguments (unknown unit id, no game running) raise an error. At most 100 commands per second. All players need the same Wololoader version.
+**Game commands** (`Add*`, `CreateUnit`, `Research`, `Delete`) go through the game's own command system, so in multiplayer every player sees the same result on the same turn. Every player runs the same scripts, so only one machine sends each command: the owner's machine for a human player, the lowest-numbered human player's machine for computer players and Gaia. The call returns `true` on the machine that sent it and `false` on the others; you can write `Game.Player(2):AddGold(100)` without checking `IsLocal`. Wrong arguments (unknown unit id, no game running) raise an error. At most 100 commands a second go to the game; more wait in a queue and follow on the next frames (up to 4096 waiting), so `for i = 1, 1000 do p:CreateUnit(...) end` works, it just takes 10 seconds. All players need the same Wololoader version.
 
 ### Low-level `wl` API
 
@@ -987,12 +1010,16 @@ The Scripting API above is built on these functions; they stay available.
 ### Sandbox
 
 - Available: `assert, error, pcall, xpcall, select, type, tostring, tonumber, pairs, ipairs, next, rawget, rawset, rawequal, rawlen, getmetatable, setmetatable, collectgarbage`, and the libraries `string`, `table`, `math`, `utf8`, `coroutine`.
-- Not available: `io`, `os`, `package`, `debug`, `require`, `dofile`, `loadfile`, `load`. Scripts cannot read or write files or run programs. Precompiled (binary) Lua is rejected.
+- Not available: `io`, `os`, `package`, `debug`, `require`, `dofile`, `loadfile`, `load`, `warn`, `string.dump`. Scripts cannot read or write files or run programs. Precompiled (binary) Lua is rejected.
+- `collectgarbage` only accepts `"collect"`, `"count"` and `"step"`. `getmetatable("")` returns `"locked"` (the string metatable is shared by all mods and cannot be changed).
+- `xpcall(f, handler, ...)` calls `handler` after `f` has failed (with the error message), not while the error is being raised, so the handler gets no traceback of `f`.
+- Pattern functions (`string.find`, `match`, `gmatch`, `gsub`, and the same methods on strings) refuse a pattern that could take too long on the given text (many `*`, `-`, `+` on a long text): they raise "pattern too complex". Use plain `find(text, s, 1, true)` or simpler patterns.
 - Every mod runs in its own environment: globals you assign are private to your mod, and your copies of `string`, `table`, `math` etc. are not shared with other mods.
 - `print(...)` is the same as `wl.log(...)`.
-- A single script run or event handler is aborted with an error after 10 million Lua instructions (so an endless loop cannot freeze the game). The Lua state is limited to 64 MB.
+- A single script run or event handler is aborted with an error after 10 million Lua instructions (so an endless loop cannot freeze the game). The count includes every coroutine the call runs, and the abort cannot be caught with `pcall`, `xpcall` or `coroutine.resume`. The Lua state is limited to 64 MB.
 - Errors never crash the game. They are written to `wololoader.log` as `[lua:<mod id>] ...`. A handler that raises an error is disabled (the other handlers keep running); an error in `main.lua` itself keeps the handlers registered before it.
-- Log lines longer than about 250 characters are cut off.
+- Log lines longer than about 250 characters are cut off. A mod writes at most 2000 log lines per game; after that its output is not logged until the next game.
+- UI images (`Image`) must be files inside the mod folder: absolute paths and `..` are refused.
 
 ### The `MOD` table
 

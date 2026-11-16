@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.3.1"
+#define WOLOLOADER_VERSION "0.3.2"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -157,6 +157,7 @@ int wl_cmd_research(int pid, int tech);
 int wl_cmd_spawn(int pid, int type, float x, float y);
 int wl_cmd_delete(int unit_id);
 int wl_cmd_set_age(int pid, int age);
+void wl_gamecmd_frame(void);   // sends Lua commands queued over the 100/s rate
 void wl_cmd_set_local_ctx(int on);
 // uikit.c: Lua on-screen UI
 void wl_install_uikit(void);

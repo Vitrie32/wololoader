@@ -107,6 +107,78 @@ def _as_int(value, where, field):
     return int(value)
 
 
+# "graphics": {"standing": slp | {"slp", "frames", "angles"}, ...} on a unit: each animation gets a
+# copy of the unit's current graphic record with the mod's SLP (frames/angles optional). Deltas
+# (shadows, sub-sprites), sounds and speed stay those of the copied record; when "angles" changes,
+# the per-angle attack sounds are dropped. The C port (datbuild.c wl_apply_graphics) does the same.
+ANIMS = {"standing": ("standing_graphic", 0), "standing2": ("standing_graphic", 1),
+         "dying": ("dying_graphic", 0), "decay": ("dying_graphic", 1),
+         "walking": ("walking_graphic", 0), "running": ("walking_graphic", 1),
+         "attack": ("attack_graphic", None)}
+
+
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def add_graphic(dat, src, slp, frames, angles, where):
+    """Appends a copy of graphic `src` drawing SLP `slp`; returns the new graphic id."""
+    gfx = dat.graphics
+    if not 0 <= src < len(gfx.ptrs) or gfx.graphics[src] is None:
+        raise BuildError("%s: graphic %d does not exist" % (where, src))
+    g = copy.deepcopy(gfx.graphics[src])
+    gid = len(gfx.ptrs)
+    nm = ("WLG%d" % gid).encode("ascii")
+    g.name = nm + b"\0" * (21 - len(nm))
+    g.filename = nm + b"\0" * (13 - len(nm))
+    g.slp = slp
+    g.id = gid
+    if frames is not None:
+        g.frame_count = frames
+    if angles is not None and angles != g.angle_count:
+        g.angle_count = angles
+        g.attack_sound_used = 0
+        g.attack_sounds = []
+    gfx.ptrs.append(gfx.ptrs[src])
+    gfx.graphics.append(g)
+    return gid
+
+
+def apply_graphics(dat, unit, spec, where):
+    if not isinstance(spec, dict):
+        raise BuildError("%s: graphics must be an object" % where)
+    for anim, v in spec.items():
+        w = "%s graphics.%s" % (where, anim)
+        if anim not in ANIMS:
+            raise BuildError("%s: unknown animation %r (use %s)" % (w, anim, ", ".join(ANIMS)))
+        field, idx = ANIMS[anim]
+        if field not in unit.__dict__:
+            raise BuildError("%s: this unit type has no %s" % (w, field))
+        if _is_int(v):
+            v = {"slp": v}
+        if not isinstance(v, dict) or not _is_int(v.get("slp")):
+            raise BuildError("%s: needs an SLP id or {\"slp\": id, \"frames\": n, \"angles\": n}" % w)
+        extra = set(v) - {"slp", "frames", "angles"}
+        if extra:
+            raise BuildError("%s: unknown key(s) %s" % (w, sorted(extra)))
+        slp, frames, angles = v["slp"], v.get("frames"), v.get("angles")
+        if not 0 < slp < 2 ** 31:
+            raise BuildError("%s: slp must be a positive integer" % w)
+        if frames is not None and (not _is_int(frames) or not 1 <= frames <= 1000):
+            raise BuildError("%s: frames must be 1..1000" % w)
+        if angles is not None and (not _is_int(angles) or not 1 <= angles <= 64):
+            raise BuildError("%s: angles must be 1..64" % w)
+        cur = unit.__dict__[field]
+        src = cur[idx] if idx is not None else cur
+        if src < 0:
+            raise BuildError("%s: the unit has no %s animation to copy" % (w, anim))
+        gid = add_graphic(dat, src, slp, frames, angles, w)
+        if idx is not None:
+            cur[idx] = gid
+        else:
+            unit.__dict__[field] = gid
+
+
 def make_unit_name(text, where):
     """Encode a unit internal name (ASCII, drop non-ASCII, max 30 chars + NUL)."""
     if not text:
@@ -288,8 +360,13 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
             raise BuildError("%s: unit id %r is not a number" % (where, uid))
         if not 0 <= i < len(civ.units) or civ.units[i] is None:
             raise BuildError("%s: unit id %s does not exist in civ %s" % (where, uid, spec["base"]))
+        if not isinstance(fields, dict):
+            raise BuildError("%s: units.%s must be an object" % (where, uid))
         for field, value in fields.items():
-            _set_field(civ.units[i], field, value, "%s unit %s" % (where, uid))
+            if field == "graphics":
+                apply_graphics(dat, civ.units[i], value, "%s unit %s" % (where, uid))
+            else:
+                _set_field(civ.units[i], field, value, "%s unit %s" % (where, uid))
     for idx, value in spec.get("resources", {}).items():
         i = int(idx)
         if not 0 <= i < len(civ.resources):
@@ -305,7 +382,7 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
             if req not in uu:
                 raise BuildError("%s: unique_unit missing required key %r" % (where, req))
         known_uu = {"copy_from", "elite_copy_from", "name", "elite_name", "help",
-                    "units", "elite_units", "elite_cost", "elite_time"}
+                    "units", "elite_units", "elite_cost", "elite_time", "graphics", "elite_graphics"}
         extra_uu = set(uu) - known_uu
         if extra_uu:
             raise BuildError("%s: unknown unique_unit key(s) %s" % (where, sorted(extra_uu)))
@@ -480,6 +557,8 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
                 raise BuildError("%s: unique_unit units must be an object" % where)
             for field, value in uu["units"].items():
                 _set_field(u_unit, field, value, "%s unit %d" % (where, U))
+        if "graphics" in uu:
+            apply_graphics(dat, u_unit, uu["graphics"], "%s unique_unit" % where)
         civ.units[U] = u_unit
 
         # Unit E
@@ -506,6 +585,8 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
                 raise BuildError("%s: unique_unit elite_units must be an object" % where)
             for field, value in uu["elite_units"].items():
                 _set_field(e_unit, field, value, "%s unit %d" % (where, E))
+        if "elite_graphics" in uu or "graphics" in uu:
+            apply_graphics(dat, e_unit, uu.get("elite_graphics", uu.get("graphics")), "%s unique_unit elite" % where)
         civ.units[E] = e_unit
 
     if "unique_building" in spec:
@@ -692,7 +773,7 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
                 t = {"copy_from": t}
             if not isinstance(t, dict) or "copy_from" not in t:
                 raise BuildError("%s: train must be a unit id or an object with copy_from" % w)
-            extra = set(t) - {"copy_from", "name", "help", "units"}
+            extra = set(t) - {"copy_from", "name", "help", "units", "graphics"}
             if extra:
                 raise BuildError("%s: unknown train key(s) %s" % (w, sorted(extra)))
             src = t["copy_from"]
@@ -733,6 +814,8 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
                     raise BuildError("%s: train units must be an object" % w)
                 for field, value in t["units"].items():
                     _set_field(u, field, value, "%s unit %d" % (w, slot))
+            if "graphics" in t:
+                apply_graphics(dat, u, t["graphics"], "%s unit %d" % (w, slot))
             civ.units[slot] = u
             avail_eff.commands.append(df.EffectCommand(type=2, a=slot, b=1, c=-1, d=0.0))
 

@@ -100,11 +100,12 @@ static void show_next_dialog(void *gs);
 static void reset_dialog_state(void);
 static void deliver_nil_answers(void);
 
+static int g_msg_dropped;   // logged once per frame (a script may send hundreds at once)
 static void lua_message(const char *text) {
     if (g_msg_count < MSG_MAX) {
         g_msg_color[g_msg_count] = wl_script_msg_color;
         lstrcpynA(g_msgs[g_msg_count++], text, sizeof g_msgs[0]);
-    } else wl_log("[lua] message queue full, dropped: %s", text);
+    } else if (g_msg_dropped++ == 0) wl_log("[lua] message queue full, dropped: %s (and more this frame)", text);
 }
 
 static void __fastcall hook_tick(void *screen, void *edx) {
@@ -124,6 +125,7 @@ static void __fastcall hook_tick(void *screen, void *edx) {
     deliver_nil_answers();                                // MP asks from the previous frame
     DWORD gnow = game_clock();
     wl_script_frame(gnow);                                 // wl.after / wl.every / wl.wait
+    wl_gamecmd_frame();                                    // Lua game commands over 100/s
     wl_counter_frame(gs);                                 // wl.counter line (src/counter.c)
     wl_ui_frame();                                        // UI button clicks (src/uikit.c)
     if (gs && g_msg_count) {
@@ -131,6 +133,7 @@ static void __fastcall hook_tick(void *screen, void *edx) {
             DisplayMessage(gs, 1, g_msgs[i], g_msg_color[i] >= 0 ? g_msg_color[i] : *(unsigned char *)0xab4cc3, *(unsigned char *)0xde042a);
         wl_log("lua: showed %d message(s)", g_msg_count);
         g_msg_count = 0;
+        g_msg_dropped = 0;
     }
     if (gs && g_chat_count) {
         for (int i = 0; i < g_chat_count; i++)

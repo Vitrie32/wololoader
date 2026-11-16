@@ -120,17 +120,30 @@ static void load_identity(WlCiv *c, const char *mod, const char *json_file) {
     const char *snd = wl_json_str(wl_json_get(root, "sound"), NULL);
     if (snd) {
         char full[MAX_PATH];
-        snprintf(c->mp3, sizeof c->mp3, "wololoader_civ%d.mp3", c->id);
         snprintf(full, sizeof full, "%s\\mods\\%s\\%s", g_wl.root, mod, snd);
-        wl_add_redirect(c->mp3, full);
+        // a missing file would be handed to the game: keep the base civ's sound instead
+        if (GetFileAttributesA(full) == INVALID_FILE_ATTRIBUTES) {
+            wl_log("civs: %d sound '%s' not found in mod %s, using the base civ's", c->id, snd, mod);
+        } else {
+            snprintf(c->mp3, sizeof c->mp3, "wololoader_civ%d.mp3", c->id);
+            wl_add_redirect(c->mp3, full);
+        }
     }
 
     const char *slp = wl_json_str(wl_json_get(root, "interface_slp"), NULL);
     if (slp) {
-        snprintf(c->slp_path, sizeof c->slp_path, "%s\\mods\\%s\\%s", g_wl.root, mod, slp);
-        char name[32];
-        snprintf(name, sizeof name, "game_b%d.slp", c->id);
-        wl_add_redirect(name, c->slp_path);
+        char full[MAX_PATH];
+        snprintf(full, sizeof full, "%s\\mods\\%s\\%s", g_wl.root, mod, slp);
+        // The game cannot load a missing game_b<id>.slp and crashes at game start (null
+        // panel art read at 0x45a496, called from 0x6c5b54): use the base civ's art then.
+        if (GetFileAttributesA(full) == INVALID_FILE_ATTRIBUTES) {
+            wl_log("civs: %d interface_slp '%s' not found in mod %s, using the base civ's art", c->id, slp, mod);
+        } else {
+            lstrcpynA(c->slp_path, full, sizeof c->slp_path);
+            char name[32];
+            snprintf(name, sizeof name, "game_b%d.slp", c->id);
+            wl_add_redirect(name, c->slp_path);
+        }
     }
 
     const WlJsonVal *ut = wl_json_get(root, "unique_techs");

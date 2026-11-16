@@ -9,3 +9,5 @@ typedef int BOOL;
 typedef uint32_t DWORD;
 #define TRUE 1
 #define FALSE 0
+#include <strings.h>
+#define _strnicmp strncasecmp

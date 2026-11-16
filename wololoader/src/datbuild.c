@@ -624,27 +624,10 @@ static int wl_write_field_number(uint8_t *dest, WlFieldType type, const WlJsonVa
 // Applies a field override to a unit record.
 // Validates field existence, class inheritance mask, raw structured field restrictions,
 // and array length for multi-value fields (e.g., radius_size, size).
-static int wl_set_unit_field(uint8_t *unit_data, const char *where, const char *field,
-                             const WlJsonVal *val, char *err, size_t errcap) {
+// Address of a field in a unit record. Slices skip past variable-length data (name string,
+// damage graphics, attack list, armour list).
+static uint8_t *wl_unit_field_addr(uint8_t *unit_data, const WlFieldDesc *desc) {
     uint8_t t = unit_data[0];
-    uint8_t umask = wl_unit_class_mask(t);
-    const char *cname = wl_unit_class_name(t);
-
-    const WlFieldDesc *desc = bsearch(field, g_wl_fields, WL_NUM_FIELDS, sizeof(WlFieldDesc), wl_cmp_field_key);
-    if (!desc || !(desc->mask & umask)) {
-        snprintf(err, errcap, "%s: unknown field '%s' for unit type %s", where, field, cname);
-        return -1;
-    }
-
-    // RULE: Structured / complex fields (damage_graphics, attacks, armours, annexes)
-    // cannot be overridden with simple numbers or arrays; matching build.py _set_field.
-    if (desc->is_raw) {
-        snprintf(err, errcap, "%s: field '%s' is a structured/raw field and cannot be overridden", where, field);
-        return -1;
-    }
-
-    // Compute dynamic slice offsets:
-    // Slices skip past variable-length data (name string, damage graphics, attack list, armour list)
     int16_t nl = (int16_t)(unit_data[1] | (unit_data[2] << 8));
     uint8_t dmg = unit_data[149];
     size_t s0 = 0;
@@ -666,7 +649,29 @@ static int wl_set_unit_field(uint8_t *unit_data, const char *where, const char *
         }
     }
     size_t slices[6] = { s0, s1, s2, s3, s4, s5 };
-    uint8_t *dest = unit_data + slices[desc->slice] + desc->offset;
+    return unit_data + slices[desc->slice] + desc->offset;
+}
+
+static int wl_set_unit_field(uint8_t *unit_data, const char *where, const char *field,
+                             const WlJsonVal *val, char *err, size_t errcap) {
+    uint8_t t = unit_data[0];
+    uint8_t umask = wl_unit_class_mask(t);
+    const char *cname = wl_unit_class_name(t);
+
+    const WlFieldDesc *desc = bsearch(field, g_wl_fields, WL_NUM_FIELDS, sizeof(WlFieldDesc), wl_cmp_field_key);
+    if (!desc || !(desc->mask & umask)) {
+        snprintf(err, errcap, "%s: unknown field '%s' for unit type %s", where, field, cname);
+        return -1;
+    }
+
+    // RULE: Structured / complex fields (damage_graphics, attacks, armours, annexes)
+    // cannot be overridden with simple numbers or arrays; matching build.py _set_field.
+    if (desc->is_raw) {
+        snprintf(err, errcap, "%s: field '%s' is a structured/raw field and cannot be overridden", where, field);
+        return -1;
+    }
+
+    uint8_t *dest = wl_unit_field_addr(unit_data, desc);
 
     if (desc->count > 1) {
         // Multi-value list field (e.g. radius_size, size)
@@ -755,7 +760,19 @@ typedef struct {
 typedef struct {
     uint8_t data[78];       // Fixed 78-byte graphic header
     int32_t source_ptr;     // Pointer value to copy from source graphic
+    uint8_t *extra;         // deltas (16 bytes each) + attack sounds (12 bytes per angle), or NULL
+    size_t extra_len;
 } WlCustomGraphic;
+
+// Graphics being added (unit "graphics", unique_building "slp"): the original section and the
+// custom records appended so far. A new graphic's id = orig_count + its index in *p_custom.
+typedef struct {
+    const uint8_t *orig;
+    size_t section;           // offset of the graphics section (u16 count, i32 pointers, records)
+    uint16_t orig_count;
+    WlCustomGraphic **p_custom;
+    size_t *p_cnt, *p_cap;
+} WlGfxCtx;
 
 typedef struct {
     uint8_t header[62];
@@ -1700,9 +1717,157 @@ static int wl_set_unit_int(uint8_t *u, const char *w, const char *field, long lo
     return wl_set_unit_field(u, w, field, &jv, err, errcap);
 }
 
+// ---- unit graphics ("graphics" in unit specs; mirrors add_graphic / apply_graphics in build.py) ----
+// Graphic record (datfile.py Graphic): name 21 @0, filename 13 @21, slp i32 @34, delta_count u16 @52,
+// attack_sound_used i8 @56, frame_count u16 @57, angle_count u16 @59, id i16 @74 (78-byte header),
+// then delta_count deltas of 16 bytes and, if attack_sound_used, angle_count attack sounds of 12 bytes.
+static int wl_gfx_find(const WlGfxCtx *g, int gid, const uint8_t **hdr, const uint8_t **extra,
+                       size_t *extra_len, int32_t *ptr) {
+    if (gid < 0) return -1;
+    if (gid < g->orig_count) {
+        const uint8_t *ptrs = g->orig + g->section + 2;
+        int32_t p;
+        memcpy(&p, ptrs + (size_t)gid * 4, 4);
+        if (!p) return -1;
+        size_t pos = g->section + 2 + (size_t)g->orig_count * 4;
+        for (int i = 0; i <= gid; i++) {
+            int32_t pi;
+            memcpy(&pi, ptrs + (size_t)i * 4, 4);
+            if (!pi) continue;
+            const uint8_t *r = g->orig + pos;
+            size_t len = 78 + (size_t)(r[52] | (r[53] << 8)) * 16;
+            if (r[56]) len += (size_t)(r[59] | (r[60] << 8)) * 12;
+            if (i == gid) {
+                *hdr = r; *extra = r + 78; *extra_len = len - 78; *ptr = p;
+                return 0;
+            }
+            pos += len;
+        }
+        return -1;
+    }
+    size_t k = (size_t)(gid - g->orig_count);
+    if (k >= *g->p_cnt) return -1;
+    const WlCustomGraphic *c = &(*g->p_custom)[k];
+    *hdr = c->data; *extra = c->extra; *extra_len = c->extra_len; *ptr = c->source_ptr;
+    return 0;
+}
+
+// Appends a copy of graphic `src` drawing SLP `slp` (frames / angles < 0: keep); *out = new id.
+static int wl_gfx_add(const WlGfxCtx *g, int src, int32_t slp, int frames, int angles, int *out,
+                      const char *where, char *err, size_t errcap) {
+    const uint8_t *hdr, *extra;
+    size_t extra_len;
+    int32_t ptr;
+    if (wl_gfx_find(g, src, &hdr, &extra, &extra_len, &ptr) != 0) {
+        snprintf(err, errcap, "%s: graphic %d does not exist", where, src);
+        return -1;
+    }
+    if (*g->p_cnt >= *g->p_cap) {
+        size_t ncap = *g->p_cap ? *g->p_cap * 2 : 16;
+        WlCustomGraphic *n = realloc(*g->p_custom, ncap * sizeof(WlCustomGraphic));
+        if (!n) { snprintf(err, errcap, "out of memory"); return -1; }
+        *g->p_custom = n;
+        *g->p_cap = ncap;
+        // hdr / extra may point into the old array (src was a custom graphic): look it up again
+        if (wl_gfx_find(g, src, &hdr, &extra, &extra_len, &ptr) != 0) return -1;
+    }
+    WlCustomGraphic c;
+    memcpy(c.data, hdr, 78);
+    c.source_ptr = ptr;
+    size_t keep = extra_len;
+    int gid = g->orig_count + (int)*g->p_cnt;
+    if (gid > 32767) { snprintf(err, errcap, "%s: too many graphics", where); return -1; }
+    char nm[16];
+    snprintf(nm, sizeof nm, "WLG%d", gid);
+    memset(c.data, 0, 21);
+    memcpy(c.data, nm, strlen(nm));
+    memset(c.data + 21, 0, 13);
+    memcpy(c.data + 21, nm, strlen(nm));
+    memcpy(c.data + 34, &slp, 4);
+    c.data[74] = (uint8_t)(gid & 0xFF);
+    c.data[75] = (uint8_t)((gid >> 8) & 0xFF);
+    if (frames >= 0) { c.data[57] = (uint8_t)(frames & 0xFF); c.data[58] = (uint8_t)(frames >> 8); }
+    int cur_angles = c.data[59] | (c.data[60] << 8);
+    if (angles >= 0 && angles != cur_angles) {
+        c.data[59] = (uint8_t)(angles & 0xFF);
+        c.data[60] = (uint8_t)(angles >> 8);
+        if (c.data[56]) keep = (size_t)(c.data[52] | (c.data[53] << 8)) * 16;   // drop the attack sounds
+        c.data[56] = 0;
+    }
+    c.extra = NULL;
+    c.extra_len = keep;
+    if (keep) {
+        c.extra = malloc(keep);
+        if (!c.extra) { snprintf(err, errcap, "out of memory"); return -1; }
+        memcpy(c.extra, extra, keep);
+    }
+    (*g->p_custom)[(*g->p_cnt)++] = c;
+    *out = gid;
+    return 0;
+}
+
+static const struct { const char *anim, *field; int idx; } k_anims[] = {
+    { "standing", "standing_graphic", 0 }, { "standing2", "standing_graphic", 1 },
+    { "dying", "dying_graphic", 0 }, { "decay", "dying_graphic", 1 },
+    { "walking", "walking_graphic", 0 }, { "running", "walking_graphic", 1 },
+    { "attack", "attack_graphic", 0 },
+};
+
+static int wl_apply_graphics(const WlGfxCtx *g, uint8_t *unit, const WlJsonVal *spec,
+                             const char *where, char *err, size_t errcap) {
+    if (!spec || spec->type != WL_JSON_OBJECT) {
+        snprintf(err, errcap, "%s: graphics must be an object", where);
+        return -1;
+    }
+    for (size_t i = 0; i < spec->u.obj.count; i++) {
+        const char *anim = spec->u.obj.members[i].key;
+        const WlJsonVal *v = spec->u.obj.members[i].val;
+        char w[1100];
+        snprintf(w, sizeof w, "%.1000s graphics.%s", where, anim);
+        int a = -1;
+        for (size_t k = 0; k < sizeof k_anims / sizeof *k_anims; k++) if (!strcmp(k_anims[k].anim, anim)) a = (int)k;
+        if (a < 0) {
+            snprintf(err, errcap, "%s: unknown animation '%s' (use standing, standing2, dying, decay, walking, running, attack)", w, anim);
+            return -1;
+        }
+        const WlFieldDesc *desc = bsearch(k_anims[a].field, g_wl_fields, WL_NUM_FIELDS, sizeof(WlFieldDesc), wl_cmp_field_key);
+        if (!desc || !(desc->mask & wl_unit_class_mask(unit[0]))) {
+            snprintf(err, errcap, "%s: this unit type has no %s", w, k_anims[a].field);
+            return -1;
+        }
+        long long slp, frames = -1, angles = -1;
+        if (wl_json_is_int(v)) {
+            slp = v->u.num.ival;
+        } else {
+            const WlJsonVal *sv = v->type == WL_JSON_OBJECT ? wl_json_get(v, "slp") : NULL;
+            if (!wl_json_is_int(sv)) {
+                snprintf(err, errcap, "%s: needs an SLP id or {\"slp\": id, \"frames\": n, \"angles\": n}", w);
+                return -1;
+            }
+            static const char *const known[] = { "slp", "frames", "angles" };
+            if (wl_check_known_keys(v, known, 3, w, "", err, errcap) != 0) return -1;
+            slp = sv->u.num.ival;
+            const WlJsonVal *fv = wl_json_get(v, "frames"), *av = wl_json_get(v, "angles");
+            if (fv) frames = wl_json_is_int(fv) ? fv->u.num.ival : 0;
+            if (av) angles = wl_json_is_int(av) ? av->u.num.ival : 0;
+        }
+        if (slp <= 0 || slp >= (1LL << 31)) { snprintf(err, errcap, "%s: slp must be a positive integer", w); return -1; }
+        if (frames != -1 && (frames < 1 || frames > 1000)) { snprintf(err, errcap, "%s: frames must be 1..1000", w); return -1; }
+        if (angles != -1 && (angles < 1 || angles > 64)) { snprintf(err, errcap, "%s: angles must be 1..64", w); return -1; }
+        uint8_t *f = wl_unit_field_addr(unit, desc) + 2 * k_anims[a].idx;
+        int src = (int16_t)(f[0] | (f[1] << 8));
+        if (src < 0) { snprintf(err, errcap, "%s: the unit has no %s animation to copy", w, anim); return -1; }
+        int gid;
+        if (wl_gfx_add(g, src, (int32_t)slp, (int)frames, (int)angles, &gid, w, err, errcap) != 0) return -1;
+        f[0] = (uint8_t)(gid & 0xFF);
+        f[1] = (uint8_t)((gid >> 8) & 0xFF);
+    }
+    return 0;
+}
+
 // One "train" command: a copy of a type-70 unit in the next free slot 1400-ext->slots, trained at B.
 // Unit layout (datfile.py): type@0, name_length@1, id@3, ..., name@150+5*damage_graphics+6, then id2, id3.
-static int wl_cmd_train(WlDatCiv *civ, const WlDatCiv *civs, int B, int button, const WlJsonVal *t,
+static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civs, int B, int button, const WlJsonVal *t,
                         WlDatEffect *avail_eff, size_t uu_total, WlBuildExt *ext,
                         const char *w, char *err, size_t errcap) {
     const WlJsonVal *obj = NULL;
@@ -1711,8 +1876,8 @@ static int wl_cmd_train(WlDatCiv *civ, const WlDatCiv *civs, int B, int button, 
         src = t->u.num.ival;
     } else if (t->type == WL_JSON_OBJECT && wl_json_get(t, "copy_from")) {
         obj = t;
-        static const char *const known[] = { "copy_from", "name", "help", "units" };
-        if (wl_check_known_keys(t, known, 4, w, "train ", err, errcap) != 0) return -1;
+        static const char *const known[] = { "copy_from", "name", "help", "units", "graphics" };
+        if (wl_check_known_keys(t, known, 5, w, "train ", err, errcap) != 0) return -1;
         const WlJsonVal *cf = wl_json_get(t, "copy_from");
         if (!wl_json_is_int(cf)) {
             snprintf(err, errcap, "%s: train copy_from unit does not exist", w);
@@ -1805,6 +1970,8 @@ static int wl_cmd_train(WlDatCiv *civ, const WlDatCiv *civs, int B, int button, 
         for (size_t i = 0; !rc && i < units_v->u.obj.count; i++)
             rc = wl_set_unit_field(u, fw, units_v->u.obj.members[i].key, units_v->u.obj.members[i].val, err, errcap);
     }
+    const WlJsonVal *gfx_v = obj ? wl_json_get(obj, "graphics") : NULL;
+    if (!rc && gfx_v) rc = wl_apply_graphics(gctx, u, gfx_v, fw, err, errcap);
     if (!rc) rc = wl_replace_civ_units(civ, slot, u, nlen, -1, NULL, 0, err, errcap);
     free(u);
     if (rc) return -1;
@@ -1962,7 +2129,7 @@ static int wl_cmd_research(int cid, int B, int button, int age, size_t k, const 
 //   [{"button": n, "train": id | {...}} | {"button": n, "research": {...}} | {"button": n, "lua": "Name", ...}]
 // avail_idx: index of the building's "avail" effect in *p_effs (train commands enable their units there;
 // an index, not a pointer, because research commands grow *p_effs).
-static int wl_add_building_commands(WlDatCiv *civ, const WlDatCiv *civs, int cid, int B, const WlJsonVal *ub,
+static int wl_add_building_commands(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civs, int cid, int B, const WlJsonVal *ub,
                                     int age, size_t avail_idx,
                                     const uint8_t *orig, const WlOrigResearch *orig_researches, size_t orig_res_cnt,
                                     WlDatResearch **p_res, size_t *p_res_cnt, size_t *p_res_cap,
@@ -1998,7 +2165,7 @@ static int wl_add_building_commands(WlDatCiv *civ, const WlDatCiv *civs, int cid
         int button = (int)bv->u.num.ival;
 
         if (tv) {
-            if (wl_cmd_train(civ, civs, B, button, tv, &(*p_effs)[avail_idx], uu_total, ext, w, err, errcap) != 0)
+            if (wl_cmd_train(gctx, civ, civs, B, button, tv, &(*p_effs)[avail_idx], uu_total, ext, w, err, errcap) != 0)
                 return -1;
         } else if (rv) {
             if (wl_cmd_research(cid, B, button, age, k, rv, orig, orig_researches, orig_res_cnt,
@@ -2335,6 +2502,8 @@ static int wl_add_unique_building(
         WlCustomGraphic *cg = &(*p_custom_graphics)[*p_custom_graphics_cnt];
         memcpy(cg->data, orig + gfx_pos, 78);
         cg->source_ptr = src_ptr;
+        cg->extra = NULL;      // a building picture: no deltas, no attack sounds
+        cg->extra_len = 0;
 
         // Modify graphic record: name, filename, slp, id, frame_count=1, angle_count=1, delta_count=0, attack_sound_used=0
         char gname[32];
@@ -2446,7 +2615,9 @@ static int wl_add_unique_building(
     free(rep_B);
     if (rc != 0) return -1;
     ext->slots = ub_k + 1;
-    if (wl_add_building_commands(civ, civs, cid, B, ub, age, avail_idx,
+    WlGfxCtx gctx = { orig, graphics_section_offset, orig_graphics_count,
+                      p_custom_graphics, p_custom_graphics_cnt, p_custom_graphics_cap };
+    if (wl_add_building_commands(&gctx, civ, civs, cid, B, ub, age, avail_idx,
                                  orig, orig_researches, orig_res_cnt,
                                  p_custom_researches, p_custom_researches_cnt, p_custom_researches_cap,
                                  ef_cnt, p_custom_effects, p_custom_effects_cnt, p_custom_effects_cap,
@@ -2534,6 +2705,8 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                              WlBuildExt *ext,
                              const WlJsonVal *spec, const char *where,
                              int *out_cid, char *err, size_t errcap) {
+    WlGfxCtx gctx = { orig, graphics_section_offset, orig_graphics_count,
+                      p_custom_graphics, p_custom_graphics_cnt, p_custom_graphics_cap };
     if (spec->type != WL_JSON_OBJECT) {
         snprintf(err, errcap, "%s: top level must be an object", where);
         return -1;
@@ -2907,14 +3080,22 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 return -1;
             }
 
-            if (flds && flds->type == WL_JSON_OBJECT) {
+            if (!flds || flds->type != WL_JSON_OBJECT) {
+                snprintf(err, errcap, "%s: units.%s must be an object", where, uid_str);
+                wl_free_civ(&new_civ);
+                return -1;
+            }
+            {
                 char where_unit[1024];
                 snprintf(where_unit, sizeof(where_unit), "%.500s unit %ld", where, uid);
                 uint8_t *u_data = new_civ.data + new_civ.unit_offsets[uid];
                 for (size_t f = 0; f < flds->u.obj.count; f++) {
                     const char *fname = flds->u.obj.members[f].key;
                     const WlJsonVal *fval = flds->u.obj.members[f].val;
-                    if (wl_set_unit_field(u_data, where_unit, fname, fval, err, errcap) != 0) {
+                    int frc = !strcmp(fname, "graphics")
+                        ? wl_apply_graphics(&gctx, u_data, fval, where_unit, err, errcap)
+                        : wl_set_unit_field(u_data, where_unit, fname, fval, err, errcap);
+                    if (frc != 0) {
                         wl_free_civ(&new_civ);
                         return -1;
                     }
@@ -2974,8 +3155,8 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         }
 
         const char *known_uu[] = {
-            "copy_from", "elite_copy_from", "elite_cost", "elite_name",
-            "elite_time", "elite_units", "help", "name", "units"
+            "copy_from", "elite_copy_from", "elite_cost", "elite_graphics", "elite_name",
+            "elite_time", "elite_units", "graphics", "help", "name", "units"
         };
         char *extra_uu[16];
         size_t extra_uu_cnt = 0;
@@ -3477,6 +3658,15 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 }
             }
         }
+        const WlJsonVal *uu_gfx = wl_json_get(uu_val, "graphics");
+        if (uu_gfx) {
+            char where_g[1024];
+            snprintf(where_g, sizeof(where_g), "%.500s unique_unit", where);
+            if (wl_apply_graphics(&gctx, rep_U, uu_gfx, where_g, err, errcap) != 0) {
+                free(rep_U); wl_free_civ(&new_civ);
+                return -1;
+            }
+        }
 
         // 6. Build unit E
         const uint8_t *src_e = new_civ.data + new_civ.unit_offsets[elite_copy_from];
@@ -3589,6 +3779,16 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                     free(rep_U); free(rep_E); wl_free_civ(&new_civ);
                     return -1;
                 }
+            }
+        }
+        const WlJsonVal *el_gfx = wl_json_get(uu_val, "elite_graphics");
+        if (!el_gfx) el_gfx = uu_gfx;
+        if (el_gfx) {
+            char where_g[1024];
+            snprintf(where_g, sizeof(where_g), "%.500s unique_unit elite", where);
+            if (wl_apply_graphics(&gctx, rep_E, el_gfx, where_g, err, errcap) != 0) {
+                free(rep_U); free(rep_E); wl_free_civ(&new_civ);
+                return -1;
             }
         }
 
@@ -4146,7 +4346,8 @@ int wl_dat_build(const WlZlib *z,
     for (size_t i = 0; i < custom_effects_cnt; i++) {
         custom_ef_total_len += 31 + 2 + (size_t)custom_effects[i].cmd_count * 11;
     }
-    size_t custom_gfx_len = (size_t)custom_graphics_cnt * (4 + 78);  // pointer + 78-byte record each
+    size_t custom_gfx_len = 0;   // pointer + 78-byte record + deltas/sounds each
+    for (size_t i = 0; i < custom_graphics_cnt; i++) custom_gfx_len += 4 + 78 + custom_graphics[i].extra_len;
     size_t s9_len = civs_start - orig_effects_end;
     // Section 11: Researches = original count+bodies, then the unique unit
     // researches appended by wl_apply_civ_json (62-byte header + name each).
@@ -4225,10 +4426,14 @@ int wl_dat_build(const WlZlib *z,
     memcpy(new_decomp + dpos, orig + orig_gfx_records_start, orig_gfx_records_len);
     dpos += orig_gfx_records_len;
 
-    // Append custom graphic records (78 bytes each, no deltas or attack sounds)
+    // Append custom graphic records (78-byte header, then its deltas and attack sounds)
     for (size_t i = 0; i < custom_graphics_cnt; i++) {
         memcpy(new_decomp + dpos, custom_graphics[i].data, 78);
         dpos += 78;
+        if (custom_graphics[i].extra_len) {
+            memcpy(new_decomp + dpos, custom_graphics[i].extra, custom_graphics[i].extra_len);
+            dpos += custom_graphics[i].extra_len;
+        }
     }
 
     // 4. Sections 6..7 (Terrain Block, Random Maps)
@@ -4393,6 +4598,7 @@ int wl_dat_build(const WlZlib *z,
     for (size_t i = 0; i < custom_effects_cnt; i++) free(custom_effects[i].commands);
     free(custom_effects);
     free(orig_effects);
+    for (size_t i = 0; i < custom_graphics_cnt; i++) free(custom_graphics[i].extra);
     free(custom_graphics);
     for (size_t i = 0; i < cur_civ_count; i++) wl_free_civ(&civs[i]);
     free(civs);
@@ -4412,6 +4618,7 @@ cleanup_err:
     for (size_t i = 0; i < custom_effects_cnt; i++) free(custom_effects[i].commands);
     free(custom_effects);
     free(orig_effects);
+    for (size_t i = 0; i < custom_graphics_cnt; i++) free(custom_graphics[i].extra);
     free(custom_graphics);
     for (size_t i = 0; i < cur_civ_count; i++) wl_free_civ(&civs[i]);
     free(civs);

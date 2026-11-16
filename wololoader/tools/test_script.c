@@ -16,11 +16,16 @@ BOOL g_wl_vanilla;
 
 // Captured log
 static char g_lines[256][512];
-static int g_nlines;
+static int g_nlines, g_nlines_total;
 void wl_log(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    if (g_nlines < 256) vsnprintf(g_lines[g_nlines++], sizeof g_lines[0], fmt, ap);
+    g_nlines_total++;
+    if (g_nlines >= 256) {   // keep the newest lines: drop the oldest half
+        memmove(g_lines, g_lines[128], 128 * sizeof g_lines[0]);
+        g_nlines = 128;
+    }
+    vsnprintf(g_lines[g_nlines++], sizeof g_lines[0], fmt, ap);
     va_end(ap);
     printf("  log| %s\n", g_lines[g_nlines - 1]);
 }
@@ -188,6 +193,30 @@ int main(void) {
         "Game.OnBuildingDone(function(u) wl.log('BUILT', u.Id, u.Type, tostring(u.Built)) end)\n"
         "wl.on('t_units', function() for _, u in ipairs(Game.LocalPlayer:Units()) do\n"
         "  wl.log('UNIT', u.Id, tostring(u.IsBuilding), tostring(u.Built)) end end)\n");
+
+    // sandbox attacks (each must be stopped; see the "sandbox" checks at the end)
+    write_mod(7, "evil",
+        "wl.on('a_pcall', function() local n = 0\n"
+        "  while true do pcall(function() while true do end end) n = n + 1\n"
+        "    if n > 30 then wl.log('E1 ESCAPED') return end end end)\n"
+        "wl.on('a_co', function()\n"
+        "  for i = 1, 1000000 do coroutine.resume(coroutine.create(function() while true do end end)) end\n"
+        "  wl.log('E2 ESCAPED') end)\n"
+        "wl.on('a_xpcall', function() local n = 0\n"
+        "  while true do xpcall(function() while true do end end, function() while true do end end) n = n + 1\n"
+        "    if n > 30 then wl.log('E1b ESCAPED') return end end end)\n"
+        "wl.on('a_pattern', function() local ok, e = pcall(string.find, string.rep('a', 60), '.-.-.-.-.-.-.-.-b')\n"
+        "  wl.log('E3 pattern', tostring(ok), tostring(e)) end)\n"
+        "wl.on('a_pattern2', function() local ok, e = pcall(function() return (string.rep('a', 200000)):find('.-b') end)\n"
+        "  wl.log('E3b pattern', tostring(ok), tostring(e)) end)\n"
+        "wl.on('a_meta', function() local ok, e = pcall(function() getmetatable('').__index.upper = function() return 'HACKED' end end)\n"
+        "  wl.log('E4 meta', tostring(ok), tostring(getmetatable(''))) end)\n"
+        "wl.on('a_gc', function() wl.log('E6 gc', tostring(pcall(collectgarbage, 'stop')), tostring(pcall(collectgarbage, 'count'))) end)\n"
+        "wl.on('a_dump', function() wl.log('E8 dump', tostring(string.dump), tostring(warn)) end)\n"
+        "wl.on('a_log', function() for i = 1, 3000 do print('spam', i) end end)\n"
+        "wl.on('a_image', function() local ok, e = pcall(wl.raw_ui_set, 1, 'Image', '/etc/passwd') wl.log('E5 image', tostring(ok), tostring(e)) end)\n");
+    write_mod(8, "victim",
+        "wl.on('a_victim', function() wl.log('VICTIM upper', ('x'):upper()) end)\n");
 
     wl_script_event("game_start");  // before init: must be a harmless no-op
     static const WlUiApi fui = { fui_create, fui_destroy, fui_set, fui_text };
@@ -370,6 +399,30 @@ int main(void) {
     wl_script_event("every_second");
     CHECK(count_line("[lua:events] BUILT") == built && count_line("[lua:events] RESEARCH") == researched);
     wl_script_set_game(NULL);
+    // ---- sandbox ---------------------------------------------------------------------
+    printf("-- sandbox attacks\n");
+    wl_script_event("a_pcall");
+    CHECK(!has_line("E1 ESCAPED") && has_line("[lua:evil] handler for 'a_pcall' failed"));
+    wl_script_event("a_xpcall");
+    CHECK(!has_line("E1b ESCAPED"));
+    wl_script_event("a_co");
+    CHECK(!has_line("E2 ESCAPED"));
+    wl_script_event("a_pattern");
+    CHECK(has_line("E3 pattern\tfalse\t") && has_line("pattern too complex"));
+    wl_script_event("a_pattern2");
+    CHECK(has_line("E3b pattern\tfalse\t"));
+    wl_script_event("a_meta");
+    wl_script_event("a_victim");
+    CHECK(has_line("[lua:victim] VICTIM upper\tX"));
+    wl_script_event("a_gc");
+    CHECK(has_line("E6 gc\tfalse\ttrue"));
+    wl_script_event("a_dump");
+    CHECK(has_line("E8 dump\tnil\tnil"));
+    wl_script_event("a_image");
+    CHECK(has_line("E5 image\tfalse\t"));
+    g_nlines_total = 0;
+    wl_script_event("a_log");
+    CHECK(g_nlines_total < 2100 && has_line("further output of this mod is not logged"));
     printf(g_fail ? "TEST FAILED\n" : "TEST PASSED\n");
     return g_fail;
 }

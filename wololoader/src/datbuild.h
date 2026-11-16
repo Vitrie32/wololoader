@@ -6,7 +6,7 @@
 // Builder output revision: part of the autobuild fingerprint (autobuild.c).
 // Bump it whenever wl_dat_build produces different bytes for the same mods,
 // so players' caches are rebuilt automatically.
-#define WL_BUILDER_REV "ub-cmds1"   // unique building commands (train/research/lua), strings.txt + commands.txt
+#define WL_BUILDER_REV "unit-gfx1"   // unit "graphics" (copied graphic records with mod SLPs)
 
 typedef struct {
     int (*inflate_raw)(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len);

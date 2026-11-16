@@ -93,17 +93,57 @@ static BYTE *begin(int pid, int size, void **w_out, int *rc) {
     *rc = -1;
     if (!w || !RDP(w, 0xc0) || !player_obj(w, pid, NULL)) return NULL;
     if (!i_send_for(w, pid)) { *rc = 0; return NULL; }
-    DWORD sec = GetTickCount() / 1000;
-    if (sec != g_second) { g_second = sec; g_sent_this_second = 0; }
-    if (++g_sent_this_second > 100) { wl_log("gamecmd: more than 100 commands in a second, dropped"); return NULL; }
     BYTE *pkt = ((Calloc_t)0x8ea479)(1, (size_t)size);
     if (!pkt) return NULL;
     *w_out = w;
     return pkt;
 }
-static int send_cmd(void *w, BYTE *pkt, int size) {
+// At most 100 Lua commands a second (real time) go to the game. More are queued and sent by
+// wl_gamecmd_frame on the next frames, so a script can ask for 1000 units at once; the queue
+// belongs to one world and is dropped when the game ends (the packets are not freed then: the
+// game's free for its calloc 0x8ea479 is not verified, and this only happens with a full queue).
+#define CMD_RATE 100
+#define CMD_QUEUE 4096
+static struct { BYTE *pkt; int size; } g_q[CMD_QUEUE];
+static int g_qhead, g_qlen, g_qdropped;
+static void *g_qworld;
+
+static void send_now(void *w, BYTE *pkt, int size) {
     ((Send_t)0x80ef70)(RDP(w, 0xc0), pkt, size, (int)RD32(w, 0x174));
+}
+static int rate_ok(void) {
+    DWORD sec = GetTickCount() / 1000;
+    if (sec != g_second) { g_second = sec; g_sent_this_second = 0; }
+    return g_sent_this_second < CMD_RATE;
+}
+static int send_cmd(void *w, BYTE *pkt, int size) {
+    if (g_qworld != w) { g_qhead = g_qlen = 0; g_qworld = w; }
+    if (g_qlen == 0 && rate_ok()) {
+        g_sent_this_second++;
+        send_now(w, pkt, size);
+        return 1;
+    }
+    if (g_qlen == CMD_QUEUE) {
+        if (g_qdropped++ == 0) wl_log("gamecmd: %d commands waiting, more are dropped", CMD_QUEUE);
+        return -1;
+    }
+    int k = (g_qhead + g_qlen++) % CMD_QUEUE;
+    g_q[k].pkt = pkt;
+    g_q[k].size = size;
     return 1;
+}
+// From the game screen's frame (luagame.c): sends queued commands within the rate.
+void wl_gamecmd_frame(void) {
+    if (!g_qlen) return;
+    void *w = world();
+    if (!w || w != g_qworld || !RDP(w, 0xc0)) { g_qhead = g_qlen = 0; g_qworld = NULL; return; }
+    while (g_qlen && rate_ok()) {
+        g_sent_this_second++;
+        send_now(w, g_q[g_qhead].pkt, g_q[g_qhead].size);
+        g_qhead = (g_qhead + 1) % CMD_QUEUE;
+        g_qlen--;
+    }
+    if (!g_qlen) g_qdropped = 0;
 }
 
 int wl_cmd_add_resource(int pid, int res, float amount) {

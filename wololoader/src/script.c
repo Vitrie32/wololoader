@@ -7,16 +7,22 @@
 //
 // SANDBOX: only base, string, table, math, utf8 and coroutine are opened.
 // io, os, package and debug do not exist. dofile, loadfile, load, loadstring,
-// require and print (replaced) are removed from the base library. Every mod
-// gets its own _ENV table holding private copies of the library tables, so a
-// mod that assigns globals or edits string/table/math functions does not
-// affect other mods. (The string metatable is shared by Lua itself, so
-// getmetatable("").__index is still common; this is best effort isolation
-// against accidents, not a security boundary against hostile mods.)
+// require, warn, string.dump and print (replaced) are removed. Every mod gets its
+// own _ENV table holding private copies of the library tables, so a mod that
+// assigns globals or edits string/table/math functions does not affect other
+// mods. The string metatable (shared by Lua itself) is locked: getmetatable("")
+// returns a string, so ("x"):upper() cannot be redirected by another mod.
+// collectgarbage only allows "collect", "count" and "step".
 //
-// SAFETY: every call into Lua goes through lua_pcall. A count hook aborts a
-// call after WL_SCRIPT_INSN_LIMIT VM instructions (infinite loops), and a
-// custom allocator caps the state at WL_SCRIPT_MEM_LIMIT bytes.
+// SAFETY: every call into Lua goes through lua_pcall. The instruction budget
+// (WL_SCRIPT_INSN_LIMIT) is shared by every thread a call runs, counted by a hook
+// every WL_HOOK_STEP instructions; coroutines created by a script inherit the
+// hook. Once it is used up the hook fires on every instruction of every thread
+// until the call is over, so pcall / xpcall / coroutine.resume cannot catch the
+// abort and keep running. Lua patterns run in C without the hook, so the string
+// matching functions refuse a pattern whose worst case on the given text is too
+// large (pattern_cost). A custom allocator caps the state at WL_SCRIPT_MEM_LIMIT
+// bytes, log output is capped per mod, and UI images must be inside a mod folder.
 #include "wololoader.h"
 #include <stdio.h>
 #include <stdint.h>
@@ -27,6 +33,8 @@
 #include "lualib.h"
 
 #define WL_SCRIPT_INSN_LIMIT 10000000L          // VM instructions per call
+#define WL_HOOK_STEP 1000                       // instructions between budget checks
+#define WL_LOG_LINES_PER_MOD 2000               // log lines a mod may write per game start
 #define WL_SCRIPT_MEM_LIMIT  (64u * 1024 * 1024)
 #define WL_HANDLERS_KEY "wl.handlers"           // registry: event -> array of {fn, mod}
 #ifdef _WIN32
@@ -45,6 +53,8 @@ static void (*g_ui_chat)(const char *, const char *, int);
 static void (*g_ui_ask)(const char *, int);
 static DWORD g_now;                             // clock of the last frame / reset (ms)
 static size_t g_mem_used;
+// Log lines per mod (by id), so one mod cannot fill the disk; reset by wl_script_game_reset.
+static struct { char mod[64]; int lines; } g_logcount[64];
 
 // --- allocator with a cap ---------------------------------------------------
 static void *wl_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
@@ -67,9 +77,25 @@ static int wl_lua_panic(lua_State *L) {
 }
 
 // --- instruction limit ------------------------------------------------------
+// One budget per top-level call (budget_start), shared by all threads it runs.
+static long g_insn_used;
+static int g_aborting;
 static void insn_hook(lua_State *L, lua_Debug *ar) {
     (void)ar;
+    if (!g_aborting) {
+        g_insn_used += WL_HOOK_STEP;
+        if (g_insn_used < WL_SCRIPT_INSN_LIMIT) return;
+        g_aborting = 1;
+    }
+    // from now on every instruction of this thread fails, so a pcall / xpcall in the
+    // script cannot catch the abort and go on; other threads stop at their next check
+    lua_sethook(L, insn_hook, LUA_MASKCOUNT, 1);
     luaL_error(L, "script aborted: instruction limit (%d) exceeded", (int)WL_SCRIPT_INSN_LIMIT);
+}
+static void budget_start(lua_State *L) {
+    g_insn_used = 0;
+    g_aborting = 0;
+    lua_sethook(L, insn_hook, LUA_MASKCOUNT, WL_HOOK_STEP);
 }
 
 // pcall with a fresh instruction budget. Stack: function and nargs args.
@@ -87,10 +113,16 @@ static int api_raw_ui_set(lua_State *L);
 static int api_raw_ui_destroy(lua_State *L);
 static int api_raw_ui_text(lua_State *L);
 
+// g_depth: only the outermost call starts a budget (a nested call shares it).
+static int g_depth;
 static int guarded_pcall(lua_State *L, int nargs) {
-    lua_sethook(L, insn_hook, LUA_MASKCOUNT, WL_SCRIPT_INSN_LIMIT);  // also resets the counter
+    lua_Hook oh = lua_gethook(L);
+    int om = lua_gethookmask(L), oc = lua_gethookcount(L);
+    if (g_depth++ == 0) budget_start(L);
+    else lua_sethook(L, insn_hook, LUA_MASKCOUNT, g_aborting ? 1 : WL_HOOK_STEP);
     int rc = lua_pcall(L, nargs, 0, 0);
-    lua_sethook(L, NULL, 0, 0);
+    lua_sethook(L, oh, om, oc);          // a nested call gives the outer one its hook back
+    if (--g_depth == 0) g_aborting = 0;
     return rc;
 }
 
@@ -124,9 +156,13 @@ static DWORD seconds_to_ms(lua_Number s) {
 static int task_step(lua_State *co, int nargs, DWORD *wait_ms) {
     int nres = 0;
     *wait_ms = 0;
-    lua_sethook(co, insn_hook, LUA_MASKCOUNT, WL_SCRIPT_INSN_LIMIT);
+    lua_Hook oh = lua_gethook(co);
+    int om = lua_gethookmask(co), oc = lua_gethookcount(co);
+    if (g_depth++ == 0) budget_start(co);
+    else lua_sethook(co, insn_hook, LUA_MASKCOUNT, g_aborting ? 1 : WL_HOOK_STEP);
     int rc = lua_resume(co, g_L, nargs, &nres);
-    lua_sethook(co, NULL, 0, 0);
+    lua_sethook(co, oh, om, oc);
+    if (--g_depth == 0) g_aborting = 0;
     if (rc == LUA_YIELD) {
         // wl.wait yields the number of seconds; a bare coroutine.yield() = next frame
         if (nres >= 1 && lua_isnumber(co, -1)) *wait_ms = seconds_to_ms(lua_tonumber(co, -1));
@@ -196,6 +232,7 @@ static void free_ask(WlAsk *a) {
 
 void wl_script_game_reset(DWORD now_ms) {
     g_now = now_ms;
+    memset(g_logcount, 0, sizeof g_logcount);
     if (!g_L) return;
     for (int i = 0; i < WL_MAX_TIMERS; i++) free_timer(&g_timers[i]);
     for (int i = 0; i < WL_MAX_ASKS; i++) free_ask(&g_asks[i]);
@@ -269,11 +306,23 @@ static void join_args(lua_State *L, luaL_Buffer *b) {
     }
 }
 
+static int log_allowed(const char *mod) {
+    int i;
+    for (i = 0; i < 64 && g_logcount[i].mod[0]; i++) if (!strcmp(g_logcount[i].mod, mod)) break;
+    if (i == 64) return 1;
+    if (!g_logcount[i].mod[0]) snprintf(g_logcount[i].mod, sizeof g_logcount[i].mod, "%s", mod);
+    int n = ++g_logcount[i].lines;
+    if (n == WL_LOG_LINES_PER_MOD + 1)
+        wl_log("[lua:%s] more than %d lines: further output of this mod is not logged until the next game", mod, WL_LOG_LINES_PER_MOD);
+    return n <= WL_LOG_LINES_PER_MOD;
+}
 static int api_log(lua_State *L) {
+    const char *mod = lua_tostring(L, lua_upvalueindex(1));
+    if (!log_allowed(mod)) return 0;
     luaL_Buffer b;
     join_args(L, &b);
     luaL_pushresult(&b);
-    wl_log("[lua:%s] %s", lua_tostring(L, lua_upvalueindex(1)), lua_tostring(L, -1));
+    wl_log("[lua:%s] %s", mod, lua_tostring(L, -1));
     return 0;
 }
 
@@ -427,7 +476,7 @@ static int api_on(lua_State *L) {
 static const char *const k_base_keep[] = {
     "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs",
     "pcall", "rawequal", "rawget", "rawlen", "rawset", "select", "setmetatable",
-    "tonumber", "tostring", "type", "xpcall", "warn", NULL};
+    "tonumber", "tostring", "type", "xpcall", NULL};
 static const char *const k_libs[] = {"string", "table", "math", "utf8", "coroutine", NULL};
 
 // Shallow copy of the table at `idx` (library tables hold only functions/numbers).
@@ -601,6 +650,16 @@ static int api_raw_ui_create(lua_State *L) {
     if (id < 0) lua_pushnil(L); else lua_pushinteger(L, id);
     return 1;
 }
+// UI images must be files inside an enabled mod's folder (no "..", no other absolute path).
+static int image_path_ok(const char *p) {
+    if (strstr(p, "..")) return 0;
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        const WlMod *m = &g_wl.mods[i];
+        size_t n = strlen(m->dir);
+        if (m->enabled && n && !_strnicmp(p, m->dir, n) && (p[n] == '\\' || p[n] == '/')) return 1;
+    }
+    return 0;
+}
 static int api_raw_ui_set(lua_State *L) {
     int id = (int)luaL_checkinteger(L, 1);
     const char *key = luaL_checkstring(L, 2);
@@ -609,6 +668,8 @@ static int api_raw_ui_set(lua_State *L) {
     if (lua_type(L, 3) == LUA_TSTRING) str = lua_tostring(L, 3);
     else if (lua_isboolean(L, 3)) v = lua_toboolean(L, 3);
     else if (!lua_isnoneornil(L, 3)) v = (int)luaL_checknumber(L, 3);
+    if (str && !strcmp(key, "Image") && !image_path_ok(str))
+        return luaL_error(L, "Image must be a file inside the mod folder: %s", str);
     lua_pushboolean(L, g_ui ? g_ui->set(id, key, v, str) : 1);
     return 1;
 }
@@ -851,7 +912,8 @@ static const char k_prelude[] =
 "local function resolve_image_path(path)\n"
 "  if not path or path == '' then return nil end\n"
 "  if type(path) ~= 'string' then error('Image must be a string path', 3) end\n"
-"  if path:match('^[A-Za-z]:[/\\\\]') then return path end\n"
+"  if path:match('^[A-Za-z]:') or path:match('^[/\\\\]') or path:find('..', 1, true) then\n"
+"    error('Image must be a path inside the mod folder, like \"icons/gold.png\"', 3) end\n"
 "  if not MOD.dir then return path end\n"
 "  return MOD.dir .. '\\\\' .. path:gsub('/', '\\\\')\n"
 "end\n"
@@ -1070,6 +1132,104 @@ void wl_script_set_counter(void (*counter)(const char *)) { g_ui_counter = count
 void wl_script_set_chat(void (*chat)(const char *, const char *, int)) { g_ui_chat = chat; }
 void wl_script_set_ask(void (*ask)(const char *, int)) { g_ui_ask = ask; }
 
+// --- hardening of the standard library -------------------------------------
+// Lua's pattern matcher backtracks in C (no instruction hook): ".-.-.-b" on a long
+// text runs for hours. Worst case ~ len^(1 + unbounded quantifiers) * 2^(optional ones),
+// one len factor less when anchored with '^'. Refuse above WL_PATTERN_COST.
+#define WL_PATTERN_COST 2e8
+static double pattern_cost(const char *p, size_t plen, size_t len) {
+    int unbounded = 0, optional = 0, anchored = plen > 0 && p[0] == '^';
+    for (size_t i = 0; i < plen; i++) {
+        if (p[i] == '%') { i++; continue; }                    // escape or class (%a, %b.., %f[..])
+        if (p[i] == '[') {                                     // set: skip to the closing ]
+            i++;
+            if (i < plen && p[i] == '^') i++;
+            if (i < plen && p[i] == ']') i++;
+            while (i < plen && p[i] != ']') { if (p[i] == '%') i++; i++; }
+            continue;
+        }
+        if (p[i] == '*' || p[i] == '-' || p[i] == '+') unbounded++;
+        else if (p[i] == '?') optional++;
+    }
+    double n = (double)len + 1, cost = anchored ? 1 : n;
+    for (int k = 0; k < unbounded; k++) cost *= n;
+    for (int k = 0; k < optional && k < 40; k++) cost *= 2;
+    return cost;
+}
+// upvalue 1: the original function. find/match: (s, pattern, init, plain); gmatch/gsub: (s, pattern, ...)
+static int guarded_match(lua_State *L) {
+    size_t len, plen;
+    const char *str = luaL_checklstring(L, 1, &len);
+    const char *pat = luaL_checklstring(L, 2, &plen);
+    (void)str;
+    int plain = lua_toboolean(L, 4) && lua_tointeger(L, lua_upvalueindex(2)) == 1;   // only find has `plain`
+    if (!plain && pattern_cost(pat, plen, len) > WL_PATTERN_COST)
+        return luaL_error(L, "pattern too complex for a text of %d characters", (int)len);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_insert(L, 1);
+    lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
+    return lua_gettop(L);
+}
+// collectgarbage("collect" | "count" | "step"): stopping the collector or changing its mode is not allowed
+static int guarded_gc(lua_State *L) {
+    const char *opt = luaL_optstring(L, 1, "collect");
+    if (strcmp(opt, "collect") && strcmp(opt, "count") && strcmp(opt, "step"))
+        return luaL_error(L, "collectgarbage('%s') is not allowed in mod scripts", opt);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_insert(L, 1);
+    lua_call(L, lua_gettop(L) - 1, LUA_MULTRET);
+    return lua_gettop(L);
+}
+// xpcall(f, handler, ...): Lua runs the handler while the error is being raised, which inside
+// our instruction hook means with hooks off: an endless handler would never stop. This version
+// calls f with pcall and the handler afterwards, as a normal (counted) call.
+static int safe_xpcall(lua_State *L) {
+    int n = lua_gettop(L);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);                          // f
+    for (int i = 3; i <= n; i++) lua_pushvalue(L, i);
+    if (lua_pcall(L, n - 2, LUA_MULTRET, 0) == LUA_OK) {
+        lua_pushboolean(L, 1);
+        lua_insert(L, n + 1);
+        return lua_gettop(L) - n;
+    }
+    lua_pushvalue(L, 2);                          // handler(err)
+    lua_insert(L, -2);
+    lua_call(L, 1, 1);
+    lua_pushboolean(L, 0);
+    lua_insert(L, -2);
+    return 2;
+}
+
+static void harden_libs(lua_State *L) {
+    lua_pushcfunction(L, safe_xpcall);
+    lua_setglobal(L, "xpcall");
+    lua_getglobal(L, "string");
+    static const char *const fns[] = { "find", "match", "gmatch", "gsub", NULL };
+    for (int i = 0; fns[i]; i++) {
+        lua_getfield(L, -1, fns[i]);
+        lua_pushinteger(L, i == 0);                            // 1 = find (has the plain flag)
+        lua_pushcclosure(L, guarded_match, 2);
+        lua_setfield(L, -2, fns[i]);
+    }
+    lua_pushnil(L);
+    lua_setfield(L, -2, "dump");                               // bytecode: useless without load, keep it away
+    lua_pop(L, 1);
+    // lock the shared string metatable: getmetatable("") returns a string, not the table
+    lua_pushliteral(L, "");
+    if (lua_getmetatable(L, -1)) {
+        lua_pushliteral(L, "locked");
+        lua_setfield(L, -2, "__metatable");
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    lua_getglobal(L, "collectgarbage");
+    lua_pushcclosure(L, guarded_gc, 1);
+    lua_setglobal(L, "collectgarbage");
+    lua_pushnil(L);
+    lua_setglobal(L, "warn");
+}
+
 void wl_script_init(void) {
     if (g_init_done) return;
     g_init_done = 1;
@@ -1093,6 +1253,7 @@ void wl_script_init(void) {
         lua_pushnil(L);
         lua_setglobal(L, removed[i]);
     }
+    harden_libs(L);
     lua_newtable(L);
     lua_setfield(L, LUA_REGISTRYINDEX, WL_HANDLERS_KEY);
 

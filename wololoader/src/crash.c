@@ -1,23 +1,38 @@
-// Crash logger: records access violations raised inside AoK HD.exe code with
-// registers and the exe return addresses found on the stack.
+// Crash logger: records exceptions with registers, the module (exe, our version.dll or a
+// system DLL) and offset of EIP, and the exe / Wololoader return addresses on the stack.
+// Many exceptions are harmless (the game catches them: 5 read faults at every lobby load), so
+// each EIP is logged at most twice and 60 in total; anything still unhandled is logged again by
+// the unhandled-exception filter as FATAL, which is what ends the game.
 #include "wololoader.h"
 #include <stdio.h>
+#include <string.h>
 
 #define EXE_LO 0x401000
 #define EXE_HI 0x9ac000
 
 static volatile LONG g_logged;
+static DWORD g_seen_eip[64];
+static int g_seen_cnt[64];
+static DWORD g_dll_lo, g_dll_hi;      // our own module
 
-static LONG CALLBACK on_exception(EXCEPTION_POINTERS *ep) {
+// "AoK HD.exe+1c8b50", "version.dll+2a10", "KERNELBASE.dll+11f3e"
+static void where(DWORD a, char *out, size_t cap) {
+    HMODULE m = NULL;
+    char path[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)(DWORD_PTR)a, &m) && m) {
+        GetModuleFileNameA(m, path, sizeof path);
+        const char *b = strrchr(path, '\\');
+        snprintf(out, cap, "%s+%lx", b ? b + 1 : path, a - (DWORD)(DWORD_PTR)m);
+    } else snprintf(out, cap, "?");
+}
+
+static void log_exception(const char *tag, EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     CONTEXT *c = ep->ContextRecord;
-    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION &&
-        er->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION &&
-        er->ExceptionCode != EXCEPTION_INT_DIVIDE_BY_ZERO)
-        return EXCEPTION_CONTINUE_SEARCH;
-    if (InterlockedIncrement(&g_logged) > 5) return EXCEPTION_CONTINUE_SEARCH;
-
-    wl_log("EXCEPTION %08lx at eip=%08lx (%s %08lx)", er->ExceptionCode, c->Eip,
+    char mod[MAX_PATH + 16];
+    where(c->Eip, mod, sizeof mod);
+    wl_log("%s %08lx at eip=%08lx %s (%s %08lx)", tag, er->ExceptionCode, c->Eip, mod,
            er->NumberParameters > 1 ? (er->ExceptionInformation[0] ? "write" : "read") : "",
            er->NumberParameters > 1 ? (DWORD)er->ExceptionInformation[1] : 0);
     wl_log("  eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx ebp=%08lx esp=%08lx",
@@ -25,16 +40,45 @@ static LONG CALLBACK on_exception(EXCEPTION_POINTERS *ep) {
     DWORD *sp = (DWORD *)c->Esp;
     int found = 0;
     for (int i = 0; i < 2048 && found < 24; i++) {
-        DWORD v;
         if (IsBadReadPtr(sp + i, 4)) break;
-        v = sp[i];
+        DWORD v = sp[i];
         if (v >= EXE_LO && v < EXE_HI) { wl_log("  stack+%04x: %08lx", i * 4, v); found++; }
+        else if (v >= g_dll_lo && v < g_dll_hi) { wl_log("  stack+%04x: %08lx version.dll+%lx", i * 4, v, v - g_dll_lo); found++; }
     }
+}
+
+static LONG CALLBACK on_exception(EXCEPTION_POINTERS *ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    // only faults: C++ throws (e06d7363), debug prints, thread names etc. are normal
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
+        code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_STACK_OVERFLOW &&
+        code != EXCEPTION_PRIV_INSTRUCTION && code != 0xc0000374 /* heap corruption */)
+        return EXCEPTION_CONTINUE_SEARCH;
+    DWORD eip = ep->ContextRecord->Eip;
+    int i;
+    for (i = 0; i < 64 && g_seen_eip[i] && g_seen_eip[i] != eip; i++) {}
+    if (i < 64) { g_seen_eip[i] = eip; if (++g_seen_cnt[i] > 2) return EXCEPTION_CONTINUE_SEARCH; }
+    if (InterlockedIncrement(&g_logged) > 60) return EXCEPTION_CONTINUE_SEARCH;
+    log_exception("EXCEPTION", ep);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// Reached only when nothing caught the exception: the game is about to close.
+static LONG WINAPI on_unhandled(EXCEPTION_POINTERS *ep) {
+    log_exception("FATAL (game closes)", ep);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
 void wl_install_crash_logger(void) {
+    HMODULE self = NULL;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)wl_install_crash_logger, &self) && self) {
+        IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)((BYTE *)self + ((IMAGE_DOS_HEADER *)self)->e_lfanew);
+        g_dll_lo = (DWORD)(DWORD_PTR)self;
+        g_dll_hi = g_dll_lo + nt->OptionalHeader.SizeOfImage;
+    }
     AddVectoredExceptionHandler(1, on_exception);
+    SetUnhandledExceptionFilter(on_unhandled);
 }
 
 // ---- Hang watchdog ---------------------------------------------------------
