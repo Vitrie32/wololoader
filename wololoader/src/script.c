@@ -7,7 +7,9 @@
 //
 // SANDBOX: only base, string, table, math, utf8 and coroutine are opened.
 // io, os, package and debug do not exist. dofile, loadfile, load, loadstring,
-// require, warn, string.dump and print (replaced) are removed. Every mod gets its
+// warn, string.dump and print (replaced) are removed. The real require is removed
+// too: each mod gets its own require(name), which loads only <mod>\scripts\<name>.lua
+// (see api_require). Every mod gets its
 // own _ENV table holding private copies of the library tables, so a mod that
 // assigns globals or edits string/table/math functions does not affect other
 // mods. The string metatable (shared by Lua itself) is locked: getmetatable("")
@@ -472,6 +474,99 @@ static int api_on(lua_State *L) {
 // print replacement: same as wl.log, needs the mod id upvalue too
 #define PUSH_MOD_CFUNC(L, f, id) do { lua_pushstring((L), (id)); lua_pushcclosure((L), (f), 1); } while (0)
 
+// --- require ----------------------------------------------------------------
+// require("ai.economy") runs <mod>\scripts\ai\economy.lua in the SAME environment as
+// main.lua (text chunks only, mode "t"). The result is cached per mod (upvalue 2);
+// a module that is already loading (directly or through others) is a circular
+// require error. The name is checked before any path is built: only ASCII letters,
+// digits, '_' and single '.' separators, 1..64 characters. So "..", "/", "\\", ":"
+// and absolute paths cannot be expressed, and nothing outside scripts\ is read.
+// Upvalues: 1 = mod env, 2 = cache (name -> result), 3 = loading (name -> true),
+// 4 = mod folder, 5 = mod id. Scripts cannot reach these tables (no debug library).
+#define WL_MODULE_NAME_MAX 64
+static char *read_whole(const char *path, size_t *len);
+
+static int valid_module_name(const char *s, size_t n) {
+    if (n == 0 || n > WL_MODULE_NAME_MAX || s[0] == '.' || s[n - 1] == '.') return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (c == '.') {
+            if (s[i - 1] == '.') return 0;          // "a..b" (i > 0 here: s[0] is not '.')
+        } else if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) {
+            return 0;                               // also rejects NUL, '/', '\\', ':', space
+        }
+    }
+    return 1;
+}
+
+static int api_require(lua_State *L) {
+    size_t n;
+    const char *name = luaL_checklstring(L, 1, &n);
+    if (!valid_module_name(name, n))
+        return luaL_error(L, "require: bad module name (letters, digits, '_' and '.' between parts, 1..%d characters, like \"ai.economy\")", WL_MODULE_NAME_MAX);
+    // cached? (a module that returned false is cached too, so test for nil)
+    lua_pushvalue(L, 1);
+    lua_rawget(L, lua_upvalueindex(2));
+    if (!lua_isnil(L, -1)) return 1;
+    lua_pop(L, 1);
+    lua_pushvalue(L, 1);
+    lua_rawget(L, lua_upvalueindex(3));
+    if (!lua_isnil(L, -1)) return luaL_error(L, "circular require of '%s'", name);
+    lua_pop(L, 1);
+
+    // name is clean now (only [A-Za-z0-9_] and '.'), so it can be a path part
+    char rel[WL_MODULE_NAME_MAX + 8];
+    for (size_t i = 0; i < n; i++) rel[i] = name[i] == '.' ? WL_SEP[0] : name[i];
+    rel[n] = 0;
+    char path[MAX_PATH + 96];
+    snprintf(path, sizeof path, "%s" WL_SEP "scripts" WL_SEP "%s.lua", lua_tostring(L, lua_upvalueindex(4)), rel);
+    size_t len = 0;
+    char *src = read_whole(path, &len);
+    if (!src) return luaL_error(L, "module '%s' not found (this mod has no scripts file for it)", name);
+    const char *code = src;
+    if (len >= 3 && (unsigned char)code[0] == 0xEF && (unsigned char)code[1] == 0xBB && (unsigned char)code[2] == 0xBF) {
+        code += 3; len -= 3;                        // UTF-8 BOM (Notepad)
+    }
+    if (len > 0 && code[0] == 0x1b) {               // precompiled bytecode: never run
+        free(src);
+        return luaL_error(L, "%s: binary chunks are not allowed in mod scripts", path);
+    }
+    char chunk[MAX_PATH + 96];
+    snprintf(chunk, sizeof chunk, "@%s", path);     // error messages name the file
+    int rc = luaL_loadbufferx(L, code, len, chunk, "t");
+    free(src);
+    if (rc != LUA_OK) return lua_error(L);          // "<file>:<line>: ..." message
+
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_setupvalue(L, -2, 1);                       // the module's _ENV = this mod's env
+    lua_pushvalue(L, 1);
+    lua_pushboolean(L, 1);
+    lua_rawset(L, lua_upvalueindex(3));
+    // lua_pcall, not a plain call: a failing module must clear its "loading" mark.
+    // The instruction budget is shared: this runs inside the caller's budget (g_depth > 0).
+    rc = lua_pcall(L, 0, 1, 0);
+    lua_pushvalue(L, 1);
+    lua_pushnil(L);
+    lua_rawset(L, lua_upvalueindex(3));
+    if (rc != LUA_OK) return lua_error(L);          // error message already names the file
+    if (lua_isnil(L, -1)) { lua_pop(L, 1); lua_pushboolean(L, 1); }   // no return value = true
+    lua_pushvalue(L, 1);
+    lua_pushvalue(L, -2);
+    lua_rawset(L, lua_upvalueindex(2));
+    return 1;
+}
+
+// Adds require to a mod env (the tables are closure upvalues, not reachable from Lua).
+static void push_require(lua_State *L, int env, const WlMod *m) {
+    lua_pushvalue(L, env);                          // upvalue 1: the env
+    lua_newtable(L);                                // upvalue 2: cache
+    lua_newtable(L);                                // upvalue 3: loading
+    lua_pushstring(L, m->dir);                      // upvalue 4
+    lua_pushstring(L, m->id);                       // upvalue 5
+    lua_pushcclosure(L, api_require, 5);
+    lua_setfield(L, env, "require");
+}
+
 // --- environment construction -----------------------------------------------
 static const char *const k_base_keep[] = {
     "assert", "collectgarbage", "error", "getmetatable", "ipairs", "next", "pairs",
@@ -553,6 +648,8 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_ui_destroy); lua_setfield(L, -2, "raw_ui_destroy");
     lua_pushcfunction(L, api_raw_ui_text);    lua_setfield(L, -2, "raw_ui_text");
     lua_setfield(L, env, "wl");
+
+    push_require(L, env, m);
 }
 
 
@@ -1248,6 +1345,7 @@ void wl_script_init(void) {
         lua_pop(L, 1);
     }
     // File and string loading from scripts is not allowed.
+    // (require is per mod: see push_require)
     static const char *const removed[] = {"dofile", "loadfile", "load", "loadstring", "require", NULL};
     for (int i = 0; removed[i]; i++) {
         lua_pushnil(L);

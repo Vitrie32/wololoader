@@ -498,7 +498,7 @@ send_and_close: {
                         "Connection: close\r\n"
                         "Access-Control-Allow-Origin: *\r\n"
                         "Access-Control-Allow-Headers: Content-Type, X-Scriptorium-Token\r\n"
-                        "Access-Control-Allow-Methods: GET, POST, PUT, OPTIONS\r\n"
+                        "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
                         "\r\n",
                         res.status_code, res.status_text, res.content_type, res.body_len);
 

@@ -46,17 +46,17 @@ static const ScCiv s_stub_civs[] = {
 };
 
 static const ScUnit s_stub_units[] = {
-    { 4,   70,  0, "ARCHR", "Archer" },
-    { 83,  70,  4, "VILLM", "Villager" },
-    { 125, 70, 18, "MONKX", "Monk" }
+    { 4,   70,  0, "ARCHR", "Archer", -1 },
+    { 83,  70,  4, "VILLM", "Villager", -1 },
+    { 125, 70, 18, "MONKX", "Monk", -1 }
 };
 
 static const ScTech s_stub_techs[] = {
-    { 3,   "TECH_YEOMEN",     "Yeomen" },
-    { 209, "TECH_CAVALIER",   "Cavalier" },
-    { 316, "TECH_REDEMPTION", "Redemption" },
-    { 435, "TECH_BLOODLINES", "Bloodlines" },
-    { 461, "TECH_WARWOLF",    "Warwolf" }
+    { 3,   "TECH_YEOMEN",     "Yeomen", -1 },
+    { 209, "TECH_CAVALIER",   "Cavalier", -1 },
+    { 316, "TECH_REDEMPTION", "Redemption", -1 },
+    { 435, "TECH_BLOODLINES", "Bloodlines", -1 },
+    { 461, "TECH_WARWOLF",    "Warwolf", -1 }
 };
 
 int sc_catalog_load(const WlZlib *z, const char *game_dir, ScCatalog *out, char *err, size_t errcap) {

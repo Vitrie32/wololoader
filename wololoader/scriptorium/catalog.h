@@ -51,12 +51,14 @@ typedef struct {
     int class_;                 // unit class (e.g. 18 = monk class), -1 if unknown
     char internal[64];          // internal dat name (ASCII)
     char name[128];             // display name (UTF-8) or "" when it has none
+    int icon;                   // icon_id from the dat (frame index in the game's icon sheet), -1 if unknown
 } ScUnit;
 
 typedef struct {
     int id;                     // tech (research) id
     char internal[64];          // internal dat name
     char name[128];             // display name (UTF-8) or ""
+    int icon;                   // icon_id from the dat (frame in the tech icon sheet 50729), -1 if unknown
 } ScTech;
 
 typedef struct {

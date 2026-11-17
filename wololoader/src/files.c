@@ -100,6 +100,31 @@ static void index_dir(const char *dir, const char *rel, int depth) {
     FindClose(h);
 }
 
+// Custom taunts: <mod>\taunts\NN name.mp3 is served in every language's
+// resources\<lang>\sound\taunt\ folder (game files are "01 yes.mp3".."42 ...").
+// The chat code accepts taunt numbers 1..256 (range check at 0x4f94a0, found by
+// Kiro, prologue 55 8b ec 8b 4d 10 8d 41 ff 3d ff 00 00 00); the game finds the
+// file by listing the taunt folder, which the listing hook below merges mod files
+// into. So a mod adds taunt 43+ by shipping "43 wololo again.mp3", or replaces a
+// game taunt with the same number and name. Unverified in game.
+static void add_mod_taunts(const char *mod_dir) {
+    char tdir[MAX_PATH], pattern[MAX_PATH];
+    snprintf(tdir, MAX_PATH, "%s\\taunts", mod_dir);
+    DWORD at = GetFileAttributesA(tdir);
+    if (at == INVALID_FILE_ATTRIBUTES || !(at & FILE_ATTRIBUTE_DIRECTORY)) return;
+    snprintf(pattern, MAX_PATH, "%s\\resources\\*", g_wl.game_dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.cFileName[0] == '.' || fd.cFileName[0] == '_' || !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        char rel[MAX_PATH];
+        snprintf(rel, MAX_PATH, "%s\\sound\\taunt", fd.cFileName);
+        index_dir(tdir, rel, 0);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
 static void build_asset_index(void) {
     // Wololoader's own art first (e.g. the main-menu Mods button with our logo,
     // made by tools/make_menu_icon.py at install). Mods are indexed after it,
@@ -114,6 +139,7 @@ static void build_asset_index(void) {
         snprintf(res, MAX_PATH, "%s\\resources", m->dir);
         unsigned before = g_asset_count;
         index_dir(res, "", 0);
+        add_mod_taunts(m->dir);
         if (g_asset_count != before) wl_log("asset override: %s ships %u file(s)", m->id, g_asset_count - before);
     }
     wl_log("asset override: %u file(s) indexed", g_asset_count);

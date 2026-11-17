@@ -208,3 +208,19 @@ Implementation: `wololoader/src/popcap.c`.
 - UI images (main menu buttons etc.) loaded with `d3dx9_43!D3DXCreateTextureFromFileExA` (exe import), doesn't go through CreateFile hooks.
 - `0x7ce430` = `NOMODS` command line flag reader (`a0 18 59 af 00 c3`, `mov al,[0xaf5918]; ret`). Callers 0x5c34a8, 0x7cd48b (`test al,al; je`). Changing to `mov al,1; ret` skips ModManager/Workshop sync ("Commandline NOMODS detected").
 - Startup freeze: main thread was waiting in `0x454dae` `call [ecx+0x44]` (IDirect3DDevice9::Present) while Workshop dialog open; not seen again with NOMODS.
+
+## Taunt list UI (2026-11-17, verified in disassembly)
+- Function `0x686210`: `__thiscall`, prologue `55 8b ec 6a ff 68 14 35 95 00`, `ret 4` at `0x686695`. Builds the in-game taunt list (F11 menu).
+- Loop variable: `esi` register holds taunt number (starts at 1). Loop at `0x6862e3`–`0x6865b8` iterates over list entries (56-byte stride, `0x38`), jump back at `0x6865b8` (`jb 0x6862e3`).
+- String lookup: taunts 1-38 use string id `taunt + 0x1bc5` (`0x6863ab`), 39-41 use `taunt + 0x1edc` (`0x6863cf`), 42 uses `0x1bec` (`0x6863f0`).
+- **Filename extraction for taunts > 42**: code at `0x6863fc`–`0x686446` reads `[ebp-0x138]` (filename buffer), skips "NN " prefix (`lea eax,[ecx-0x3]` at `0x686417`), uses the rest as display text. This is built-in vanilla game code, no hook needed.
+- **Filter blocking custom taunts**: two identical checks reject taunts outside specific ranges (3-6, 31-38, 42). Each ends with `cmp esi,0x2a; jne <reject>` which accepts only taunt 42 and rejects 43+.
+  - First filter: `0x68635f` (`83 fe 2a`), `0x686364` (`75 04`, jne +4 → `0x68636a` reject)
+  - Second filter: `0x68651e` (`83 fe 2a`), `0x686521` (`75 3a`, jne +58 → `0x68655d` reject)
+- **Patch**: change both `75` (jne) to `7C` (jl) so `taunt >= 42` accepted. Verified bytes at file offsets `0x285364` and `0x285521`.
+
+## Taunt sound playback (2026-11-17)
+- `0x495eb0`: `__thiscall`, prologue `55 8b ec 6a ff 68 90 3c 91 00`, `ret 0x14` (2 dwords + a 12-byte string object by value). Verified in disassembly. It has 38 callers, so it is a generic sound function, not taunt-only: do not hook it globally for a taunt mute; patch the taunt call site instead (not found yet).
+
+## GameSetupScreen constructor (2026-11-17, from decompiled code + lobby.c)
+- Function `0x647430`: `__thiscall(void *this, void *parent)`, GameSetupScreen constructor. Signature from Ghidra: `undefined4 * __thiscall FUN_00647430(undefined4 *param_1, int param_2)` — returns first param (this pointer). From lobby.c comments: `ret 4`, prologue `55 8b ec 6a ff`. Vtable at `0x9d0d10`, event handler slot 49 at offset `0x48d430`. **PARTIALLY VERIFIED**: calling convention and return type confirmed from decompiled code; prologue bytes need objdump confirmation.

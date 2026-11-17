@@ -708,6 +708,9 @@ int sc_catalog_load(const WlZlib *z, const char *game_dir, ScCatalog *out, char 
             sc_copy_clean_string(su->internal, sizeof(su->internal), int_name, nl > 0 ? (size_t)nl : 0);
 
             uint16_t lang_name_id = (uint16_t)(udata[5] | (udata[6] << 8));
+            // Common unit header: icon_id i16 at offset 47 (datfile.py Unit, after air_mode at 46)
+            su->icon = (int16_t)(udata[47] | (udata[48] << 8));
+
             su->name[0] = '\0';
             if (lang_name_id != 0) {
                 const char *disp_name = sc_str_table_lookup(&str_table, (int)lang_name_id);
@@ -734,6 +737,8 @@ int sc_catalog_load(const WlZlib *z, const char *game_dir, ScCatalog *out, char 
 
         uint16_t lang_name_id = (uint16_t)(orig[pos + 35] | (orig[pos + 36] << 8));
         uint16_t nl = (uint16_t)(orig[pos + 60] | (orig[pos + 61] << 8));
+        // icon_id i16 at offset 45 of the research record (datfile.py Research, after type at 43)
+        st->icon = (int16_t)(orig[pos + 45] | (orig[pos + 46] << 8));
         pos += 62;
 
         if (pos + nl > orig_len) goto truncated_priv;

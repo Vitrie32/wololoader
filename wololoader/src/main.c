@@ -112,6 +112,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     // No wl_autobuild() here: see wl_civs_ensure() in civs.c (R6030 in DllMain).
     wl_install_file_hooks();
     wl_icons_build();      // mod icons appended to interface SLPs (redirects)
+    wl_install_taunts();
     wl_install_civ_hooks();
     wl_install_menu_hooks();
     wl_install_mods_screen();

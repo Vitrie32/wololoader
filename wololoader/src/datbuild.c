@@ -2289,6 +2289,39 @@ static int wl_add_unique_building(
         return -1;
     }
 
+    int game_civ = (cid < 35);  // a building for an existing civ ("extend"): its names go to strings.txt
+    int ext_sid = -1;
+
+    if (game_civ) {
+        // same texts the DLL makes for custom civs (civs.c load_identity), via strings.txt
+        // as build.py: name and help (default: name) must be strings; an empty help uses the name
+        const WlJsonVal *help_val = wl_json_get(ub, "help");
+        if (name_val->type != WL_JSON_STRING || !name_val->u.str ||
+            (help_val && (help_val->type != WL_JSON_STRING || !help_val->u.str))) {
+            snprintf(err, errcap, "%s: unique_building name and help must be strings", where);
+            return -1;
+        }
+        const char *b_name = name_val->u.str;
+        const char *help_str = (help_val && help_val->u.str[0]) ? help_val->u.str : b_name;
+
+        ext_sid = wl_new_sids(ext, err, errcap);
+        if (ext_sid < 0) return -1;
+
+        size_t nl = strlen(b_name), hl = strlen(help_str);
+        char *build_str = malloc(nl + 8), *help_str_full = malloc(nl + hl + 64);
+        if (!build_str || !help_str_full) { free(build_str); free(help_str_full); snprintf(err, errcap, "out of memory"); return -1; }
+        sprintf(build_str, "Build %s", b_name);
+        sprintf(help_str_full, "Build <b>%s<b> (<cost>) \n%s \n<hp> <armor> <piercearmor>", b_name, help_str);
+        int src = wl_ext_add_string(ext, ext_sid, b_name, err, errcap) ||
+                  wl_ext_add_string(ext, ext_sid + 1, build_str, err, errcap) ||
+                  wl_ext_add_string(ext, ext_sid + 2, help_str_full, err, errcap);
+        free(build_str);
+        free(help_str_full);
+        if (src) return -1;
+    }
+
+    int sid_base = game_civ ? (ext_sid - 10) : (28500 + (cid - 35) * 20);
+
     int B = 1400 - (int)ub_k;
     if (B < 1300 || B <= 1225 + 2 * (int)uu_total) {   // buildpage.c treats 1300..1400 as mod buildings
         snprintf(err, errcap, "%s: unique building slot %d collides with unique unit slots", where, B);
@@ -2362,8 +2395,6 @@ static int wl_add_unique_building(
         }
         age = (int)age_val->u.num.ival;
     }
-
-    int sid_base = 28500 + (cid - 35) * 20;
 
     // Clone building unit
     const uint8_t *src_b = civ->data + civ->unit_offsets[copy_from];
@@ -2686,9 +2717,11 @@ static int wl_add_unique_building(
 // Apply Civ JSON Definition
 // ==========================================================================
 
-// Creates one new civilization by cloning base_civ and applying overrides from spec.
+// Creates one new civilization by cloning base_civ and applying overrides from spec,
+// OR modifies an existing game civ (1..31) in place when "extend" is present.
 // RULE (Validation & Python parity):
-//   - Requires "name", "dat_name", "base" keys.
+//   - Normal mode: requires "name", "dat_name", "base" keys.
+//   - Extend mode: requires "extend" key (int 1..31), different allowed keys.
 //   - Disallows unknown keys, printing sorted list of unknown keys in Python format.
 //   - Validates base civ index is within 0..len(civs)-1.
 //   - Overrides dat_name, tech_tree, team_bonus, units, resources, effects, unique_techs, unique_unit, unique_building.
@@ -2712,89 +2745,154 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         return -1;
     }
 
-    // Required keys check
-    const char *req_keys[] = { "name", "dat_name", "base" };
-    for (int i = 0; i < 3; i++) {
-        if (!wl_json_get(spec, req_keys[i])) {
-            snprintf(err, errcap, "%s: missing required key '%s'", where, req_keys[i]);
-            return -1;
-        }
-    }
+    // Detect extend mode
+    const WlJsonVal *extend_val = wl_json_get(spec, "extend");
+    int extend = (extend_val != NULL);
+    WlDatCiv new_civ;
+    WlDatCiv *civ_ptr;  // Points to civs[eid] in extend mode, &new_civ in normal mode
+    int64_t base_id = 0;
+    const WlJsonVal *dn_val = NULL;
+    char label[64];
 
-    // Unknown keys check: must match Python's `set(spec) - known` sorted error format
-    // Identity keys are ignored here and read by the DLL (civs.c); keep in sync with build.py.
-    const char *known_keys[] = {
-        "ai_names", "base", "dat_name", "description",
-        "disabled_techs", "disabled_units", "effects",
-        "enabled_techs", "enabled_units", "interface_slp",
-        "name", "resources", "sound", "team_bonus",
-        "team_bonus_effects", "tech_tree", "unique_building", "unique_techs", "unique_unit", "units"
-    };
-    char *extra_keys[32];
-    size_t extra_cnt = 0;
-    for (size_t i = 0; i < spec->u.obj.count; i++) {
-        const char *k = spec->u.obj.members[i].key;
-        int is_known = 0;
-        for (size_t j = 0; j < sizeof known_keys / sizeof *known_keys; j++) {
-            if (strcmp(k, known_keys[j]) == 0) {
-                is_known = 1;
-                break;
+    if (extend) {
+        // "extend": change an existing civ of the game (1..31) in place instead of making a new
+        // one; no identity keys (name, AI names, ...), no unique unit / unique techs.
+        const char *known_keys[] = {
+            "disabled_techs", "disabled_units", "effects",
+            "enabled_techs", "enabled_units", "extend",
+            "resources", "team_bonus_effects", "unique_building", "units"
+        };
+        char *extra_keys[32];
+        size_t extra_cnt = 0;
+        for (size_t i = 0; i < spec->u.obj.count; i++) {
+            const char *k = spec->u.obj.members[i].key;
+            int is_known = 0;
+            for (size_t j = 0; j < sizeof known_keys / sizeof *known_keys; j++) {
+                if (strcmp(k, known_keys[j]) == 0) {
+                    is_known = 1;
+                    break;
+                }
+            }
+            if (!is_known && extra_cnt < 32) {
+                extra_keys[extra_cnt++] = (char *)k;
             }
         }
-        if (!is_known && extra_cnt < 32) {
-            extra_keys[extra_cnt++] = (char *)k;
+        if (extra_cnt > 0) {
+            if (extra_cnt > 1) {
+                qsort(extra_keys, extra_cnt, sizeof(char *), wl_cmp_str);
+            }
+            char extra_buf[512];
+            size_t epos = 0;
+            epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "[");
+            for (size_t i = 0; i < extra_cnt; i++) {
+                epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "%s'%s'", (i > 0 ? ", " : ""), extra_keys[i]);
+            }
+            epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "]");
+            snprintf(err, errcap, "%s: key(s) %s cannot be used with \"extend\" (only disabled_techs, disabled_units, effects, enabled_techs, enabled_units, resources, team_bonus_effects, unique_building, units)", where, extra_buf);
+            return -1;
         }
-    }
-    if (extra_cnt > 0) {
-        if (extra_cnt > 1) {
-            qsort(extra_keys, extra_cnt, sizeof(char *), wl_cmp_str);
+
+        // Validate extend value
+        if (extend_val->type != WL_JSON_NUMBER || extend_val->u.num.is_float) {
+            snprintf(err, errcap, "%s: extend must be a civ id of the game, 1..31", where);
+            return -1;
         }
-        char extra_buf[256];
-        size_t epos = 0;
-        epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "[");
-        for (size_t i = 0; i < extra_cnt; i++) {
-            epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "%s'%s'", (i > 0 ? ", " : ""), extra_keys[i]);
+        int64_t eid = extend_val->u.num.ival;
+        if (eid < 1 || eid > 31) {
+            snprintf(err, errcap, "%s: extend must be a civ id of the game, 1..31", where);
+            return -1;
         }
-        snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "]");
-        snprintf(err, errcap, "%s: unknown key(s) %s", where, extra_buf);
-        return -1;
-    }
+        base_id = eid;
 
-    // Base civ validation
-    const WlJsonVal *base_val = wl_json_get(spec, "base");
-    if (base_val->type != WL_JSON_NUMBER || base_val->u.num.is_float) {
-        char rep[128];
-        wl_json_format_repr(base_val, rep, sizeof(rep));
-        snprintf(err, errcap, "%s: base %s is not an existing civ id (0..%zu)", where, rep, *civs_count - 1);
-        return -1;
-    }
-    int64_t base_id = base_val->u.num.ival;
-    if (base_id < 0 || (size_t)base_id >= *civs_count) {
-        snprintf(err, errcap, "%s: base %lld is not an existing civ id (0..%zu)", where, (long long)base_id, *civs_count - 1);
-        return -1;
-    }
+        // Work directly on the existing civ (no clone, no allocation)
+        civ_ptr = &civs[eid];
+        snprintf(label, sizeof(label), "WL ext %d", (int)eid);
+    } else {
+        // Normal mode: require name, dat_name, base
+        const char *req_keys[] = { "name", "dat_name", "base" };
+        for (int i = 0; i < 3; i++) {
+            if (!wl_json_get(spec, req_keys[i])) {
+                snprintf(err, errcap, "%s: missing required key '%s'", where, req_keys[i]);
+                return -1;
+            }
+        }
 
-    if (*civs_count >= civs_cap) {
-        snprintf(err, errcap, "%s: maximum civ capacity reached", where);
-        return -1;
-    }
+        // Unknown keys check: must match Python's `set(spec) - known` sorted error format
+        // Identity keys are ignored here and read by the DLL (civs.c); keep in sync with build.py.
+        const char *known_keys[] = {
+            "ai_names", "base", "dat_name", "description",
+            "disabled_techs", "disabled_units", "effects",
+            "enabled_techs", "enabled_units", "interface_slp",
+            "name", "resources", "sound", "team_bonus",
+            "team_bonus_effects", "tech_tree", "unique_building", "unique_techs", "unique_unit", "units"
+        };
+        char *extra_keys[32];
+        size_t extra_cnt = 0;
+        for (size_t i = 0; i < spec->u.obj.count; i++) {
+            const char *k = spec->u.obj.members[i].key;
+            int is_known = 0;
+            for (size_t j = 0; j < sizeof known_keys / sizeof *known_keys; j++) {
+                if (strcmp(k, known_keys[j]) == 0) {
+                    is_known = 1;
+                    break;
+                }
+            }
+            if (!is_known && extra_cnt < 32) {
+                extra_keys[extra_cnt++] = (char *)k;
+            }
+        }
+        if (extra_cnt > 0) {
+            if (extra_cnt > 1) {
+                qsort(extra_keys, extra_cnt, sizeof(char *), wl_cmp_str);
+            }
+            char extra_buf[256];
+            size_t epos = 0;
+            epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "[");
+            for (size_t i = 0; i < extra_cnt; i++) {
+                epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "%s'%s'", (i > 0 ? ", " : ""), extra_keys[i]);
+            }
+            snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "]");
+            snprintf(err, errcap, "%s: unknown key(s) %s", where, extra_buf);
+            return -1;
+        }
 
-    // Clone base civ
-    WlDatCiv new_civ;
-    if (wl_clone_civ(civs, *civs_count, base_id, where, &new_civ, err, errcap) != 0) {
-        return -1;
-    }
+        // Base civ validation
+        const WlJsonVal *base_val = wl_json_get(spec, "base");
+        if (base_val->type != WL_JSON_NUMBER || base_val->u.num.is_float) {
+            char rep[128];
+            wl_json_format_repr(base_val, rep, sizeof(rep));
+            snprintf(err, errcap, "%s: base %s is not an existing civ id (0..%zu)", where, rep, *civs_count - 1);
+            return -1;
+        }
+        base_id = base_val->u.num.ival;
+        if (base_id < 0 || (size_t)base_id >= *civs_count) {
+            snprintf(err, errcap, "%s: base %lld is not an existing civ id (0..%zu)", where, (long long)base_id, *civs_count - 1);
+            return -1;
+        }
 
-    // dat_name: fixed 20-byte ASCII field inside Civilization record
-    const WlJsonVal *dn_val = wl_json_get(spec, "dat_name");
-    if (dn_val->type != WL_JSON_STRING) {
-        snprintf(err, errcap, "%s: dat_name must be a string", where);
-        wl_free_civ(&new_civ);
-        return -1;
-    }
-    if (wl_make_name(dn_val->u.str, where, new_civ.data + 1, err, errcap) != 0) {
-        wl_free_civ(&new_civ);
-        return -1;
+        if (*civs_count >= civs_cap) {
+            snprintf(err, errcap, "%s: maximum civ capacity reached", where);
+            return -1;
+        }
+
+        // Clone base civ
+        if (wl_clone_civ(civs, *civs_count, base_id, where, &new_civ, err, errcap) != 0) {
+            return -1;
+        }
+        civ_ptr = &new_civ;
+
+        // dat_name: fixed 20-byte ASCII field inside Civilization record
+        dn_val = wl_json_get(spec, "dat_name");
+        if (dn_val->type != WL_JSON_STRING) {
+            snprintf(err, errcap, "%s: dat_name must be a string", where);
+            wl_free_civ(&new_civ);
+            return -1;
+        }
+        if (wl_make_name(dn_val->u.str, where, civ_ptr->data + 1, err, errcap) != 0) {
+            wl_free_civ(&new_civ);
+            return -1;
+        }
+        snprintf(label, sizeof(label), "%s", dn_val->u.str);
     }
 
     // unique_techs validation
@@ -2819,26 +2917,42 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         if (tt_val) {
             base_tt = (tt_val->type == WL_JSON_NUMBER) ? (int)tt_val->u.num.ival : (int)strtol(tt_val->u.str ? tt_val->u.str : "-1", NULL, 10);
         } else {
-            base_tt = (int)(uint16_t)(new_civ.data[23] | (new_civ.data[24] << 8));
+            base_tt = (int)(uint16_t)(civ_ptr->data[23] | (civ_ptr->data[24] << 8));
         }
-        if (base_tt < 0 || (size_t)base_tt >= ef_cnt) {
+        if (base_tt < 0 || (size_t)base_tt >= ef_cnt + *p_custom_effects_cnt) {
             snprintf(err, errcap, "%s: base tech tree effect %d out of range (0..%zu)",
-                     where, base_tt, ef_cnt - 1);
+                     where, base_tt, ef_cnt + *p_custom_effects_cnt - 1);
             wl_free_civ(&new_civ);
             return -1;
         }
 
         WlDatEffect new_eff;
         memset(&new_eff, 0, sizeof(new_eff));
-        char tt_name[64];
-        snprintf(tt_name, sizeof(tt_name), "%s Tech Tree", dn_val->u.str);
+        char tt_name[128];
+        snprintf(tt_name, sizeof(tt_name), "%s Tech Tree", label);
         if (wl_make_effect_name(tt_name, where, new_eff.name, err, errcap) != 0) {
-            wl_free_civ(&new_civ);
+            if (!extend) wl_free_civ(&new_civ);
             return -1;
         }
 
-        const WlOrigEffect *base_eff = &orig_effects[base_tt];
-        const uint8_t *base_cmds_raw = orig + base_eff->cmds_offset;
+        // Check if base_tt is an original effect or a custom effect
+        int is_custom_base = ((size_t)base_tt >= ef_cnt);
+        const WlOrigEffect *base_eff = NULL;
+        const WlDatEffect *base_custom_eff = NULL;
+        const uint8_t *base_cmds_raw = NULL;
+        uint16_t base_cmd_count = 0;
+
+        if (is_custom_base) {
+            // Base is a custom effect
+            size_t custom_idx = (size_t)base_tt - ef_cnt;
+            base_custom_eff = &(*p_custom_effects)[custom_idx];
+            base_cmd_count = base_custom_eff->cmd_count;
+        } else {
+            // Base is an original effect
+            base_eff = &orig_effects[base_tt];
+            base_cmds_raw = orig + base_eff->cmds_offset;
+            base_cmd_count = base_eff->cmd_count;
+        }
 
         const WlJsonVal *en_techs_val = wl_json_get(spec, "enabled_techs");
         int *en_techs = NULL;
@@ -2866,14 +2980,20 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             }
         }
 
-        for (uint16_t c = 0; c < base_eff->cmd_count; c++) {
-            const uint8_t *p = base_cmds_raw + (size_t)c * 11;
+        for (uint16_t c = 0; c < base_cmd_count; c++) {
             WlDatEffectCmd cmd;
-            cmd.type = (int8_t)p[0];
-            cmd.a = (int16_t)(p[1] | (p[2] << 8));
-            cmd.b = (int16_t)(p[3] | (p[4] << 8));
-            cmd.c = (int16_t)(p[5] | (p[6] << 8));
-            memcpy(&cmd.d, p + 7, 4);
+            if (is_custom_base) {
+                // Copy from custom effect's commands array
+                cmd = base_custom_eff->commands[c];
+            } else {
+                // Parse from original effect's raw bytes
+                const uint8_t *p = base_cmds_raw + (size_t)c * 11;
+                cmd.type = (int8_t)p[0];
+                cmd.a = (int16_t)(p[1] | (p[2] << 8));
+                cmd.b = (int16_t)(p[3] | (p[4] << 8));
+                cmd.c = (int16_t)(p[5] | (p[6] << 8));
+                memcpy(&cmd.d, p + 7, 4);
+            }
 
             if (cmd.type == 102 && en_techs) {
                 int tid = (int)cmd.d;
@@ -2888,7 +3008,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 free(en_techs);
                 free(en_units);
                 free(new_eff.commands);
-                wl_free_civ(&new_civ);
+                if (!extend) wl_free_civ(&new_civ);
                 return -1;
             }
         }
@@ -2915,7 +3035,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                     if (wl_effect_add_command(&new_eff, &c102, err, errcap) != 0) {
                         free(en_units);
                         free(new_eff.commands);
-                        wl_free_civ(&new_civ);
+                        if (!extend) wl_free_civ(&new_civ);
                         return -1;
                     }
                 }
@@ -2933,7 +3053,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 if (wl_effect_add_command(&new_eff, &c2, err, errcap) != 0) {
                     free(en_units);
                     free(new_eff.commands);
-                    wl_free_civ(&new_civ);
+                    if (!extend) wl_free_civ(&new_civ);
                     return -1;
                 }
             }
@@ -2954,7 +3074,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 c2.d = 0.0f;
                 if (wl_effect_add_command(&new_eff, &c2, err, errcap) != 0) {
                     free(new_eff.commands);
-                    wl_free_civ(&new_civ);
+                    if (!extend) wl_free_civ(&new_civ);
                     return -1;
                 }
             }
@@ -2968,12 +3088,12 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 WlDatEffectCmd c;
                 if (wl_parse_effect_command(eff_val->u.arr.items[ei], where_eff, &c, err, errcap) != 0) {
                     free(new_eff.commands);
-                    wl_free_civ(&new_civ);
+                    if (!extend) wl_free_civ(&new_civ);
                     return -1;
                 }
                 if (wl_effect_add_command(&new_eff, &c, err, errcap) != 0) {
                     free(new_eff.commands);
-                    wl_free_civ(&new_civ);
+                    if (!extend) wl_free_civ(&new_civ);
                     return -1;
                 }
             }
@@ -2985,7 +3105,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             if (!neffs) {
                 snprintf(err, errcap, "out of memory growing custom effects");
                 free(new_eff.commands);
-                wl_free_civ(&new_civ);
+                if (!extend) wl_free_civ(&new_civ);
                 return -1;
             }
             *p_custom_effects = neffs;
@@ -2995,8 +3115,8 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         (*p_custom_effects)[(*p_custom_effects_cnt)++] = new_eff;
 
         uint16_t u16 = (uint16_t)new_idx;
-        new_civ.data[23] = (uint8_t)(u16 & 0xFF);
-        new_civ.data[24] = (uint8_t)((u16 >> 8) & 0xFF);
+        civ_ptr->data[23] = (uint8_t)(u16 & 0xFF);
+        civ_ptr->data[24] = (uint8_t)((u16 >> 8) & 0xFF);
     } else {
         const WlJsonVal *tt_val = wl_json_get(spec, "tech_tree");
         if (tt_val) {
@@ -3010,11 +3130,36 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
     const WlJsonVal *tbe_val = wl_json_get(spec, "team_bonus_effects");
     if (tbe_val && tbe_val->type == WL_JSON_ARRAY) {
         WlDatEffect tb_eff;
-        memset(&tb_eff, 0, sizeof(tb_eff));
-        char tb_name[64];
-        snprintf(tb_name, sizeof(tb_name), "%s Team Bonus", dn_val->u.str);
+        int16_t existing_tb_id = (int16_t)(civ_ptr->data[25] | (civ_ptr->data[26] << 8));
+        if (extend && existing_tb_id >= 0 && (size_t)existing_tb_id < ef_cnt) {
+            // an existing civ keeps its own team bonus and gets the new commands on top
+            const WlOrigEffect *base_tb = &orig_effects[existing_tb_id];
+            const uint8_t *base_tb_cmds = orig + base_tb->cmds_offset;
+            memset(&tb_eff, 0, sizeof(tb_eff));
+            tb_eff.cmd_cap = base_tb->cmd_count;
+            tb_eff.cmd_count = base_tb->cmd_count;
+            tb_eff.commands = malloc(tb_eff.cmd_cap * sizeof(WlDatEffectCmd));
+            if (!tb_eff.commands) {
+                snprintf(err, errcap, "out of memory");
+                if (!extend) wl_free_civ(&new_civ);
+                return -1;
+            }
+            for (uint16_t c = 0; c < base_tb->cmd_count; c++) {
+                const uint8_t *p = base_tb_cmds + (size_t)c * 11;
+                tb_eff.commands[c].type = (int8_t)p[0];
+                tb_eff.commands[c].a = (int16_t)(p[1] | (p[2] << 8));
+                tb_eff.commands[c].b = (int16_t)(p[3] | (p[4] << 8));
+                tb_eff.commands[c].c = (int16_t)(p[5] | (p[6] << 8));
+                memcpy(&tb_eff.commands[c].d, p + 7, 4);
+            }
+        } else {
+            memset(&tb_eff, 0, sizeof(tb_eff));
+        }
+        char tb_name[128];
+        snprintf(tb_name, sizeof(tb_name), "%s Team Bonus", label);
         if (wl_make_effect_name(tb_name, where, tb_eff.name, err, errcap) != 0) {
-            wl_free_civ(&new_civ);
+            free(tb_eff.commands);
+            if (!extend) wl_free_civ(&new_civ);
             return -1;
         }
         for (size_t ei = 0; ei < tbe_val->u.arr.count; ei++) {
@@ -3023,12 +3168,12 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             WlDatEffectCmd c;
             if (wl_parse_effect_command(tbe_val->u.arr.items[ei], where_tbe, &c, err, errcap) != 0) {
                 free(tb_eff.commands);
-                wl_free_civ(&new_civ);
+                if (!extend) wl_free_civ(&new_civ);
                 return -1;
             }
             if (wl_effect_add_command(&tb_eff, &c, err, errcap) != 0) {
                 free(tb_eff.commands);
-                wl_free_civ(&new_civ);
+                if (!extend) wl_free_civ(&new_civ);
                 return -1;
             }
         }
@@ -3048,8 +3193,8 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         (*p_custom_effects)[(*p_custom_effects_cnt)++] = tb_eff;
 
         uint16_t u16 = (uint16_t)new_idx;
-        new_civ.data[25] = (uint8_t)(u16 & 0xFF);
-        new_civ.data[26] = (uint8_t)((u16 >> 8) & 0xFF);
+        civ_ptr->data[25] = (uint8_t)(u16 & 0xFF);
+        civ_ptr->data[26] = (uint8_t)((u16 >> 8) & 0xFF);
     } else {
         const WlJsonVal *tb_val = wl_json_get(spec, "team_bonus");
         if (tb_val) {
@@ -3074,9 +3219,13 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 wl_free_civ(&new_civ);
                 return -1;
             }
-            if (uid < 0 || (size_t)uid >= new_civ.unit_count || new_civ.unit_offsets[uid] == 0) {
-                snprintf(err, errcap, "%s: unit id %ld does not exist in civ %lld", where, uid, (long long)base_id);
-                wl_free_civ(&new_civ);
+            if (uid < 0 || (size_t)uid >= civ_ptr->unit_count || civ_ptr->unit_offsets[uid] == 0) {
+                if (extend) {
+                    snprintf(err, errcap, "%s: unit id %ld does not exist in civ %lld", where, uid, (long long)extend_val->u.num.ival);
+                } else {
+                    snprintf(err, errcap, "%s: unit id %ld does not exist in civ %lld", where, uid, (long long)base_id);
+                }
+                if (!extend) wl_free_civ(&new_civ);
                 return -1;
             }
 
@@ -3088,7 +3237,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             {
                 char where_unit[1024];
                 snprintf(where_unit, sizeof(where_unit), "%.500s unit %ld", where, uid);
-                uint8_t *u_data = new_civ.data + new_civ.unit_offsets[uid];
+                uint8_t *u_data = civ_ptr->data + civ_ptr->unit_offsets[uid];
                 for (size_t f = 0; f < flds->u.obj.count; f++) {
                     const char *fname = flds->u.obj.members[f].key;
                     const WlJsonVal *fval = flds->u.obj.members[f].val;
@@ -3112,9 +3261,9 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             const WlJsonVal *val = res_val->u.obj.members[r].val;
 
             long idx = strtol(idx_str, NULL, 10);
-            if (idx < 0 || (size_t)idx >= new_civ.resource_count) {
+            if (idx < 0 || (size_t)idx >= civ_ptr->resource_count) {
                 snprintf(err, errcap, "%s: resource index %s out of range (0..%u)",
-                         where, idx_str, (unsigned)(new_civ.resource_count - 1));
+                         where, idx_str, (unsigned)(civ_ptr->resource_count - 1));
                 wl_free_civ(&new_civ);
                 return -1;
             }
@@ -3127,10 +3276,10 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             uint32_t u;
             memcpy(&u, &f, sizeof(float));
             size_t roff = 27 + (size_t)idx * 4;
-            new_civ.data[roff] = (uint8_t)(u & 0xFF);
-            new_civ.data[roff + 1] = (uint8_t)((u >> 8) & 0xFF);
-            new_civ.data[roff + 2] = (uint8_t)((u >> 16) & 0xFF);
-            new_civ.data[roff + 3] = (uint8_t)((u >> 24) & 0xFF);
+            civ_ptr->data[roff] = (uint8_t)(u & 0xFF);
+            civ_ptr->data[roff + 1] = (uint8_t)((u >> 8) & 0xFF);
+            civ_ptr->data[roff + 2] = (uint8_t)((u >> 16) & 0xFF);
+            civ_ptr->data[roff + 3] = (uint8_t)((u >> 24) & 0xFF);
         }
     }
 
@@ -3222,12 +3371,12 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             return -1;
         }
         long copy_from = cf_val->u.num.ival;
-        if (copy_from < 0 || (size_t)copy_from >= new_civ.unit_count || new_civ.unit_offsets[copy_from] == 0) {
+        if (copy_from < 0 || (size_t)copy_from >= civ_ptr->unit_count || civ_ptr->unit_offsets[copy_from] == 0) {
             snprintf(err, errcap, "%s: unique_unit copy_from unit %ld does not exist", where, copy_from);
             wl_free_civ(&new_civ);
             return -1;
         }
-        uint8_t cf_type = new_civ.data[new_civ.unit_offsets[copy_from]];
+        uint8_t cf_type = civ_ptr->data[civ_ptr->unit_offsets[copy_from]];
         if (cf_type != 70) {
             snprintf(err, errcap, "%s: unique_unit copy_from unit %ld must be type 70 (got %d)", where, copy_from, (int)cf_type);
             wl_free_civ(&new_civ);
@@ -3243,12 +3392,12 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 return -1;
             }
             elite_copy_from = ecf_val->u.num.ival;
-            if (elite_copy_from < 0 || (size_t)elite_copy_from >= new_civ.unit_count || new_civ.unit_offsets[elite_copy_from] == 0) {
+            if (elite_copy_from < 0 || (size_t)elite_copy_from >= civ_ptr->unit_count || civ_ptr->unit_offsets[elite_copy_from] == 0) {
                 snprintf(err, errcap, "%s: unique_unit elite_copy_from unit %ld does not exist", where, elite_copy_from);
                 wl_free_civ(&new_civ);
                 return -1;
             }
-            uint8_t ecf_type = new_civ.data[new_civ.unit_offsets[elite_copy_from]];
+            uint8_t ecf_type = civ_ptr->data[civ_ptr->unit_offsets[elite_copy_from]];
             if (ecf_type != 70) {
                 snprintf(err, errcap, "%s: unique_unit elite_copy_from unit %ld must be type 70 (got %d)", where, elite_copy_from, (int)ecf_type);
                 wl_free_civ(&new_civ);
@@ -3560,8 +3709,8 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         }
 
         // 5. Build unit U
-        const uint8_t *src_u = new_civ.data + new_civ.unit_offsets[copy_from];
-        size_t len_U = wl_calc_unit_len(new_civ.data, new_civ.unit_offsets[copy_from]);
+        const uint8_t *src_u = civ_ptr->data + civ_ptr->unit_offsets[copy_from];
+        size_t len_U = wl_calc_unit_len(civ_ptr->data, civ_ptr->unit_offsets[copy_from]);
         uint8_t *rep_U = malloc(len_U);
         memcpy(rep_U, src_u, len_U);
 
@@ -3669,8 +3818,8 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         }
 
         // 6. Build unit E
-        const uint8_t *src_e = new_civ.data + new_civ.unit_offsets[elite_copy_from];
-        size_t len_E = wl_calc_unit_len(new_civ.data, new_civ.unit_offsets[elite_copy_from]);
+        const uint8_t *src_e = civ_ptr->data + civ_ptr->unit_offsets[elite_copy_from];
+        size_t len_E = wl_calc_unit_len(civ_ptr->data, civ_ptr->unit_offsets[elite_copy_from]);
         uint8_t *rep_E = malloc(len_E);
         memcpy(rep_E, src_e, len_E);
 
@@ -3792,7 +3941,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             }
         }
 
-        if (wl_replace_civ_units(&new_civ, U, rep_U, len_U, E, rep_E, len_E, err, errcap) != 0) {
+        if (wl_replace_civ_units(civ_ptr, U, rep_U, len_U, E, rep_E, len_E, err, errcap) != 0) {
             free(rep_U); free(rep_E); wl_free_civ(&new_civ);
             return -1;
         }
@@ -3804,8 +3953,8 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
     // unique_building
     const WlJsonVal *ub_val = wl_json_get(spec, "unique_building");
     if (ub_val) {
-        int cid = (int)*civs_count;
-        if (wl_add_unique_building(&new_civ, civs, cid, ub_val, where, *p_ub_k, uu_total,
+        int cid = extend ? (int)extend_val->u.num.ival : (int)*civs_count;
+        if (wl_add_unique_building(civ_ptr, civs, cid, ub_val, where, *p_ub_k, uu_total,
                                    orig, graphics_section_offset, orig_graphics_count,
                                    orig_effects, ef_cnt,
                                    p_custom_effects, p_custom_effects_cnt, p_custom_effects_cap,
@@ -3814,13 +3963,20 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                                    p_custom_graphics, p_custom_graphics_cnt, p_custom_graphics_cap,
                                    ext,
                                    err, errcap) != 0) {
-            wl_free_civ(&new_civ);
+            if (!extend) wl_free_civ(&new_civ);
             return -1;
         }
         *p_ub_k = ext->slots;   // building slot + one per train command (build.py: ub_k = ext["slots"])
     }
 
-    *out_cid = (int)*civs_count;   // id of the civ just added (same as `cid` above)
+    if (extend) {
+        *out_cid = (int)extend_val->u.num.ival;
+        // In extend mode, civ_ptr pointed directly to civs[extend_id], so all modifications
+        // were done in place. No assignment needed.
+        return 0;
+    }
+
+    *out_cid = (int)*civs_count;
     civs[*civs_count] = new_civ;
     (*civs_count)++;
     return 0;
@@ -4286,6 +4442,15 @@ int wl_dat_build(const WlZlib *z,
                 wl_json_free(spec);
                 free(civs_txt);
                 goto cleanup_err;
+            }
+
+            // Check if this was an extend operation (modified existing civ in place)
+            const WlJsonVal *extend_val = wl_json_get(spec, "extend");
+            if (extend_val != NULL) {
+                // Extended an existing civ; skip civs.txt and sound copy
+                fprintf(stderr, "[datbuild] civ %d: extended by %s\n", new_cid, where);
+                wl_json_free(spec);
+                continue;
             }
 
             const WlJsonVal *name_val = wl_json_get(spec, "name");

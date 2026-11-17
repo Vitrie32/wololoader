@@ -1,0 +1,277 @@
+/* ==========================================================================
+   SLP Creator Dialog Styles
+   ========================================================================== */
+
+.slpcreator-dialog {
+  width: 90vw;
+  max-width: 1200px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.slpcreator-body {
+  display: flex;
+  flex-direction: row !important;   /* .modal-body (app.css) is a column */
+  gap: 24px;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+
+.slpcreator-left {
+  flex: 0 0 320px;
+  overflow-y: auto;
+  padding-right: 12px;
+}
+
+.slpcreator-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.slpcreator-section {
+  margin-bottom: 24px;
+}
+
+.slpcreator-section h4 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Dropzone */
+.slpcreator-dropzone {
+  border: 2px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: 32px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: var(--surface-1);
+}
+
+.slpcreator-dropzone:hover,
+.slpcreator-dropzone.dragover {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.slpcreator-dropzone svg {
+  color: var(--text-2);
+  margin: 0 auto 12px;
+}
+
+.slpcreator-dropzone p {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+/* Mode buttons */
+.slpcreator-mode-btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.slpcreator-mode-btn {
+  flex: 1;
+  min-width: 100px;
+  padding: 8px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.slpcreator-mode-btn:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.slpcreator-mode-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Checkboxes */
+.slpcreator-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.slpcreator-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+/* Scale controls */
+.slpcreator-scale-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.slpcreator-scale-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.slpcreator-scale-row input[type="range"] {
+  accent-color: var(--accent);
+}
+
+#slp-scale-val {
+  min-width: 45px;
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Note text */
+.slpcreator-note {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+/* Preview container */
+.slpcreator-preview-container {
+  flex: 1;
+  background: var(--surface-1);
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  overflow: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+}
+
+.slpcreator-canvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* Hotspot marker */
+.slpcreator-hotspot {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
+  pointer-events: all;
+  cursor: move;
+  z-index: 10;
+}
+
+.slpcreator-hotspot::before,
+.slpcreator-hotspot::after {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+}
+
+.slpcreator-hotspot::before {
+  left: 7px;
+  top: 0;
+  width: 2px;
+  height: 16px;
+}
+
+.slpcreator-hotspot::after {
+  left: 0;
+  top: 7px;
+  width: 16px;
+  height: 2px;
+}
+
+.slpcreator-hotspot:hover::before,
+.slpcreator-hotspot:hover::after {
+  background: var(--gold-highlight);
+}
+
+/* Preview controls */
+.slpcreator-preview-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+#slp-zoom-label {
+  min-width: 30px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Input styling within sections */
+.slpcreator-section input[type="number"] {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.slpcreator-section input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.slpcreator-section label {
+  display: block;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Scrollbar styling for left panel */
+.slpcreator-left::-webkit-scrollbar {
+  width: 8px;
+}
+
+.slpcreator-left::-webkit-scrollbar-track {
+  background: var(--surface-0);
+  border-radius: 4px;
+}
+
+.slpcreator-left::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 4px;
+}
+
+.slpcreator-left::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}

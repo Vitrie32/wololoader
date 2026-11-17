@@ -1,0 +1,232 @@
+/* SLP viewer (slpviewer.js): the Sprites pane inside the editor. Uses the theme tokens from theme.css. */
+
+.slpv-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+}
+
+.slpv-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-0);
+}
+.slpv-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.slpv-hint {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.slpv-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+}
+
+/* ---- left: sources, filter, list ------------------------------------------------- */
+.slpv-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--surface-0);
+}
+.slpv-side-top {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.slpv-new {
+  width: 100%;
+}
+.slpv-game-toggle {
+  padding: 10px 12px 0;
+}
+.slpv-sources {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 0;
+}
+.slpv-sources[hidden] {
+  display: none;
+}
+.slpv-source {
+  flex: 1;
+  padding: 6px 4px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.slpv-source:hover { color: var(--text); background: var(--surface-2); }
+.slpv-source.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--gold-border);
+}
+
+.slpv-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+}
+.slpv-filter-row .slpv-filter { flex: 1; min-width: 0; }
+.slpv-count {
+  color: var(--text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.slpv-items {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 10px;
+}
+.slpv-item {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: left;
+}
+.slpv-item:hover { background: var(--surface-2); color: var(--text); }
+.slpv-item.selected { background: var(--accent-soft); color: var(--accent); }
+.slpv-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slpv-item-size { color: var(--text-3); font-size: 11px; white-space: nowrap; }
+.slpv-note {
+  margin: 10px 4px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ---- right: toolbar, stage, controls -------------------------------------------- */
+.slpv-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.slpv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 18px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.slpv-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.slpv-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.slpv-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.slpv-zoom-label {
+  min-width: 30px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.slpv-swatches { display: inline-flex; gap: 5px; }
+.slpv-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+.slpv-swatch.active { border-color: var(--text); }
+
+/* grass checker is painted by the canvas itself; the stage only centres it */
+.slpv-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg);
+}
+.slpv-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  flex: none;
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+
+.slpv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.slpv-controls input[type="range"] { width: 110px; }
+.slpv-controls .slpv-scrub { flex: 1; min-width: 160px; }
+.slpv-perdir { width: 70px; }
+.slpv-frame-label {
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.slpv-fps-label { min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; }
+
+.slpv-info {
+  margin: 0;
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--text-3);
+  font-size: 12px;
+  white-space: pre-line;
+  min-height: 18px;
+}
+
+/* ---- small screens: stack the list above the picture ---------------------------- */
+@media (max-width: 800px) {
+  .slpv-body { grid-template-columns: 1fr; grid-template-rows: 40% 1fr; }
+  .slpv-side { border-right: 0; border-bottom: 1px solid var(--line); }
+}

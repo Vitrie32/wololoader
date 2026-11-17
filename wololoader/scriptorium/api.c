@@ -16,6 +16,8 @@
 //   - POST /api/open-folder
 //   - POST /api/ping
 //   - POST /api/quit
+//   - GET  /api/game-file?path=P, GET /api/game-list?dir=D (read-only game resources)
+//   - GET  /api/mod-tree?folder=F (every file of a mod folder), GET/PUT/DELETE /api/file
 // ==========================================================================
 
 #define _POSIX_C_SOURCE 200809L
@@ -25,6 +27,7 @@
 #include "catalog.h"
 #include "../src/json.h"
 #include "../src/datbuild.h"
+#include "gamepath.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -217,8 +220,8 @@ static void handle_get_catalog(ServerState *s, HttpResponse *res) {
     for (size_t i = 0; i < cat->unit_count; i++) {
         if (i > 0) buf_puts(&b, ", ");
         char buf[256];
-        snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":%d,\"class\":%d,\"internal\":",
-                 cat->units[i].id, cat->units[i].type, cat->units[i].class_);
+        snprintf(buf, sizeof(buf), "{\"id\":%d,\"type\":%d,\"class\":%d,\"icon\":%d,\"internal\":",
+                 cat->units[i].id, cat->units[i].type, cat->units[i].class_, cat->units[i].icon);
         buf_puts(&b, buf);
         buf_puts_escaped(&b, cat->units[i].internal);
         buf_puts(&b, ",\"name\":");
@@ -229,7 +232,7 @@ static void handle_get_catalog(ServerState *s, HttpResponse *res) {
     for (size_t i = 0; i < cat->tech_count; i++) {
         if (i > 0) buf_puts(&b, ", ");
         char buf[128];
-        snprintf(buf, sizeof(buf), "{\"id\":%d,\"internal\":", cat->techs[i].id);
+        snprintf(buf, sizeof(buf), "{\"id\":%d,\"icon\":%d,\"internal\":", cat->techs[i].id, cat->techs[i].icon);
         buf_puts(&b, buf);
         buf_puts_escaped(&b, cat->techs[i].internal);
         buf_puts(&b, ",\"name\":");
@@ -305,8 +308,25 @@ static void handle_get_stats(ServerState *s, const HttpRequest *req, HttpRespons
     free(b.data);
 }
 
-// GET /api/mods
-static void handle_get_mods(ServerState *s, HttpResponse *res) {
+// Last write time of one file as a FILETIME count (0 when the file is missing).
+static ULONGLONG file_write_time(const char *path) {
+    WIN32_FIND_DATAA f;
+    HANDLE h = FindFirstFileA(path, &f);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    FindClose(h);
+    ULARGE_INTEGER t;
+    t.LowPart = f.ftLastWriteTime.dwLowDateTime;
+    t.HighPart = f.ftLastWriteTime.dwHighDateTime;
+    return t.QuadPart;
+}
+
+// GET /api/mods (each mod: folder, name, version, author, enabled, civs, has_icon, modified)
+// WololoaderBase (Wololoader's own feature switches, not a mod to make) is left out unless
+// ?all=1 asks for it. Scriptorium's UI never lists it, so it cannot be opened there.
+static void handle_get_mods(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char all_flag[8] = "";
+    int include_system = get_query_param(req->query, "all", all_flag, sizeof all_flag) && all_flag[0] == '1';
+
     char search_pattern[MAX_PATH];
     snprintf(search_pattern, sizeof(search_pattern), "%s/*", s->mods_dir);
 
@@ -321,7 +341,8 @@ static void handle_get_mods(ServerState *s, HttpResponse *res) {
     if (hFind != INVALID_HANDLE_VALUE) {
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
-                strcmp(fd.cFileName, ".") != 0 && strcmp(fd.cFileName, "..") != 0) {
+                strcmp(fd.cFileName, ".") != 0 && strcmp(fd.cFileName, "..") != 0 &&
+                (include_system || _stricmp(fd.cFileName, "WololoaderBase") != 0)) {
                 char mod_dir[MAX_PATH];
                 snprintf(mod_dir, sizeof(mod_dir), "%s/%s", s->mods_dir, fd.cFileName);
 
@@ -354,6 +375,9 @@ static void handle_get_mods(ServerState *s, HttpResponse *res) {
                         int enabled = (v_en && v_en->type == WL_JSON_BOOL) ? v_en->u.bool_val : 1;
                         buf_puts(&b, enabled ? "true" : "false");
 
+                        // Newest write time of mod.json and civs/*.json (the mod list shows "last changed")
+                        ULONGLONG newest = file_write_time(mjson_path);
+
                         // Scan civs
                         buf_puts(&b, ",\"civs\":[");
                         char civs_pattern[MAX_PATH];
@@ -363,6 +387,10 @@ static void handle_get_mods(ServerState *s, HttpResponse *res) {
                         int first_civ = 1;
                         if (hCivFind != INVALID_HANDLE_VALUE) {
                             do {
+                                ULARGE_INTEGER ct;
+                                ct.LowPart = cfd.ftLastWriteTime.dwLowDateTime;
+                                ct.HighPart = cfd.ftLastWriteTime.dwHighDateTime;
+                                if (ct.QuadPart > newest) newest = ct.QuadPart;
                                 if (!(cfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
                                     if (!first_civ) buf_puts(&b, ", ");
                                     first_civ = 0;
@@ -380,6 +408,11 @@ static void handle_get_mods(ServerState *s, HttpResponse *res) {
                         int has_icon = (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY));
                         buf_puts(&b, ",\"has_icon\":");
                         buf_puts(&b, has_icon ? "true" : "false");
+                        // Unix seconds of the last change (0 = unknown); the UI shows it on the mod card
+                        long long unix_s = newest ? (long long)((newest - 116444736000000000ULL) / 10000000ULL) : 0;
+                        char mtime[40];
+                        snprintf(mtime, sizeof mtime, ",\"modified\":%lld", unix_s);
+                        buf_puts(&b, mtime);
                         buf_puts(&b, "}");
                     }
                     wl_json_free(m_ast);
@@ -890,6 +923,332 @@ static void handle_post_open_folder(ServerState *s, const HttpRequest *req, Http
     http_response_set_json(res, 200, "{\"ok\":true}");
 }
 
+// ---- mod files (scripts, graphs, art) ---------------------------------------
+// GET/PUT/DELETE /api/file?folder=F&path=P, GET /api/files?folder=F&dir=D, GET /api/mod-tree?folder=F.
+// P: 1..6 segments of [A-Za-z0-9_.- ] anywhere in the mod folder (sounds and taunts sit at the root
+// or in their own folders), except that "mod.json" and the "civs" folder are managed through
+// PUT /api/mod/<folder>, so they are refused here. No "..", no absolute paths. Max 20 MB.
+static int is_valid_mod_path(const char *p, int is_dir) {
+    if (!p || !p[0] || strlen(p) > 200 || strstr(p, "..")) return 0;
+    if (!is_dir && strcmp(p, "scriptorium.json") == 0) return 1;
+    if (!is_dir && strcmp(p, "mod.json") == 0) return 0;
+    if (!strncmp(p, "civs", 4) && (p[4] == '/' || !p[4])) return 0;
+    int segs = 0, seglen = 0;
+    for (const char *c = p; ; c++) {
+        if (*c == '/' || *c == 0) {
+            if (seglen == 0) return 0;
+            segs++;
+            seglen = 0;
+            if (!*c) break;
+            continue;
+        }
+        if (!(isalnum((unsigned char)*c) || *c == '_' || *c == '-' || *c == '.' || *c == ' ')) return 0;
+        seglen++;
+    }
+    if (segs > 6) return 0;   // resources/_common/drs/graphics/<n>.slp has 5
+    return 1;
+}
+
+static int mod_file_path(ServerState *s, const HttpRequest *req, const char *key, int is_dir,
+                         char *out, size_t cap, HttpResponse *res) {
+    char folder[MAX_PATH] = "", rel[MAX_PATH] = "";
+    if (!get_query_param(req->query, "folder", folder, sizeof folder) ||
+        !get_query_param(req->query, key, rel, sizeof rel)) {
+        http_response_error(res, 400, "Missing folder or path");
+        return 0;
+    }
+    if (!is_valid_folder_name(folder) || !is_valid_mod_path(rel, is_dir)) {
+        http_response_error(res, 400, "Invalid folder or path");
+        return 0;
+    }
+    snprintf(out, cap, "%s/%s/%s", s->mods_dir, folder, rel);
+    return 1;
+}
+
+static void make_parent_dirs(char *path) {
+    for (char *c = path; *c; c++) {
+        if (*c != '/' && *c != '\\') continue;
+        char k = *c;
+        *c = 0;
+        if (c > path && path[strlen(path) - 1] != ':') CreateDirectoryA(path, NULL);
+        *c = k;
+    }
+}
+
+static void handle_get_file(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char path[MAX_PATH];
+    if (!mod_file_path(s, req, "path", 0, path, sizeof path, res)) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) { http_response_error(res, 404, "File not found"); return; }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0 || sz > 20 * 1024 * 1024) { fclose(f); http_response_error(res, 500, "File too large"); return; }
+    char *data = malloc((size_t)sz + 1);
+    if (!data) { fclose(f); http_response_error(res, 500, "Out of memory"); return; }
+    size_t got = fread(data, 1, (size_t)sz, f);
+    fclose(f);
+    http_response_free(res);
+    res->status_code     = 200;
+    res->status_text     = "OK";
+    res->content_type    = "application/octet-stream";
+    res->body            = data;
+    res->body_len        = got;
+    res->is_dynamic_body = 1;
+}
+
+static void handle_put_file(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char path[MAX_PATH];
+    if (!mod_file_path(s, req, "path", 0, path, sizeof path, res)) return;
+    if (req->content_length > 20 * 1024 * 1024) { http_response_error(res, 413, "File exceeds 20 MB"); return; }
+    make_parent_dirs(path);
+    char err[256];
+    if (modio_atomic_write_file(path, req->body ? req->body : "", req->content_length, err, sizeof err) != 0) {
+        http_response_error(res, 500, err);
+        return;
+    }
+    http_response_set_json(res, 200, "{\"ok\":true}");
+}
+
+static void handle_delete_file(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char path[MAX_PATH];
+    if (!mod_file_path(s, req, "path", 0, path, sizeof path, res)) return;
+    if (!DeleteFileA(path) && GetLastError() != ERROR_FILE_NOT_FOUND) {
+        http_response_error(res, 500, "Cannot delete the file");
+        return;
+    }
+    http_response_set_json(res, 200, "{\"ok\":true}");
+}
+
+static void handle_get_files(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char dir[MAX_PATH], pat[MAX_PATH + 4];
+    if (!mod_file_path(s, req, "dir", 1, dir, sizeof dir, res)) return;
+    snprintf(pat, sizeof pat, "%s/*", dir);
+    ApiBuf b;
+    buf_init(&b);
+    buf_puts(&b, "[");
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    int n = 0;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            if (n++) buf_puts(&b, ",");
+            buf_puts_escaped(&b, fd.cFileName);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    buf_puts(&b, "]");
+    http_response_set_json(res, 200, b.data);
+    free(b.data);
+}
+
+// GET /api/mod-tree?folder=F: every file of the mod folder, as [{path, size}] with "/" separators
+// (the Files section and the item counts of the editor). Hidden entries (".x") and the "civs"
+// folder and "mod.json" (managed through /api/mod) are left out; max 4000 files, 6 folder levels.
+#define MOD_TREE_MAX_FILES 4000
+#define MOD_TREE_MAX_DEPTH 6
+
+typedef struct {
+    ApiBuf *out;
+    int     count;
+} ModTreeWalk;
+
+static void mod_tree_walk(ModTreeWalk *w, const char *dir, const char *rel, int depth) {
+    if (depth > MOD_TREE_MAX_DEPTH) return;
+    char pat[MAX_PATH + 4];
+    snprintf(pat, sizeof pat, "%s/*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        const char *name = fd.cFileName;
+        if (name[0] == '.') continue;
+        if (depth == 0 && (strcmp(name, "civs") == 0 || strcmp(name, "mod.json") == 0)) continue;
+        char full[MAX_PATH], sub[MAX_PATH];
+        snprintf(full, sizeof full, "%s/%s", dir, name);
+        if (rel[0]) snprintf(sub, sizeof sub, "%s/%s", rel, name);
+        else        snprintf(sub, sizeof sub, "%s", name);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            mod_tree_walk(w, full, sub, depth + 1);
+        } else {
+            if (w->count >= MOD_TREE_MAX_FILES) return;
+            if (w->count++) buf_puts(w->out, ",");
+            char num[32];
+            snprintf(num, sizeof num, "%lu", (unsigned long)fd.nFileSizeLow);
+            buf_puts(w->out, "{\"path\":");
+            buf_puts_escaped(w->out, sub);
+            buf_puts(w->out, ",\"size\":");
+            buf_puts(w->out, num);
+            buf_puts(w->out, "}");
+        }
+    } while (FindNextFileA(h, &fd) && w->count < MOD_TREE_MAX_FILES);
+    FindClose(h);
+}
+
+static void handle_get_mod_tree(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char folder[MAX_PATH] = "";
+    if (!get_query_param(req->query, "folder", folder, sizeof folder)) {
+        http_response_error(res, 400, "Missing folder");
+        return;
+    }
+    if (!is_valid_folder_name(folder)) {
+        http_response_error(res, 400, "Invalid folder");
+        return;
+    }
+    char dir[MAX_PATH];
+    snprintf(dir, sizeof dir, "%s/%s", s->mods_dir, folder);
+    ApiBuf b;
+    buf_init(&b);
+    buf_puts(&b, "[");
+    ModTreeWalk w = { &b, 0 };
+    mod_tree_walk(&w, dir, "", 0);
+    buf_puts(&b, "]");
+    http_response_set_json(res, 200, b.data);
+    free(b.data);
+}
+
+// GET /api/palette: the game palette (resources/_common/drs/interface/50500.bina, JASC-PAL:
+// "JASC-PAL", "0100", "256", then 256 lines "r g b") as [[r,g,b], ...] for the SLP creator.
+static void handle_get_palette(ServerState *s, HttpResponse *res) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s/resources/_common/drs/interface/50500.bina", s->game_dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) { http_response_error(res, 404, "Game palette 50500.bina not found"); return; }
+    char line[128];
+    int n = -3;
+    ApiBuf b;
+    buf_init(&b);
+    buf_puts(&b, "[");
+    while (fgets(line, sizeof line, f) && n < 256) {
+        if (n < 0) { n++; continue; }   // header lines
+        int r, g, bl;
+        if (sscanf(line, "%d %d %d", &r, &g, &bl) != 3) break;
+        char item[32];
+        snprintf(item, sizeof item, "%s[%d,%d,%d]", n ? "," : "", r, g, bl);
+        buf_puts(&b, item);
+        n++;
+    }
+    fclose(f);
+    buf_puts(&b, "]");
+    if (n != 256) { free(b.data); http_response_error(res, 500, "Bad game palette"); return; }
+    http_response_set_json(res, 200, b.data);
+    free(b.data);
+}
+
+// ---- game files (read only) ----------------------------------------------------
+// GET /api/game-file?path=P: one file of the game's resources\ tree (SLP sprites for the viewer
+// and the icons). GET /api/game-list?dir=D: its files as [{name, size}] (allowed extensions only).
+// P and D are relative to <game>\resources\ with forward slashes; the rules are in gamepath.c.
+// Nothing here writes: the game folder is read only for Scriptorium.
+#define GAME_FILE_MAX_BYTES (20 * 1024 * 1024)
+#define GAME_LIST_MAX       20000     // more entries than this: "truncated": true
+
+static const char *game_file_content_type(const char *name) {
+    const char *dot = strrchr(name, '.');
+    if (dot && _stricmp(dot, ".png") == 0) return "image/png";
+    if (dot && _stricmp(dot, ".mp3") == 0) return "audio/mpeg";
+    if (dot && _stricmp(dot, ".wav") == 0) return "audio/wav";
+    return "application/octet-stream";   // .slp, .bina
+}
+
+static void handle_get_game_file(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char rel[256] = "", path[1024];
+    if (!get_query_param(req->query, "path", rel, sizeof rel) || !sc_game_rel_path_ok(rel, 0)) {
+        http_response_error(res, 400, "Invalid game file path");
+        return;
+    }
+    snprintf(path, sizeof path, "%s/resources/%s", s->game_dir, rel);
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        http_response_error(res, 404, "Game file not found");
+        return;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) { http_response_error(res, 404, "Game file not found"); return; }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0 || sz > GAME_FILE_MAX_BYTES) { fclose(f); http_response_error(res, 500, "File too large"); return; }
+    char *data = malloc((size_t)sz + 1);
+    if (!data) { fclose(f); http_response_error(res, 500, "Out of memory"); return; }
+    size_t got = fread(data, 1, (size_t)sz, f);
+    fclose(f);
+    http_response_free(res);
+    res->status_code     = 200;
+    res->status_text     = "OK";
+    res->content_type    = game_file_content_type(rel);
+    res->body            = data;
+    res->body_len        = got;
+    res->is_dynamic_body = 1;
+}
+
+static void handle_get_game_list(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char dir[256] = "", pat[1024];
+    if (!get_query_param(req->query, "dir", dir, sizeof dir) || !sc_game_rel_path_ok(dir, 1)) {
+        http_response_error(res, 400, "Invalid game folder");
+        return;
+    }
+    snprintf(pat, sizeof pat, "%s/resources/%s/*", s->game_dir, dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) { http_response_error(res, 404, "Game folder not found"); return; }
+    ApiBuf b;
+    buf_init(&b);
+    buf_puts(&b, "{\"files\":[");
+    int n = 0, truncated = 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (!sc_game_file_name_ok(fd.cFileName)) continue;
+        if (n == GAME_LIST_MAX) { truncated = 1; break; }
+        if (n++) buf_puts(&b, ",");
+        buf_puts(&b, "{\"name\":");
+        buf_puts_escaped(&b, fd.cFileName);
+        char size[64];
+        snprintf(size, sizeof size, ",\"size\":%llu}",
+                 ((unsigned long long)fd.nFileSizeHigh << 32) | (unsigned long long)fd.nFileSizeLow);
+        buf_puts(&b, size);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    buf_puts(&b, truncated ? "],\"truncated\":true}" : "],\"truncated\":false}");
+    http_response_set_json(res, 200, b.data);
+    free(b.data);
+}
+
+// GET/PUT /api/settings: Scriptorium's own settings (window state, ...) in
+// <game>/wololoader/scriptorium-settings.json, a JSON object (the page's port, and so its
+// browser storage, changes at every start). Max 64 KB.
+static void settings_path(ServerState *s, char *out, size_t cap) {
+    snprintf(out, cap, "%s/wololoader/scriptorium-settings.json", s->game_dir);
+}
+static void handle_get_settings(ServerState *s, HttpResponse *res) {
+    char path[MAX_PATH];
+    settings_path(s, path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    char buf[65536];
+    size_t n = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
+    if (f) fclose(f);
+    buf[n] = 0;
+    WlJsonVal *v = n ? wl_json_parse(buf, NULL, 0) : NULL;
+    int ok = v && v->type == WL_JSON_OBJECT;
+    wl_json_free(v);
+    http_response_set_json(res, 200, ok ? buf : "{}");
+}
+static void handle_put_settings(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    if (!req->body || req->content_length > 65535) { http_response_error(res, 400, "Settings must be a JSON object"); return; }
+    WlJsonVal *v = wl_json_parse(req->body, NULL, 0);
+    int ok = v && v->type == WL_JSON_OBJECT;
+    wl_json_free(v);
+    if (!ok) { http_response_error(res, 400, "Settings must be a JSON object"); return; }
+    char path[MAX_PATH], err[256];
+    settings_path(s, path, sizeof path);
+    if (modio_atomic_write_file(path, req->body, req->content_length, err, sizeof err) != 0) {
+        http_response_error(res, 500, err);
+        return;
+    }
+    http_response_set_json(res, 200, "{\"ok\":true}");
+}
+
 // ==========================================================================
 // Main API Router
 // ==========================================================================
@@ -904,7 +1263,7 @@ void api_handle_request(ServerState *s, const HttpRequest *req, HttpResponse *re
     } else if (strcmp(req->path, "/api/stats") == 0 && strcmp(req->method, "GET") == 0) {
         handle_get_stats(s, req, res);
     } else if (strcmp(req->path, "/api/mods") == 0 && strcmp(req->method, "GET") == 0) {
-        handle_get_mods(s, res);
+        handle_get_mods(s, req, res);
     } else if (strncmp(req->path, "/api/mod/", 9) == 0 && strcmp(req->method, "GET") == 0) {
         handle_get_mod_detail(s, req->path + 9, res);
     } else if (strncmp(req->path, "/api/mod/", 9) == 0 && strcmp(req->method, "PUT") == 0) {
@@ -919,6 +1278,26 @@ void api_handle_request(ServerState *s, const HttpRequest *req, HttpResponse *re
         handle_post_upload(s, req, res);
     } else if (strcmp(req->path, "/api/open-folder") == 0 && strcmp(req->method, "POST") == 0) {
         handle_post_open_folder(s, req, res);
+    } else if (strcmp(req->path, "/api/palette") == 0 && strcmp(req->method, "GET") == 0) {
+        handle_get_palette(s, res);
+    } else if (strcmp(req->path, "/api/game-file") == 0 && strcmp(req->method, "GET") == 0) {
+        handle_get_game_file(s, req, res);
+    } else if (strcmp(req->path, "/api/game-list") == 0 && strcmp(req->method, "GET") == 0) {
+        handle_get_game_list(s, req, res);
+    } else if (strcmp(req->path, "/api/settings") == 0 && strcmp(req->method, "GET") == 0) {
+        handle_get_settings(s, res);
+    } else if (strcmp(req->path, "/api/settings") == 0 && strcmp(req->method, "PUT") == 0) {
+        handle_put_settings(s, req, res);
+    } else if (strcmp(req->path, "/api/file") == 0 && strcmp(req->method, "GET") == 0) {
+        handle_get_file(s, req, res);
+    } else if (strcmp(req->path, "/api/file") == 0 && strcmp(req->method, "PUT") == 0) {
+        handle_put_file(s, req, res);
+    } else if (strcmp(req->path, "/api/file") == 0 && strcmp(req->method, "DELETE") == 0) {
+        handle_delete_file(s, req, res);
+    } else if (strcmp(req->path, "/api/files") == 0 && strcmp(req->method, "GET") == 0) {
+        handle_get_files(s, req, res);
+    } else if (strcmp(req->path, "/api/mod-tree") == 0 && strcmp(req->method, "GET") == 0) {
+        handle_get_mod_tree(s, req, res);
     } else if (strcmp(req->path, "/api/ping") == 0 && strcmp(req->method, "POST") == 0) {
         launcher_notify_ping();
         http_response_set_json(res, 200, "{\"ok\":true}");

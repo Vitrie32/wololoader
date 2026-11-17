@@ -1,7 +1,7 @@
 CC      = i686-w64-mingw32-gcc
 CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc
 LDFLAGS = -shared -static -Wl,--enable-stdcall-fixup -Wl,--kill-at -lshell32 -lgdi32 -luser32 -lole32 -lwindowscodecs -luuid
-SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/civs.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/buildpage.c src/iconmerge.c src/proxy_version.S
+SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/civs.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/buildpage.c src/iconmerge.c src/taunts.c src/proxy_version.S
 
 # Embedded Lua 5.4 (third_party/lua, unmodified). Only the core and the safe
 # libraries: no lua.c/luac.c, no linit.c (script.c opens libs itself), no
@@ -31,7 +31,7 @@ GAME   ?= $(HOME)/.steam/steam/steamapps/common/Age2HD
 SC_CATALOG_SRC = $(if $(wildcard scriptorium/catalog.c),scriptorium/catalog.c,scriptorium/catalog_stub.c)
 SC_SRC  = scriptorium/main.c scriptorium/server.c scriptorium/api.c scriptorium/launcher.c \
           scriptorium/sc_zlib.c scriptorium/modio.c \
-          $(SC_CATALOG_SRC) src/json.c src/datbuild.c
+          $(SC_CATALOG_SRC) scriptorium/gamepath.c src/json.c src/datbuild.c
 SC_CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc -Iscriptorium -Ibuild -Isrc
 SC_LDFLAGS = -mwindows -static -lws2_32 -lshell32
 

@@ -1,0 +1,574 @@
+/* ==========================================================================
+   Scriptorium Graph Editor CSS
+   Unity Bolt-style visual scripting editor for Lua event scripts
+   ========================================================================== */
+
+.scgraph-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--wood-900);
+  background-image:
+    linear-gradient(rgba(100, 70, 40, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(100, 70, 40, 0.1) 1px, transparent 1px);
+  background-size: 20px 20px;
+  user-select: none;
+  font-family: var(--font-serif);
+}
+
+.scgraph-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  gap: 6px;
+  z-index: 10;
+}
+
+.scgraph-canvas {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+}
+
+.scgraph-canvas.panning {
+  cursor: grabbing;
+}
+
+.scgraph-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.scgraph-nodes {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.scgraph-node {
+  position: absolute;
+  pointer-events: all;
+  background: var(--wood-850);
+  border: 2px solid var(--wood-border);
+  min-width: 180px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.scgraph-node.selected {
+  border-color: var(--gold-highlight);
+  box-shadow: 0 0 0 2px var(--gold-border), 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.scgraph-node.error {
+  border-color: #e53935;
+  box-shadow: 0 0 0 2px #e53935, 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.scgraph-node-header {
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: bold;
+  color: #fff;
+  text-shadow: 1px 1px 0 #000;
+  cursor: move;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.3);
+}
+
+.scgraph-node-header.category-event { background: #9b2c2c; }
+.scgraph-node-header.category-action { background: #2c5f9b; }
+.scgraph-node-header.category-flow { background: #9b7a2c; }
+.scgraph-node-header.category-data { background: #2c9b5f; }
+
+.scgraph-node-body {
+  padding: 8px 4px;
+  min-height: 32px;
+}
+
+.scgraph-port {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.scgraph-port.flow {
+  clip-path: polygon(0% 50%, 100% 0%, 100% 100%);
+  background: #fff;
+  border: 1px solid #333;
+}
+
+.scgraph-port.data {
+  border-radius: 50%;
+  border: 2px solid #333;
+}
+
+.scgraph-port.type-number { background: #4fc3f7; }
+.scgraph-port.type-text { background: #ba68c8; }
+.scgraph-port.type-bool { background: #ff9800; }
+.scgraph-port.type-player { background: #66bb6a; }
+.scgraph-port.type-unit { background: #ffa726; }
+.scgraph-port.type-units { background: #ef5350; }
+.scgraph-port.type-any { background: #bdbdbd; }
+
+.scgraph-port.input,
+.scgraph-port-row.input > .scgraph-port { left: -7px; right: auto; top: 50%; transform: translateY(-50%); }
+.scgraph-port.output,
+.scgraph-port-row.output > .scgraph-port { right: -7px; left: auto; top: 50%; transform: translateY(-50%); }
+
+.scgraph-port-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 3px 12px;
+  min-height: 24px;
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+.scgraph-port-row.input {
+  justify-content: flex-start;
+  padding-left: 18px;
+}
+
+.scgraph-port-row.output {
+  justify-content: flex-end;
+  padding-right: 18px;
+}
+
+.scgraph-port-label {
+  margin: 0 6px;
+}
+
+.scgraph-inline-input {
+  flex: 1;
+  max-width: 120px;
+  padding: 2px 4px;
+  font-size: 11px;
+  background: #100804;
+  border: 1px solid var(--wood-border);
+  color: var(--text-light);
+  font-family: var(--font-serif);
+}
+
+.scgraph-inline-input:focus {
+  outline: 1px solid var(--gold-border);
+}
+
+.scgraph-wire {
+  fill: none;
+  stroke-width: 2;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.scgraph-wire.flow {
+  stroke: rgba(255, 255, 255, 0.8);
+  stroke-width: 3;
+}
+
+.scgraph-wire.type-number { stroke: #4fc3f7; }
+.scgraph-wire.type-text { stroke: #ba68c8; }
+.scgraph-wire.type-bool { stroke: #ff9800; }
+.scgraph-wire.type-player { stroke: #66bb6a; }
+.scgraph-wire.type-unit { stroke: #ffa726; }
+.scgraph-wire.type-units { stroke: #ef5350; }
+.scgraph-wire.type-any { stroke: #bdbdbd; }
+
+.scgraph-wire:hover {
+  stroke-width: 4;
+  filter: brightness(1.3);
+}
+
+.scgraph-wire.selected {
+  stroke-width: 4;
+  filter: brightness(1.5);
+}
+
+.scgraph-finder {
+  position: absolute;
+  width: 420px;
+  max-height: 480px;
+  background: var(--parch-base);
+  border: 2px solid var(--wood-border);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+
+.scgraph-finder-search {
+  padding: 8px;
+  border-bottom: 1px solid var(--parch-border);
+}
+
+.scgraph-finder-search input {
+  width: 100%;
+  padding: 6px 8px;
+  background: #fbf7ee;
+  border: 1px solid var(--parch-border);
+  color: var(--text-dark);
+  font-family: var(--font-serif);
+  font-size: 13px;
+}
+
+.scgraph-finder-results {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 400px;
+}
+
+.scgraph-finder-category {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: bold;
+  text-transform: uppercase;
+  color: var(--wood-900);
+  background: rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid var(--parch-border);
+}
+
+.scgraph-finder-item {
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-dark);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.scgraph-finder-item:hover,
+.scgraph-finder-item.selected {
+  background: rgba(80, 51, 30, 0.15);
+}
+
+.scgraph-finder-item-title {
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+.scgraph-finder-item-desc {
+  font-size: 11px;
+  color: var(--text-dark-muted);
+}
+
+.scgraph-vars-panel {
+  position: absolute;
+  top: 50px;
+  right: 8px;
+  width: 280px;
+  max-height: calc(100% - 100px);
+  background: var(--parch-card-bg);
+  border: 2px solid var(--parch-border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+.scgraph-vars-header {
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid var(--parch-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.scgraph-vars-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--wood-900);
+  text-transform: uppercase;
+}
+
+.scgraph-vars-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.scgraph-var-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 6px;
+  padding: 4px 6px;
+  background: #fbf7ee;
+  border: 1px solid var(--parch-border);
+}
+
+.scgraph-var-row input,
+.scgraph-var-row select {
+  padding: 2px 4px;
+  border: 1px solid var(--parch-border);
+  font-size: 11px;
+  font-family: var(--font-serif);
+}
+
+.scgraph-var-name {
+  flex: 1;
+}
+
+.scgraph-var-type {
+  width: 70px;
+}
+
+.scgraph-var-value {
+  width: 60px;
+}
+
+.scgraph-lua-panel {
+  position: absolute;
+  top: 50px;
+  right: 8px;
+  bottom: 8px;
+  width: 480px;
+  background: var(--wood-900);
+  border: 2px solid var(--wood-border);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+.scgraph-lua-header {
+  padding: 8px 10px;
+  background: var(--wood-850);
+  border-bottom: 1px solid var(--wood-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.scgraph-lua-title {
+  font-size: 12px;
+  font-weight: bold;
+  color: var(--gold-highlight);
+  text-transform: uppercase;
+}
+
+.scgraph-lua-code {
+  flex: 1;
+  overflow: auto;
+  padding: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-light);
+  white-space: pre;
+}
+
+.scgraph-lua-errors {
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: rgba(229, 57, 53, 0.15);
+  border-top: 1px solid #e53935;
+}
+
+.scgraph-lua-error {
+  padding: 4px 6px;
+  margin-bottom: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  border-left: 3px solid #e53935;
+  font-size: 11px;
+  color: var(--text-light);
+  cursor: pointer;
+}
+
+.scgraph-lua-error:hover {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.scgraph-selection-box {
+  position: absolute;
+  border: 2px dashed var(--gold-highlight);
+  background: rgba(248, 232, 186, 0.1);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* settings of a node that are not ports (button name, seconds, ...) */
+.scgraph-port-row.setting { padding-left: 12px; gap: 6px; }
+.scgraph-port-row.setting .scgraph-inline-input { max-width: 140px; }
+
+/* ==========================================================================
+   Modern theme (overrides the rules above): flat dark canvas with a dot grid,
+   rounded nodes with a thin category stripe, coloured typed ports and wires,
+   floating toolbar and panels. Layout rules above stay as they are.
+   ========================================================================== */
+.scgraph-container {
+  --g-bg: #15161b;
+  --g-node: #23252d;
+  --g-node-2: #1d1f26;
+  --g-line: #343744;
+  --g-text: #e6e7ec;
+  --g-muted: #9a9cab;
+  --g-accent: #f0c35a;
+  --c-event: #ef5a5f;
+  --c-action: #4c8dff;
+  --c-flow: #f2a93b;
+  --c-data: #3fbf7f;
+  --t-number: #5cc8ff;
+  --t-text: #d77bff;
+  --t-bool: #ff8f5a;
+  --t-player: #6fdc8c;
+  --t-unit: #ffc861;
+  --t-units: #ff6b81;
+  --t-any: #b5b8c5;
+  font-family: system-ui, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+  background-color: var(--g-bg);
+  background-image:
+    radial-gradient(circle, rgba(255, 255, 255, 0.07) 1px, transparent 1.2px),
+    radial-gradient(circle, rgba(255, 255, 255, 0.12) 1.4px, transparent 1.6px);
+  background-size: 20px 20px, 100px 100px;
+  border-radius: 8px;
+}
+
+/* toolbar: floating pill */
+.scgraph-toolbar {
+  top: 12px; left: 12px; gap: 2px; padding: 4px;
+  background: rgba(30, 32, 40, 0.88);
+  border: 1px solid var(--g-line);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+}
+.scgraph-toolbar .btn, .scgraph-toolbar button {
+  font-family: inherit; font-size: 12.5px; font-weight: 600; letter-spacing: 0;
+  text-transform: none; color: var(--g-text);
+  background: transparent; border: 0; border-radius: 7px;
+  padding: 6px 12px; box-shadow: none; text-shadow: none;
+}
+.scgraph-toolbar .btn:hover, .scgraph-toolbar button:hover { background: rgba(255, 255, 255, 0.08); }
+.scgraph-toolbar .btn:first-child { color: #15161b; background: var(--g-accent); }
+.scgraph-toolbar .btn:first-child:hover { filter: brightness(1.08); }
+
+/* nodes */
+.scgraph-node {
+  background: linear-gradient(180deg, var(--g-node), var(--g-node-2));
+  border: 1px solid var(--g-line);
+  border-radius: 10px;
+  min-width: 190px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  color: var(--g-text);
+  overflow: visible;
+}
+.scgraph-node.selected { border-color: var(--g-accent); box-shadow: 0 0 0 2px rgba(240, 195, 90, 0.35), 0 10px 28px rgba(0, 0, 0, 0.5); }
+.scgraph-node.error { border-color: #ff5a5a; box-shadow: 0 0 0 2px rgba(255, 90, 90, 0.35), 0 10px 28px rgba(0, 0, 0, 0.5); }
+.scgraph-node-header {
+  position: relative;
+  padding: 9px 12px 8px 26px;
+  font-size: 12.5px; font-weight: 650; letter-spacing: 0.1px;
+  color: var(--g-text); text-shadow: none;
+  background: transparent !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px 10px 0 0;
+  cursor: grab;
+}
+.scgraph-node-header::before {         /* category dot */
+  content: ""; position: absolute; left: 11px; top: 50%; width: 8px; height: 8px;
+  margin-top: -4px; border-radius: 50%; background: var(--cat, #888);
+  box-shadow: 0 0 8px var(--cat, #888);
+}
+.scgraph-node-header::after {          /* category stripe */
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px;
+  border-radius: 10px 10px 0 0; background: var(--cat, #888);
+}
+.scgraph-node-header.category-event { --cat: var(--c-event); }
+.scgraph-node-header.category-action { --cat: var(--c-action); }
+.scgraph-node-header.category-flow { --cat: var(--c-flow); }
+.scgraph-node-header.category-data { --cat: var(--c-data); }
+.scgraph-node-body { padding: 6px 0 8px; }
+
+/* port rows */
+.scgraph-port-row { min-height: 26px; font-size: 12px; color: var(--g-muted); }
+.scgraph-port-label { margin: 0 4px; white-space: nowrap; }
+.scgraph-port-row.input { padding-left: 16px; }
+.scgraph-port-row.output { padding-right: 16px; }
+.scgraph-port-row.setting { padding: 2px 12px; }
+
+/* ports */
+.scgraph-port { width: 12px; height: 12px; transition: transform .12s, box-shadow .12s; }
+.scgraph-port.data { border-radius: 50%; border: 2.5px solid var(--pc, var(--t-any)); background: var(--g-bg); }
+.scgraph-port.data:hover { background: var(--pc, var(--t-any)); box-shadow: 0 0 10px var(--pc, var(--t-any)); }
+.scgraph-port.flow {
+  width: 12px; height: 12px; border: 0; background: #f2f3f7;
+  clip-path: polygon(0 0, 55% 0, 100% 50%, 55% 100%, 0 100%);
+}
+.scgraph-port.flow:hover { background: #fff; filter: drop-shadow(0 0 4px #fff); }
+.scgraph-port-row.input > .scgraph-port:hover, .scgraph-port-row.output > .scgraph-port:hover { transform: translateY(-50%) scale(1.25); }
+.scgraph-port.type-number { --pc: var(--t-number); }
+.scgraph-port.type-text { --pc: var(--t-text); }
+.scgraph-port.type-bool { --pc: var(--t-bool); }
+.scgraph-port.type-player { --pc: var(--t-player); }
+.scgraph-port.type-unit { --pc: var(--t-unit); }
+.scgraph-port.type-units { --pc: var(--t-units); }
+.scgraph-port.type-any { --pc: var(--t-any); }
+
+/* inline editors */
+.scgraph-inline-input {
+  font-family: inherit; font-size: 12px; color: var(--g-text);
+  background: #15161b; border: 1px solid #3a3d4a; border-radius: 6px;
+  padding: 3px 7px; margin-left: 6px; outline: none; max-width: 120px;
+}
+.scgraph-inline-input:focus { border-color: var(--g-accent); box-shadow: 0 0 0 2px rgba(240, 195, 90, 0.2); }
+select.scgraph-inline-input { padding-right: 4px; }
+
+/* wires */
+.scgraph-wire { fill: none; stroke-width: 2.5; stroke-linecap: round; opacity: 0.9; transition: stroke-width .1s, opacity .1s; }
+.scgraph-wire:hover { stroke-width: 4; opacity: 1; }
+.scgraph-wire.selected { stroke-width: 4; opacity: 1; filter: drop-shadow(0 0 4px var(--g-accent)); }
+.scgraph-wire.flow { stroke: #eceef3; stroke-width: 3; }
+.scgraph-wire.type-number { stroke: var(--t-number); }
+.scgraph-wire.type-text { stroke: var(--t-text); }
+.scgraph-wire.type-bool { stroke: var(--t-bool); }
+.scgraph-wire.type-player { stroke: var(--t-player); }
+.scgraph-wire.type-unit { stroke: var(--t-unit); }
+.scgraph-wire.type-units { stroke: var(--t-units); }
+.scgraph-wire.type-any { stroke: var(--t-any); }
+
+.scgraph-selection-box { border: 1px solid var(--g-accent); background: rgba(240, 195, 90, 0.08); border-radius: 4px; }
+
+/* node finder */
+.scgraph-finder {
+  background: rgba(28, 30, 37, 0.97); color: var(--g-text);
+  border: 1px solid var(--g-line); border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6); overflow: hidden;
+}
+.scgraph-finder-search { padding: 10px; border-bottom: 1px solid var(--g-line); }
+.scgraph-finder-search input {
+  font-family: inherit; font-size: 14px; color: var(--g-text);
+  background: #15161b; border: 1px solid #3a3d4a; border-radius: 8px; padding: 9px 12px; outline: none;
+}
+.scgraph-finder-search input:focus { border-color: var(--g-accent); }
+.scgraph-finder-category {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+  color: var(--g-muted); background: transparent; padding: 10px 14px 4px; border: 0;
+}
+.scgraph-finder-item { padding: 7px 14px; border: 0; border-radius: 0; color: var(--g-text); }
+.scgraph-finder-item:hover, .scgraph-finder-item.selected { background: rgba(240, 195, 90, 0.12); }
+.scgraph-finder-item-title { font-size: 13px; font-weight: 600; color: var(--g-text); }
+.scgraph-finder-item-desc { font-size: 11.5px; color: var(--g-muted); }
+
+/* side panels (variables, Lua) */
+.scgraph-vars-panel, .scgraph-lua-panel {
+  top: 60px; right: 12px;
+  background: rgba(28, 30, 37, 0.96); color: var(--g-text);
+  border: 1px solid var(--g-line); border-radius: 12px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); overflow: hidden;
+}
+.scgraph-vars-header, .scgraph-lua-header { background: transparent; border-bottom: 1px solid var(--g-line); padding: 10px 14px; }
+.scgraph-vars-title, .scgraph-lua-title { font-size: 12px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: var(--g-muted); }
+.scgraph-lua-code { background: #121318; color: #d5d8e0; font-size: 12px; line-height: 1.55; padding: 12px 14px; }
+.scgraph-var-row input, .scgraph-var-row select {
+  font-family: inherit; color: var(--g-text); background: #15161b; border: 1px solid #3a3d4a; border-radius: 6px;
+}
+.scgraph-lua-errors { border-top: 1px solid #5a2a2a; background: #1f1516; }
+.scgraph-lua-error { color: #ffb3b3; border-left: 3px solid #ff5a5a; }

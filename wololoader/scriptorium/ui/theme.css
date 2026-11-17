@@ -1,0 +1,243 @@
+/* ==========================================================================
+   Scriptorium theme: a quiet, dark editor (in the family of Godot / Figma), with one warm
+   accent. Loaded after app.css, graph.css and basic.css and overrides their look; layout
+   rules there stay. Serif only for the app name. The in-game description preview keeps the
+   game's parchment on purpose (it shows how the text will look in the game).
+   ========================================================================== */
+:root {
+  --bg: #111113;
+  --surface-0: #141416;
+  --surface-1: #18181b;
+  --surface-2: #1e1e22;
+  --surface-3: #26262b;
+  --line: #2a2a30;
+  --line-strong: #3a3a42;
+  --text: #ececef;
+  --text-2: #a5a5ae;
+  --text-3: #74747d;
+  --accent: #e2b354;
+  --accent-ink: #1b1406;
+  --accent-soft: rgba(226, 179, 84, 0.13);
+  --danger: #f06a6a;
+  --ok: #4fc58a;
+  --radius: 7px;
+  --radius-lg: 11px;
+  --ui: system-ui, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+
+  /* old tokens, remapped for rules that still use them */
+  --font-title: Georgia, "Times New Roman", serif;
+  --font-serif: var(--ui);
+  --font-body: var(--ui);
+  --wood-950: #0b0b0d; --wood-900: #111113; --wood-850: #141416; --wood-800: #18181b;
+  --wood-750: #1e1e22; --wood-700: #26262b; --wood-600: #2e2e34;
+  --wood-border: #2a2a30; --wood-border-light: #3a3a42; --wood-border-dark: #0b0b0d;
+  --parch-light: #26262b; --parch-base: #18181b; --parch-dark: #1e1e22;
+  --parch-border: #2a2a30; --parch-border-dark: #3a3a42; --parch-border-light: #2a2a30;
+  --parch-card-bg: #1e1e22;
+  --gold-highlight: #f0cf86; --gold-text: #e2b354; --gold-border: #8a6c2e;
+  --text-dark: #ececef; --text-dark-muted: #a5a5ae; --text-light: #ececef; --text-light-dim: #a5a5ae;
+  --text-muted: #a5a5ae;
+}
+
+html, body {
+  font-family: var(--ui) !important;
+  font-size: 13.5px;
+  color: var(--text);
+  background: var(--bg) !important;
+  background-image: none !important;
+  -webkit-font-smoothing: antialiased;
+}
+body * { text-shadow: none !important; }
+body h1, body h2, body h3, body h4, body label, body input, body select, body textarea, body button {
+  font-family: var(--ui);
+  letter-spacing: 0;
+}
+::selection { background: var(--accent-soft); }
+* { scrollbar-width: thin; scrollbar-color: #3a3a42 transparent; }
+
+/* ---------------------------------------------------------------- frame */
+body .app-layout { background: var(--bg) !important; border: 0 !important; box-shadow: none !important; }
+body .window-app-crest {
+  width: 24px; height: 24px; display: inline-grid; place-items: center;
+  font-family: var(--font-title); font-size: 15px; font-weight: 700;
+  color: var(--accent-ink); background: var(--accent) !important; border: 0 !important; border-radius: 6px;
+}
+
+body .status-text, body .app-version { font-size: 12px; color: var(--text-3); }
+body .status-sep { color: var(--line-strong); }
+
+/* ---------------------------------------------------------------- home: mod list */
+body .home-view { background: var(--bg) !important; }
+body .home-header { background: var(--surface-0) !important; border-bottom: 1px solid var(--line) !important; height: 44px; }
+body .home-brand-name { font-family: var(--font-title); font-size: 17px; font-weight: 600; color: var(--text); text-shadow: none; }
+body .home-toolbar { border-bottom: 1px solid var(--line) !important; }
+body .home-title { font-family: var(--ui); font-size: 18px; font-weight: 650; color: var(--text); }
+body .home-count, body .app-status { color: var(--text-3); }
+body .mod-tile {
+  background: var(--surface-1) !important; border: 1px solid var(--line) !important; border-radius: var(--radius-lg);
+  color: var(--text); box-shadow: none !important; transition: border-color .12s, background .12s;
+}
+body .mod-tile:hover { background: var(--surface-2) !important; border-color: var(--line-strong) !important; }
+body .mod-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+body .mod-tile-icon { background: var(--accent-soft) !important; border: 0 !important; border-radius: 9px; color: var(--accent); font-family: var(--font-title); }
+body .mod-tile-name { font-family: var(--ui); font-size: 14px; font-weight: 650; color: var(--text); }
+body .mod-tile-id, body .mod-tile-meta, body .mod-tile-changed { color: var(--text-3); }
+body .mod-state { font-size: 11px; font-weight: 600; border: 0; border-radius: 99px; padding: 2px 9px; }
+body .mod-state.on { color: #7fe0ae; background: rgba(79, 197, 138, .14); }
+body .mod-state.off { color: var(--text-3); background: var(--surface-3); }
+body .mod-tile-new { background: transparent !important; border: 1px dashed var(--line-strong) !important; color: var(--text-2); }
+body .mod-tile-new:hover { border-color: var(--accent) !important; color: var(--text); }
+body .mod-tile-plus { color: var(--accent); }
+body .mods-grid-note { color: var(--text-2); }
+
+/* ---------------------------------------------------------------- editor top bar */
+body .editor-topbar { background: var(--surface-0) !important; border-bottom: 1px solid var(--line) !important; }
+body .editor-topbar-right, body .editor-topbar-right .status-text { color: var(--text-3); }
+body .sprites-view { background: var(--surface-1) !important; }
+
+/* ---------------------------------------------------------------- workspace and header */
+body .workspace, body .mod-workspace { background: var(--surface-1) !important; background-image: none !important; }
+body .mod-header {
+  background: var(--surface-1) !important; background-image: none !important;
+  border: 0 !important; border-bottom: 1px solid var(--line) !important; box-shadow: none !important;
+  padding: 14px 20px;
+}
+body .mod-header-name { font-size: 18px; font-weight: 650; color: var(--text); font-family: var(--ui); }
+body .mod-ver-tag { font-size: 12px; color: var(--text-3); font-weight: 500; }
+body .mod-author, body .mod-header-meta { font-size: 12px; color: var(--text-2); }
+body .badge-unsaved { color: var(--accent); background: var(--accent-soft); border: 0; border-radius: 99px; padding: 2px 8px; font-size: 11px; }
+
+/* ---------------------------------------------------------------- controls */
+body .btn {
+  font-family: var(--ui); font-size: 13px; font-weight: 600; text-transform: none; letter-spacing: 0;
+  border-radius: var(--radius); padding: 7px 13px; line-height: 1.2;
+  transition: background .12s, border-color .12s, color .12s;
+}
+body .btn-sm { padding: 5px 10px; font-size: 12.5px; }
+body .btn-xs { padding: 3px 7px; font-size: 11.5px; }
+body .btn-wood, body .btn-secondary {
+  background: var(--surface-3) !important; border: 1px solid var(--line-strong) !important; color: var(--text) !important;
+}
+body .btn-wood:hover, body .btn-secondary:hover { background: #303036 !important; border-color: #4a4a54 !important; }
+body .btn-wood:active { background: #2a2a30 !important; }
+body .btn-wood:disabled, body .btn-secondary:disabled { background: var(--surface-2) !important; border-color: var(--line) !important; color: var(--text-3) !important; }
+body .btn-save, body .btn-gold, body .btn-wood.btn-save {
+  background: var(--accent) !important; border: 1px solid var(--accent) !important; color: var(--accent-ink) !important;
+}
+body .btn-save:hover, body .btn-gold:hover { background: #ecc26a !important; border-color: #ecc26a !important; }
+body .btn:focus-visible, body .form-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+body .kbd-hint { background: rgba(0, 0, 0, .18); border: 0; border-radius: 4px; color: inherit; opacity: .75; font-size: 10.5px; padding: 1px 5px; }
+
+body .form-input, body .form-select, body .form-textarea, body .search-input-wrapper input,
+body input[type="text"], body input[type="number"], body input[type="search"], body select, body textarea {
+  font-family: var(--ui); font-size: 13px; color: var(--text);
+  background: var(--surface-0) !important; border: 1px solid var(--line-strong) !important; border-radius: var(--radius);
+  padding: 7px 10px; box-shadow: none !important;
+}
+body .form-input:focus, body .form-select:focus, body .form-textarea:focus, body input:focus, body select:focus, body textarea:focus {
+  border-color: var(--accent) !important; box-shadow: 0 0 0 3px var(--accent-soft) !important; outline: none;
+}
+body ::placeholder { color: var(--text-3); }
+body label, body .basic-form-field > label { font-size: 12px; font-weight: 600; color: var(--text-2); text-transform: none; letter-spacing: 0; }
+body .font-mono, body code, body pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+
+/* ---------------------------------------------------------------- cards and sections */
+body .card,
+body .basic-form-section {
+  background: var(--surface-2) !important; background-image: none !important;
+  border: 1px solid var(--line) !important; border-radius: var(--radius-lg); box-shadow: none !important; color: var(--text);
+}
+
+body .basic-form-section-title {
+  font-family: var(--ui); font-size: 13px; font-weight: 650; color: var(--text); text-transform: none; letter-spacing: 0;
+}
+body .text-muted,
+body .basic-muted { color: var(--text-2); }
+
+body table { border-color: var(--line); }
+body th { color: var(--text-2); font-weight: 600; background: var(--surface-1); border-color: var(--line) !important; }
+body td { border-color: var(--line) !important; }
+
+/* ---------------------------------------------------------------- modal, toast */
+body .modal-overlay, body #modal-container { background: rgba(5, 5, 7, 0.62) !important; backdrop-filter: blur(3px); }
+body .modal-dialog {
+  background: var(--surface-1) !important; background-image: none !important;
+  border: 1px solid var(--line-strong) !important; border-radius: 14px; box-shadow: 0 30px 80px rgba(0, 0, 0, .6) !important;
+  color: var(--text); overflow: hidden;
+}
+body .modal-header { background: transparent !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; padding: 16px 20px; }
+body .modal-title { font-family: var(--ui); font-size: 15px; font-weight: 650; color: var(--text); text-transform: none; letter-spacing: 0; }
+body .modal-body { padding: 18px 20px; color: var(--text); }
+body .btn-modal-close { background: transparent !important; border: 0 !important; color: var(--text-3); font-size: 20px; border-radius: 6px; }
+body .btn-modal-close:hover { color: var(--text); background: var(--surface-3) !important; }
+body .toast-container > * {
+  background: var(--surface-3) !important; border: 1px solid var(--line-strong) !important; border-radius: 10px;
+  color: var(--text); box-shadow: 0 12px 30px rgba(0, 0, 0, .45);
+}
+
+/* ---------------------------------------------------------------- Basic workspace */
+body .basic-root { background: var(--surface-1); }
+body .basic-header {
+  background: transparent !important; border: 0 !important; border-bottom: 1px solid var(--line) !important;
+  padding: 14px 20px; min-height: 0;
+}
+body .basic-mod-title { font-family: var(--ui); font-size: 15px; font-weight: 650; color: var(--text); text-transform: none; letter-spacing: 0; }
+body .basic-workspace { padding: 20px; background: transparent !important; }
+body .basic-elements-grid { gap: 12px; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); }
+body .basic-element-card {
+  background: var(--surface-2) !important; border: 1px solid var(--line) !important; border-radius: var(--radius-lg);
+  padding: 14px; box-shadow: none !important; transition: border-color .12s, background .12s, transform .12s;
+}
+body .basic-element-card:hover { background: #222226 !important; border-color: var(--line-strong) !important; transform: translateY(-1px); }
+body .basic-card-icon {
+  width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+  background: var(--accent-soft) !important; color: var(--accent) !important; border: 0 !important;
+}
+body .basic-card-icon svg { stroke: var(--accent); }
+body .basic-card-title { font-family: var(--ui); font-size: 14px; font-weight: 650; color: var(--text); }
+body .basic-card-type { font-size: 11px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; color: var(--accent); opacity: .85; }
+body .basic-card-summary { font-size: 12.5px; color: var(--text-2); }
+body .basic-editor { background: var(--surface-1) !important; }
+body .basic-editor-header {
+  background: transparent !important; border: 0 !important; border-bottom: 1px solid var(--line) !important; padding: 12px 20px;
+}
+body .basic-editor-title { font-family: var(--ui); font-size: 15px; font-weight: 650; color: var(--text); text-transform: none; }
+body .basic-editor-content { color: var(--text); }
+body .basic-form { gap: 14px; }
+body .basic-form-section { padding: 16px; }
+body .basic-list-row { background: var(--surface-1) !important; border: 1px solid var(--line) !important; border-radius: 9px; }
+body .basic-empty-state { color: var(--text-2); }
+body .basic-empty-title { font-family: var(--ui); color: var(--text); font-weight: 650; }
+
+/* chooser cards (new element) */
+body .new-element-type-card {
+  background: var(--surface-2) !important; border: 1px solid var(--line) !important; border-radius: var(--radius-lg);
+  color: var(--text); box-shadow: none !important; transition: border-color .12s, background .12s;
+}
+body .new-element-type-card:hover { border-color: var(--accent) !important; background: #222226 !important; }
+body .new-element-type-card strong { font-family: var(--ui); font-size: 14px; font-weight: 650; color: var(--text); }
+body .new-element-type-card p { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+
+/* graph container sits on the dark surface without an extra frame */
+body #script-graph-container { border: 1px solid var(--line) !important; border-radius: var(--radius-lg); overflow: hidden; }
+ 
+
+
+/* ---------------------------------------------------------------- mod icons */
+/* A mod's icon: its icon.png (a blob URL, see app.js loadModIconUrl) or the generated shield
+   (.mod-icon-generated, app.js generatedIconSvg). The generated one has no box of its own. */
+body .mod-tile-icon.is-generated { background: none !important; border: 0 !important; }
+.mod-tile-icon img, .mod-header-icon img { width: 100%; height: 100%; object-fit: cover; border-radius: 9px; display: block; }
+.mod-icon-generated { width: 100%; height: 100%; display: block; }
+.mod-header-icon { width: 46px; height: 46px; flex: none; display: flex; align-items: center; justify-content: center; }
+
+/* the icon dialog and the icon field of New mod */
+.icon-picker { display: flex; gap: 16px; align-items: flex-start; }
+.icon-picker-preview {
+  width: 128px; height: 128px; flex: none; display: flex; align-items: center; justify-content: center;
+  background: var(--surface-0); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden;
+}
+.icon-picker-preview img, .icon-picker-preview .mod-icon-generated { width: 100%; height: 100%; object-fit: cover; }
+.icon-picker-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.icon-picker-hint { color: var(--text-3); font-size: 12px; line-height: 1.45; margin: 0; }
+.icon-picker-error { color: var(--danger); font-size: 12px; min-height: 1em; margin: 0; }

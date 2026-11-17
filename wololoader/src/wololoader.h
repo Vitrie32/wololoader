@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.3.2"
+#define WOLOLOADER_VERSION "0.4.0"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -78,6 +78,9 @@ void wl_install_mp_guard(void);
 // civs.c
 void wl_install_civ_hooks(void);
 void wl_civs_ensure(void);  // lazy: autobuild + civs.txt, never from DllMain
+
+// taunts.c
+void wl_install_taunts(void);
 
 // script.c: Lua 5.4 mod scripts (<mod>\\scripts\\main.lua). Single-threaded: game main thread only.
 void wl_script_init(void);   // lazy (from wl_civs_ensure), never from DllMain; idempotent

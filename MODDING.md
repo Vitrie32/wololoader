@@ -72,7 +72,10 @@ A Wololoader mod is completely self-contained. The folder structure looks like t
 <game>/wololoader/mods/MyMod/
 ├── mod.json                          # Required: Mod metadata and enabled state
 ├── icon.png                          # Optional: shown in mod menus (any size, scaled automatically)
-├── scripts/main.lua                  # Optional: Lua event script (experimental, section 14)
+├── scripts/                          # Optional: Lua scripts (section 14)
+│   ├── main.lua                      #   runs at start; loads the other scripts with require
+│   ├── ai/economy.lua                #   a module: require("ai.economy")
+│   └── visual.lua                    #   written by Scriptorium from the node graphs (do not edit)
 ├── civs/                             # Optional: Custom civilizations
 │   └── my_civ.json                   # One JSON file per civilization
 ├── resources/                        # Optional: Mirrors the game's resources/ folder
@@ -121,6 +124,21 @@ Every mod must include a `mod.json` file at its root.
 Civilizations are defined as JSON files placed inside the `civs/` folder of your mod (e.g. `mods/MyMod/civs/my_civ.json`).
 
 Custom civilizations receive IDs starting at **35** (IDs 0..31 are base game civilizations, and 32, 33, 34 are reserved by the engine for RANDOM, SPECTATOR, and MIRROR). Wololoader bridges the gap automatically.
+
+### Changing a civilization of the game (`extend`)
+
+Instead of a new civilization, a civ file can change one of the game's own (1..31) in place:
+
+```json
+{
+  "extend": 1,
+  "units": { "4": { "hit_points": 40 } },
+  "effects": [ { "type": 1, "a": 3, "b": 1, "d": 100 } ],
+  "unique_building": { "copy_from": 104, "name": "Longbow Range", "commands": [ { "button": 1, "train": 4 } ] }
+}
+```
+
+Allowed with `extend`: `units` (with `graphics`), `resources`, `effects`, `team_bonus_effects` (added to the civ's own team bonus), `enabled_techs`, `disabled_techs`, `enabled_units`, `disabled_units` and `unique_building`. The civ keeps its name, AI names, unique unit and unique techs. Several mods may extend the same civ; their changes add up in mod order.
 
 ### All Supported Keys in Civ JSON
 
@@ -887,6 +905,7 @@ Runs natively on Windows and on Linux under Wine/Proton. Scriptorium provides an
 
 ### Features
 - **Mod Manager**: Create, enable, disable, and package mods.
+- **Scripts**: `scripts/main.lua`, new modules (`New script`, a name like `ai.economy` makes `scripts/ai/economy.lua`) with `Add require to main.lua`, and visual scripts. The node graphs are compiled into `scripts/visual.lua`, which `main.lua` loads with `require("visual")`.
 - **Civ Wizard**: Configure civilization identity, pick base civs, configure AI names, and upload sound/art assets.
 - **Bonus Builder**: Pre-configured bonus presets (starting resources, unit HP boosts, gathering rate multipliers) plus an advanced effect command editor.
 - **Unit Catalog**: Searchable list of all 1300+ game units with base statistics, stat overrides, and side-by-side difference highlighting.
@@ -934,7 +953,7 @@ A mod can ship a Lua 5.4 script that reacts to game events. Wololoader embeds th
 <game>/wololoader/mods/MyMod/scripts/main.lua
 ```
 
-The file is run once at startup, after all mods are scanned (not in Vanilla Mode, and not for disabled mods). Working examples: `wololoader/examples/Monklanians/scripts/main.lua` and `wololoader/examples/DevPanel/scripts/main.lua`.
+The file is run once at startup, after all mods are scanned (not in Vanilla Mode, and not for disabled mods). Working examples: `wololoader/examples/Monklanians/scripts/main.lua` and `wololoader/examples/DevPanel/scripts/main.lua`. A larger mod can split its code over several files, see [Modules](#modules-require).
 
 ```lua
 print("loaded " .. MOD.name)
@@ -1003,21 +1022,62 @@ Methods: `:OnClick(fn(element))`, `:OnHover(fn(element))`, `:OnLeave(fn(element)
 
 **Game commands** (`Add*`, `CreateUnit`, `Research`, `Delete`) go through the game's own command system, so in multiplayer every player sees the same result on the same turn. Every player runs the same scripts, so only one machine sends each command: the owner's machine for a human player, the lowest-numbered human player's machine for computer players and Gaia. The call returns `true` on the machine that sent it and `false` on the others; you can write `Game.Player(2):AddGold(100)` without checking `IsLocal`. Wrong arguments (unknown unit id, no game running) raise an error. At most 100 commands a second go to the game; more wait in a queue and follow on the next frames (up to 4096 waiting), so `for i = 1, 1000 do p:CreateUnit(...) end` works, it just takes 10 seconds. All players need the same Wololoader version.
 
+### Modules: `require`
+
+`main.lua` can load other Lua files of the same mod with `require`. Put them in the `scripts/` folder of the mod. A dot in the name is a folder:
+
+```
+scripts/main.lua               runs at start, loads the modules below
+scripts/economy.lua            require("economy")
+scripts/ai/economy.lua         require("ai.economy")
+scripts/visual.lua             written by Scriptorium from the visual scripts; main.lua loads it with require("visual")
+```
+
+```lua
+-- scripts/main.lua
+local economy = require("ai.economy")
+economy.start()
+```
+
+```lua
+-- scripts/ai/economy.lua
+local M = {}
+
+function M.start()
+    Game.OnSecond(function()
+        -- ...
+    end)
+end
+
+return M
+```
+
+- **Names**: 1 to 64 characters, letters, digits and `_`, with a single `.` between parts. Anything else is an error (`bad module name`): `..`, `/`, `\`, `:` (so `C:` and absolute paths), spaces, an empty name. Only the `scripts/` folder of your own mod is read; no other file of the game or of another mod can be loaded.
+- **Same environment**: a module runs in the same environment as `main.lua`. Its globals, `Game`, `UI`, `Time` and `wl` are the same as in `main.lua`.
+- **Runs once**: the first `require` runs the file. The returned value is kept, and the next `require` of the same name returns it without running the file again. A module that returns nothing gives `true`; one that returns `false` gives `false`. The cache lasts as long as the game runs (it is not reset when a new game starts).
+- **Errors**: an error in a module is written to `wololoader.log` with the file name (`...\scripts\ai\economy.lua:3: ...`) and raised in the code that required it. A module that failed is not cached, so the next `require` runs it again.
+- **Circular requires** (a module that requires itself, directly or through other modules) are an error: `circular require of 'name'`.
+- **Text only**: precompiled Lua (binary chunks) is refused.
+- **Budget**: the instructions of a module count against the same 10 million instruction limit as the script that required it.
+- **Top level**: `Time.Wait` / `wl.wait` cannot be used while a module is being loaded (the same as at the top level of `main.lua`). Call it from a function the module defines, and run that function from an event.
+- Not available: `package`, `package.loaded` and `package.path`, `dofile`, `loadfile`. A module cannot be replaced or reloaded from a script.
+
 ### Low-level `wl` API
 
 The Scripting API above is built on these functions; they stay available.
 
 ### Sandbox
 
-- Available: `assert, error, pcall, xpcall, select, type, tostring, tonumber, pairs, ipairs, next, rawget, rawset, rawequal, rawlen, getmetatable, setmetatable, collectgarbage`, and the libraries `string`, `table`, `math`, `utf8`, `coroutine`.
-- Not available: `io`, `os`, `package`, `debug`, `require`, `dofile`, `loadfile`, `load`, `warn`, `string.dump`. Scripts cannot read or write files or run programs. Precompiled (binary) Lua is rejected.
+- Available: `assert, error, pcall, xpcall, select, type, tostring, tonumber, pairs, ipairs, next, rawget, rawset, rawequal, rawlen, getmetatable, setmetatable, collectgarbage`, the libraries `string`, `table`, `math`, `utf8`, `coroutine`, and `require` for the mod's own modules.
+- Not available: `io`, `os`, `package`, `debug`, `dofile`, `loadfile`, `load`, `warn`, `string.dump`. Scripts cannot read or write files or run programs. Precompiled (binary) Lua is rejected.
+- `require` exists, but it is the mod's own: it only loads `scripts/<name>.lua` of the same mod, with the rules in [Modules](#modules-require). The file name is checked before any path is built, so `require("../x")`, `require("/x")`, `require("C:x")` and `require("a\\b")` are refused and nothing outside `scripts/` is read.
 - `collectgarbage` only accepts `"collect"`, `"count"` and `"step"`. `getmetatable("")` returns `"locked"` (the string metatable is shared by all mods and cannot be changed).
 - `xpcall(f, handler, ...)` calls `handler` after `f` has failed (with the error message), not while the error is being raised, so the handler gets no traceback of `f`.
 - Pattern functions (`string.find`, `match`, `gmatch`, `gsub`, and the same methods on strings) refuse a pattern that could take too long on the given text (many `*`, `-`, `+` on a long text): they raise "pattern too complex". Use plain `find(text, s, 1, true)` or simpler patterns.
 - Every mod runs in its own environment: globals you assign are private to your mod, and your copies of `string`, `table`, `math` etc. are not shared with other mods.
 - `print(...)` is the same as `wl.log(...)`.
-- A single script run or event handler is aborted with an error after 10 million Lua instructions (so an endless loop cannot freeze the game). The count includes every coroutine the call runs, and the abort cannot be caught with `pcall`, `xpcall` or `coroutine.resume`. The Lua state is limited to 64 MB.
-- Errors never crash the game. They are written to `wololoader.log` as `[lua:<mod id>] ...`. A handler that raises an error is disabled (the other handlers keep running); an error in `main.lua` itself keeps the handlers registered before it.
+- A single script run or event handler is aborted with an error after 10 million Lua instructions (so an endless loop cannot freeze the game). The count includes every coroutine the call runs, and the abort cannot be caught with `pcall`, `xpcall` or `coroutine.resume`. A `require` inside the call shares this count. The Lua state is limited to 64 MB.
+- Errors never crash the game. They are written to `wololoader.log` as `[lua:<mod id>] ...` (a module's errors name the module file). A handler that raises an error is disabled (the other handlers keep running); an error in `main.lua` itself keeps the handlers registered before it.
 - Log lines longer than about 250 characters are cut off. A mod writes at most 2000 log lines per game; after that its output is not logged until the next game.
 - UI images (`Image`) must be files inside the mod folder: absolute paths and `..` are refused.
 
@@ -1057,3 +1117,7 @@ The Scripting API above is built on these functions; they stay available.
 | `game_start` | none | fired when a game starts (`Game.OnStart`) |
 | `every_second` | none | fired once per game second (`Game.OnSecond`) |
 | `game_end` | none | planned, not fired yet |
+
+## Custom taunts
+
+Put sound files in a `taunts/` folder of your mod, named like the game's own taunts: the number, a space, a name, `.mp3` (for example `taunts/43 wololo again.mp3`). Typing `43` in chat then plays it. The game ships taunts 1 to 42; chat accepts numbers up to 256. A file with the same number and name as a game taunt (for example `30 wololo.mp3`) replaces it. Taunts are sent as chat text, so they do not change the game data, but other players only hear the sound if they have the mod too. Mod taunts also show in the in-game taunt list (F11).

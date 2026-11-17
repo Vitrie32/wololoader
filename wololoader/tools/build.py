@@ -275,19 +275,36 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
     unique_techs [castle_tech, imp_tech] (opt).
     """
     civs = dat.civilizations.civs
-    for key in ("name", "dat_name", "base"):
-        if key not in spec:
-            raise BuildError("%s: missing required key %r" % (where, key))
-    # Identity keys are not used by the builder; the DLL reads them (civs.c).
-    known = {"name", "dat_name", "base", "tech_tree", "team_bonus", "units", "resources",
-             "description", "ai_names", "sound", "interface_slp",
-             "disabled_techs", "enabled_techs", "disabled_units", "enabled_units",
-             "effects", "team_bonus_effects", "unique_techs", "unique_unit", "unique_building"}
-    extra = set(spec) - known
-    if extra:
-        raise BuildError("%s: unknown key(s) %s" % (where, sorted(extra)))
-    civ = clone_civ(civs, spec["base"], where)
-    civ.name = make_name(spec["dat_name"], where)
+    extend = "extend" in spec
+    if extend:
+        # "extend": change an existing civ of the game (1..31) in place instead of making a new
+        # one; no identity keys (name, AI names, ...), no unique unit / unique techs.
+        known = {"extend", "units", "resources", "disabled_techs", "enabled_techs",
+                 "disabled_units", "enabled_units", "effects", "team_bonus_effects", "unique_building"}
+        extra = set(spec) - known
+        if extra:
+            raise BuildError("%s: key(s) %s cannot be used with \"extend\" (only %s)"
+                             % (where, sorted(extra), ", ".join(sorted(known - {"extend"}))))
+        eid = spec["extend"]
+        if isinstance(eid, bool) or not isinstance(eid, int) or not 1 <= eid <= 31:
+            raise BuildError("%s: extend must be a civ id of the game, 1..31" % where)
+        civ = civs[eid]
+        label = "WL ext %d" % eid
+    else:
+        for key in ("name", "dat_name", "base"):
+            if key not in spec:
+                raise BuildError("%s: missing required key %r" % (where, key))
+        # Identity keys are not used by the builder; the DLL reads them (civs.c).
+        known = {"name", "dat_name", "base", "tech_tree", "team_bonus", "units", "resources",
+                 "description", "ai_names", "sound", "interface_slp",
+                 "disabled_techs", "enabled_techs", "disabled_units", "enabled_units",
+                 "effects", "team_bonus_effects", "unique_techs", "unique_unit", "unique_building"}
+        extra = set(spec) - known
+        if extra:
+            raise BuildError("%s: unknown key(s) %s" % (where, sorted(extra)))
+        civ = clone_civ(civs, spec["base"], where)
+        civ.name = make_name(spec["dat_name"], where)
+        label = spec["dat_name"]
 
     if "unique_techs" in spec:
         ut = spec["unique_techs"]
@@ -301,7 +318,7 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
             raise BuildError("%s: base tech tree effect %d out of range (0..%d)"
                              % (where, base_tt, len(dat.effects.effects) - 1))
         new_eff = copy.deepcopy(dat.effects.effects[base_tt])
-        new_eff.name = make_effect_name(spec["dat_name"] + " Tech Tree", where)
+        new_eff.name = make_effect_name(label + " Tech Tree", where)
 
         if "enabled_techs" in spec:
             en_techs = set(int(t) for t in spec["enabled_techs"])
@@ -340,9 +357,13 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
         civ.tech_tree_id = int(spec["tech_tree"])
 
     if "team_bonus_effects" in spec:
-        tb_eff = df.Effect()
-        tb_eff.name = make_effect_name(spec["dat_name"] + " Team Bonus", where)
-        tb_eff.commands = []
+        if extend and 0 <= civ.team_bonus_id < len(dat.effects.effects):
+            # an existing civ keeps its own team bonus and gets the new commands on top
+            tb_eff = copy.deepcopy(dat.effects.effects[civ.team_bonus_id])
+        else:
+            tb_eff = df.Effect()
+            tb_eff.commands = []
+        tb_eff.name = make_effect_name(label + " Team Bonus", where)
         for idx, cmd_spec in enumerate(spec["team_bonus_effects"]):
             cmd = parse_effect_command(cmd_spec, "%s team_bonus_effects[%d]" % (where, idx))
             tb_eff.commands.append(cmd)
@@ -359,7 +380,7 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
         except ValueError:
             raise BuildError("%s: unit id %r is not a number" % (where, uid))
         if not 0 <= i < len(civ.units) or civ.units[i] is None:
-            raise BuildError("%s: unit id %s does not exist in civ %s" % (where, uid, spec["base"]))
+            raise BuildError("%s: unit id %s does not exist in civ %s" % (where, uid, spec["extend"] if extend else spec["base"]))
         if not isinstance(fields, dict):
             raise BuildError("%s: units.%s must be an object" % (where, uid))
         for field, value in fields.items():
@@ -590,9 +611,12 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
         civ.units[E] = e_unit
 
     if "unique_building" in spec:
-        add_unique_building(dat, civ, len(civs), spec["unique_building"], where, ub_k, uu_total,
+        add_unique_building(dat, civ, spec["extend"] if extend else len(civs), spec["unique_building"],
+                            where, ub_k, uu_total,
                             ext if ext is not None else {"slots": 0, "sids": 0, "strings": [], "lua": []})
 
+    if extend:
+        return spec["extend"]
     civs.append(civ)
     return len(civs) - 1
 
@@ -630,6 +654,7 @@ def add_unique_building(dat, civ, cid, ub, where, ub_k, uu_total, ext):
         raise BuildError("%s: unknown unique_building key(s) %s" % (where, sorted(extra_ub)))
     if cid > 114:
         raise BuildError("%s: civ_id %d exceeds 114 for unique_building" % (where, cid))
+    game_civ = cid < 35   # a building for an existing civ ("extend"): its names go to strings.txt
     B = 1400 - ub_k
     if B < 1300 or B <= 1225 + 2 * uu_total:     # buildpage.c treats 1300..1400 as mod buildings
         raise BuildError("%s: unique building slot %d collides with unique unit slots" % (where, B))
@@ -655,8 +680,19 @@ def add_unique_building(dat, civ, cid, ub, where, ub_k, uu_total, ext):
     age = ub.get("age", 2)
     if isinstance(age, bool) or not isinstance(age, int) or age not in AGE_TECHS:
         raise BuildError("%s: unique_building age must be 0..3" % where)
+    if game_civ:
+        # same texts the DLL makes for custom civs (civs.c load_identity), via strings.txt
+        b_name, b_help = ub["name"], ub.get("help", ub["name"])
+        if not isinstance(b_name, str) or not isinstance(b_help, str):
+            raise BuildError("%s: unique_building name and help must be strings" % where)
+        ext_sid = _new_sids(ext)
+        ext["strings"] += [(ext_sid, b_name), (ext_sid + 1, "Build %s" % b_name),
+                           (ext_sid + 2, "Build <b>%s<b> (<cost>) \n%s \n<hp> <armor> <piercearmor>"
+                            % (b_name, b_help or b_name))]
 
     def SID(slot):
+        if game_civ:
+            return ext_sid + slot - 10   # slots 10, 11, 12 -> the strings.txt triple
         return 28500 + (cid - 35) * 20 + slot
 
     b_unit = copy.deepcopy(civ.units[copy_from])
@@ -983,6 +1019,9 @@ def build(game_dir):
                 uu_k += 1
             if "unique_building" in spec:
                 ub_k = ext["slots"]
+            if "extend" in spec:
+                print("civ %d: extended by %s" % (cid, where))
+                continue
             if "unique_techs" in spec:
                 lines.append("%d\t%d\t%s\t%s\t%s\t%d\t%d" % (cid, spec["base"], spec["name"], mod, fn, int(spec["unique_techs"][0]), int(spec["unique_techs"][1])))
             else:

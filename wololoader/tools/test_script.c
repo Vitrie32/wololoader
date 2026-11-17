@@ -62,6 +62,19 @@ static void write_mod(int idx, const char *id, const char *lua) {
     g_wl.listed_count = idx + 1;
 }
 
+// Extra files of a mod (path relative to the mod folder, e.g. "scripts/ai/economy.lua").
+static void write_file_n(int idx, const char *rel, const char *data, size_t n) {
+    const WlMod *m = &g_wl.mods[idx];
+    char p[MAX_PATH + 128];
+    snprintf(p, sizeof p, "%s/%s", m->dir, rel);
+    for (char *c = p + strlen(m->dir) + 1; *c; c++) {     // make the parent folders
+        if (*c == '/') { *c = 0; mkdir(p, 0755); *c = '/'; }
+    }
+    FILE *f = fopen(p, "wb");
+    if (f) { fwrite(data, 1, n, f); fclose(f); }
+}
+static void write_file(int idx, const char *rel, const char *text) { write_file_n(idx, rel, text, strlen(text)); }
+
 static char g_last_msg[256];
 // fake UI backend
 static int g_ui_next, g_ui_destroyed[16], g_ui_ndestroyed;
@@ -218,11 +231,79 @@ int main(void) {
     write_mod(8, "victim",
         "wl.on('a_victim', function() wl.log('VICTIM upper', ('x'):upper()) end)\n");
 
+    // require: scripts/ai/economy.lua etc. (see the "require" checks after init)
+    write_mod(9, "req",
+        "wl.log('R0 types', type(require), type(package), type(dofile), type(loadfile), type(io), type(os), type(debug))\n"
+        "local econ = require('ai.economy')\n"
+        "local econ2 = require('ai.economy')\n"
+        "wl.log('R1 economy', econ.name, econ.calls, econ.util, tostring(econ == econ2))\n"
+        "wl.log('R2 util', require('util'), tostring(require('noret')), tostring(require('noret')), noret_ran)\n"
+        "wl.log('R3 false', tostring(require('retfalse')), tostring(require('retfalse')), calls_rf)\n"
+        "wl.log('R4 deep', require('ai.deep.leaf').depth)\n"
+        "wl.on('req_attack', function()\n"
+        "  local names = { '../outside', '../../outside', '..', '/abs', '\\\\abs', 'C:outside', 'C:/outside', 'a/b', 'a\\\\b',\n"
+        "    'a..b', '', '.a', 'a.', 'a b', 'a-b', 'a\\0b', string.rep('a', 65) }\n"
+        "  for _, name in ipairs(names) do\n"
+        "    local ok, err = pcall(require, name)\n"
+        "    wl.log('ATTACK', tostring(ok), tostring(err):find('bad module name', 1, true) and 'bad name' or tostring(err))\n"
+        "  end\n"
+        "  local ok, err = pcall(require, string.rep('a', 64))\n"
+        "  wl.log('LEN64', tostring(ok), tostring(err):find('not found', 1, true) and 'not found' or tostring(err))\n"
+        "  ok, err = pcall(require, 42)\n"
+        "  wl.log('NUMBER', tostring(ok), tostring(err):find('bad module name', 1, true) and 'bad name' or tostring(err))\n"
+        "  ok, err = pcall(require, 'missing.module')\n"
+        "  wl.log('MISSING', tostring(ok), tostring(err))\n"
+        "end)\n"
+        "wl.on('req_bin', function() local ok, err = pcall(require, 'bin') wl.log('BIN', tostring(ok), err) end)\n"
+        "wl.on('req_err', function()\n"
+        "  local ok, err = pcall(require, 'err') wl.log('ERR1', tostring(ok), err)\n"
+        "  ok, err = pcall(require, 'err') wl.log('ERR2', tostring(ok), err)\n"
+        "  ok, err = pcall(require, 'syn') wl.log('SYN', tostring(ok), err)\n"
+        "end)\n"
+        "wl.on('req_cycle', function()\n"
+        "  wl.log('CYC self', select(2, pcall(require, 'self')))\n"
+        "  wl.log('CYC ping', select(2, pcall(require, 'ping')))\n"
+        "  local ok, e = pcall(require, 'ping') wl.log('CYC again', tostring(ok), e)\n"
+        "end)\n"
+        "wl.on('req_budget', function() require('spin') end)\n"
+        "wl.on('req_again', function() wl.log('AGAIN calls', calls, tostring(require('ai.economy') == econ)) wl.log('BOM', require('nested')) end)\n");
+    write_file(9, "scripts/ai/economy.lua",
+        "calls = (calls or 0) + 1\n"
+        "local u = require('util')\n"          // nested require, same env
+        "return { name = 'economy', calls = calls, util = u }\n");
+    write_file(9, "scripts/ai/deep/leaf.lua", "return { depth = 3 }\n");
+    write_file(9, "scripts/util.lua", "return 'U'\n");
+    write_file(9, "scripts/noret.lua", "noret_ran = (noret_ran or 0) + 1\n");
+    write_file(9, "scripts/retfalse.lua", "calls_rf = (calls_rf or 0) + 1\nreturn false\n");
+    write_file(9, "scripts/err.lua", "error('module broke')\n");
+    write_file(9, "scripts/syn.lua", "this is not lua (\n");
+    write_file(9, "scripts/self.lua", "return require('self')\n");
+    write_file(9, "scripts/ping.lua", "return require('pong')\n");
+    write_file(9, "scripts/pong.lua", "return require('ping')\n");
+    write_file(9, "scripts/spin.lua", "while true do end\n");
+    write_file(9, "scripts/bin.lua", "\x1bLua\x54\x00\x19\x93\r\n\x1a\n");
+    write_file(9, "outside.lua", "wl.log('OUTSIDE RAN')\n");   // "../outside" would reach this
+    write_file(9, "scripts/outside.lua", "wl.log('INSIDE scripts')\n");  // reached only by a plain name
+    write_file_n(9, "scripts/hidden.lua", "\xef\xbb\xbfreturn 'bom ok'\n", 19);
+    write_file(9, "scripts/nested.lua", "return require('hidden')\n");
+    char outside[MAX_PATH];
+    snprintf(outside, sizeof outside, "%s/outside.lua", g_tmp);   // "../../outside" target
+    FILE *of = fopen(outside, "wb");
+    if (of) { fputs("wl.log('OUTSIDE RAN')\n", of); fclose(of); }
+
     wl_script_event("game_start");  // before init: must be a harmless no-op
     static const WlUiApi fui = { fui_create, fui_destroy, fui_set, fui_text };
     wl_script_set_uikit(&fui);
     wl_script_init();
     wl_script_init();               // idempotent
+    // ---- require: checks made while main.lua runs (log is still short here) -------
+    printf("-- require (main.lua at init)\n");
+    CHECK(has_line("[lua:req] R0 types\tfunction\tnil\tnil\tnil\tnil\tnil\tnil"));
+    CHECK(has_line("[lua:req] R1 economy\teconomy\t1\tU\ttrue"));  // loaded once, nested util too
+    CHECK(has_line("[lua:req] R2 util\tU\ttrue\ttrue\t1"));        // no return value = true, ran once
+    CHECK(has_line("[lua:req] R3 false\tfalse\tfalse\t1"));        // false is cached, not reloaded
+    CHECK(has_line("[lua:req] R4 deep\t3"));                        // ai.deep.leaf -> scripts/ai/deep/leaf.lua
+    CHECK(!has_line("OUTSIDE RAN") && !has_line("INSIDE scripts"));
 
     printf("-- first game_start (no UI backend: message only logged)\n");
     wl_script_event("game_start");
@@ -399,6 +480,29 @@ int main(void) {
     wl_script_event("every_second");
     CHECK(count_line("[lua:events] BUILT") == built && count_line("[lua:events] RESEARCH") == researched);
     wl_script_set_game(NULL);
+    // ---- require attacks and errors ---------------------------------------------------
+    printf("-- require attacks\n");
+    wl_script_event("req_attack");
+    CHECK(count_line("[lua:req] ATTACK\tfalse\tbad name") == 17);   // every bad name refused
+    CHECK(!has_line("OUTSIDE RAN") && !has_line("INSIDE scripts"));
+    CHECK(has_line("[lua:req] LEN64\tfalse\tnot found"));           // 64 characters is allowed
+    CHECK(has_line("[lua:req] NUMBER\tfalse\tmodule '42' not found"));  // a number is a legal name "42"
+    CHECK(has_line("[lua:req] MISSING\tfalse\tmodule 'missing.module' not found"));
+    wl_script_event("req_bin");
+    CHECK(has_line("[lua:req] BIN\tfalse\t") && has_line("binary chunks are not allowed") && has_line("bin.lua"));
+    wl_script_event("req_err");
+    CHECK(has_line("ERR1\tfalse\t") && has_line("err.lua:1: module broke"));
+    CHECK(count_line("module broke") == 2);                            // failures are not cached: runs again
+    CHECK(has_line("SYN\tfalse\t") && has_line("syn.lua:1:"));
+    wl_script_event("req_cycle");
+    CHECK(has_line("[lua:req] CYC self\t") && has_line("self.lua:1: circular require of 'self'"));
+    CHECK(has_line("[lua:req] CYC ping\t") && has_line("pong.lua:1: circular require of 'ping'"));
+    CHECK(has_line("[lua:req] CYC again\tfalse\t") && count_line("circular require of 'ping'") == 2);  // marks cleared after failure
+    wl_script_event("req_budget");
+    CHECK(has_line("[lua:req] handler for 'req_budget' failed and was disabled: ") && has_line("instruction limit"));
+    wl_script_event("req_again");
+    CHECK(has_line("[lua:req] AGAIN calls\t1\ttrue"));                  // still cached after all the errors
+    CHECK(has_line("[lua:req] BOM\tbom ok"));                             // UTF-8 BOM skipped, nested require works
     // ---- sandbox ---------------------------------------------------------------------
     printf("-- sandbox attacks\n");
     wl_script_event("a_pcall");

@@ -41,16 +41,21 @@ using the browser already installed, so the exe stays small and fast).
 | Method + path | Body | Response |
 |---|---|---|
 | `GET /api/info` | | `{ "game_dir", "mods_dir", "version": "2.0" }` |
-| `GET /api/catalog` | | `{ "civs":[{id,name}], "units":[{id,type,class,internal,name}], "techs":[{id,internal,name}], "stats":[{field,label}] }` (stats = SC_STAT_FIELD/LABEL order) |
+| `GET /api/catalog` | | `{ "civs":[{id,name}], "units":[{id,type,class,icon,internal,name}], "techs":[{id,icon,internal,name}], "stats":[{field,label}] }` (icon = dat icon_id, -1 if unknown) (stats = SC_STAT_FIELD/LABEL order) |
 | `GET /api/stats?civ=C&unit=U` | | `{ "<field>": number, ... }` only fields the unit has; 404 if none |
-| `GET /api/mods` | | `[{ "folder", "name", "version", "author", "enabled": bool, "civs": ["file.json", ...], "has_icon": bool }]` |
+| `GET /api/mods[?all=1]` | | `[{ "folder", "name", "version", "author", "enabled": bool, "civs": ["file.json", ...], "has_icon": bool, "modified": unix seconds of the last change to mod.json or civs/ (0 = unknown) }]`. WololoaderBase (Wololoader's own feature switches) is left out unless `all=1`. |
 | `GET /api/mod/<folder>` | | `{ "folder", "mod": <mod.json object as-is>, "civs": { "<file.json>": <civ object as-is> } }` |
 | `PUT /api/mod/<folder>` | `{ "mod": {...}, "civs": { "<file>": {...} }, "deleted_civs": ["<file>"] }` | `{ "ok": true }` — each object is re-serialized pretty (2 spaces, key order kept) and written atomically; deleted civ files removed. File names must match `^[A-Za-z0-9_\-]+\.json$`, folder `^[A-Za-z0-9_\- ]+$` (reject `..`, slashes). |
 | `POST /api/mods` | `{ "name": "My Mod" }` | `{ "folder" }` — creates `mods/<Folder>/mod.json` (`name`, `version` "0.1", `author` "", `description` "") and `civs/`. Folder = name with unsafe chars removed; 409 if exists. |
 | `POST /api/validate` | same as PUT body + `"folder"` | `{ "ok": bool, "error": "...", "civs_built": n }` — writes the given state to a temp mods dir containing only this mod, runs `wl_dat_build` to a temp out dir, cleans up. Never touches the real mod. |
-| `GET /api/icon/<folder>` | | the mod's `icon.png` (image/png) or 404 |
+| `GET /api/icon/<folder>` | | the mod's `icon.png` (image/png) or 404. Needs the token header, so the UI fetches it and shows a blob URL (an `<img src>` cannot send the header) |
 | `POST /api/upload?folder=F&name=N` | raw bytes | `{ "file": "N" }` — copies a sound / slp / icon into the mod folder (N: safe file name, max 20 MB) |
 | `POST /api/open-folder` | `{ "folder"?: "F" }` | opens the mods dir or that mod's dir (shell.c logic: winebrowser under Wine) |
+| `GET /api/game-file?path=P` | | the game's file `resources/P` (`.slp .bina .mp3 .wav .png` only; P relative, forward slashes, no `..`, no drive letters; 404 if missing) |
+| `GET /api/game-list?dir=D` | | `{ "files": [{name, size}], "truncated": bool }` (allowed extensions only, max 20000 entries) |
+| `GET /api/mod-tree?folder=F` | | `[{ "path": "taunts/43 x.mp3", "size": n }]` every file of the mod folder, below it too ("/" separators, max 4000 files, 6 folder levels). Hidden names, `civs/` and `mod.json` are left out. |
+| `GET /api/files?folder=F&dir=D` | | the file names directly in `D` (folders left out) |
+| `GET /api/file?folder=F&path=P`, `PUT` (raw bytes body), `DELETE` | | one file of the mod folder. P: relative, `/` between 1..6 segments of `[A-Za-z0-9_.- ]`, no `..`. Not `mod.json` and not `civs/` (those go through `PUT /api/mod/<folder>`). Max 20 MB. |
 | `POST /api/ping`, `POST /api/quit` | | `{ "ok": true }` |
 
 Mod/civ json keys: see SPEC.md "Mod format". The front end edits these objects
