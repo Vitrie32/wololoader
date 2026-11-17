@@ -4,7 +4,7 @@
 usage: package.py <version> <game dir> <out dir> <setup stub exe>
 
 Release tree (the same files `make install` puts into the game):
-  core/      version.dll, Wololoader Base mod, Mods button images (Scriptorium is left out for now)
+  core/      version.dll, Wololoader Base mod, Mods button images, Mods screen icons, Scriptorium.exe
   examples/  wololoader/mods/Monklanians, wololoader/mods/DevPanel
 The Mods button images are made from the game's own button art by make_menu_icon.py at
 `make install`, so they are copied from <game dir>/wololoader/resources.
@@ -44,6 +44,8 @@ def tree(version, game):
     add(base + "/icon.png", os.path.join(HERE, "art/logo_256.png"))
     add_dir(base + "/icons", os.path.join(HERE, "base_mod/icons"))
     add_dir("core/wololoader/resources", os.path.join(game, "wololoader/resources"))
+    add("core/wololoader/Scriptorium.exe", os.path.join(HERE, "build/Scriptorium.exe"))
+    add_dir("core/wololoader/ui", os.path.join(HERE, "build/ui"))   # Mods screen icons (make install renders them)
     for m in ("Monklanians", "DevPanel"):
         add_dir("examples/wololoader/mods/" + m, os.path.join(HERE, "examples", m))
     return sorted(files)

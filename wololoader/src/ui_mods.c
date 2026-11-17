@@ -77,6 +77,9 @@ static Event_t g_orig_event;
 
 static void *g_btn_toggle;
 static void *g_btn_vanilla;   // Vanilla Mode on/off (takes effect on restart)
+// Set while the read-only lobby view is open (see wl_mods_open_readonly).
+static void *g_return_screen;
+static void update_button_icons(int readonly);
 
 // Button text shows the state the NEXT start will use (the flag file).
 static const char *vanilla_text(void) {
@@ -85,6 +88,18 @@ static const char *vanilla_text(void) {
 static void *g_btn_open;
 static void *g_btn_creator;  // starts Scriptorium.exe (mod creator)
 static void *g_btn_back;
+
+// Icon panels drawn on top of the buttons (added after them, so they draw over
+// them). PNGs live in <game>\wololoader\ui, copied from art/ui by make install.
+static void *g_icon_toggle_on;   // check: the button enables a mod
+static void *g_icon_toggle_off;  // cross: the button disables a mod
+static void *g_icon_vanilla;     // crossed swords
+static void *g_icon_creator;     // quill
+static void *g_icon_folder;      // folder
+static void *g_icon_back;        // arrow
+// Enabled / disabled badge on each mod row's icon (green tick / grey dash).
+static void *g_row_badge_on[MAX_ROWS];
+static void *g_row_badge_off[MAX_ROWS];
 
 static void *g_lbl_bottom_status;
 static void *g_lbl_bottom_note;
@@ -166,14 +181,8 @@ static void drawable_set_fit(void *drawable) {
     fn(drawable, mode3);
 }
 
-static void *create_image_panel(void *s, const char *path, int x, int y, int w, int h) {
-    if (!path || !path[0]) return NULL;
-    void *d = load_png(path);
-    if (!d && g_default_icon[0] && strcmp(path, g_default_icon) != 0) {
-        d = load_png(g_default_icon);
-        path = g_default_icon;
-    }
-    if (!d) return NULL;
+// Panel showing a loaded drawable stretched into (x,y,w,h) reference units.
+static void *panel_from_drawable(void *s, void *d, int x, int y, int w, int h) {
     drawable_set_fit(d);
 
     int in_rect[4] = { x, y, w, h };
@@ -184,8 +193,36 @@ static void *create_image_panel(void *s, const char *path, int x, int y, int w, 
     if (!panel) return NULL;
     memset(panel, 0, DRAWABLE_PANEL_SIZE);
     ((DrawablePanelCtor_t)ADDR_DRAWABLE_PANEL_CTOR)(panel, s, out_rect, d);
+    return panel;
+}
+
+static void *create_image_panel(void *s, const char *path, int x, int y, int w, int h) {
+    if (!path || !path[0]) return NULL;
+    void *d = load_png(path);
+    if (!d && g_default_icon[0] && strcmp(path, g_default_icon) != 0) {
+        d = load_png(g_default_icon);
+        path = g_default_icon;
+    }
+    if (!d) return NULL;
+    void *panel = panel_from_drawable(s, d, x, y, w, h);
     wl_log("mods: icon %s -> %p", path, panel);
     return panel;
+}
+
+// Decoration PNG <game>\wololoader\ui\<name>_<w>.png, square, rendered by make
+// install at exactly w x w pixels. Stretching a bigger PNG into the rect did not
+// work here: the image was drawn at its natural size and clipped (seen in game
+// 2026-11-17). No fallback image: a missing file just means no icon.
+static void *ui_icon(void *s, const char *name, int x, int y, int w, int h) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s\\ui\\%s_%d.png", g_wl.root, name, w);
+    (void)h;
+    void *d = load_png(path);
+    if (!d) {
+        wl_log("mods: icon %s not loaded", path);
+        return NULL;
+    }
+    return panel_from_drawable(s, d, x, y, w, h);
 }
 
 // The label's wrap flag has no visible effect, so break lines ourselves.
@@ -272,6 +309,28 @@ static void update_toggle_button(void) {
         text = g_wl.mods[g_selected_mod].enabled ? "Disable Mod" : "Enable Mod";
     }
     ((ButtonSetText_t)ADDR_BUTTON_SET_TEXT)(g_btn_toggle, 0, text);
+    update_button_icons(g_return_screen != NULL);
+}
+
+// Shows the icon of each button that is shown; the toggle icon follows its text.
+// readonly: the lobby view hides every change button, so their icons go too.
+static void update_button_icons(int readonly) {
+    int has_sel = g_selected_mod >= 0 && g_selected_mod < g_wl.listed_count;
+    int says_disable = !has_sel || g_wl.mods[g_selected_mod].enabled;  // button text "Disable Mod"
+    int ro = readonly ? 1 : 0;
+    panel_set_visible(g_icon_toggle_on,  !ro && g_btn_toggle && !says_disable);
+    panel_set_visible(g_icon_toggle_off, !ro && g_btn_toggle && says_disable);
+    panel_set_visible(g_icon_vanilla, !ro && g_btn_vanilla);
+    panel_set_visible(g_icon_creator, !ro && g_btn_creator);
+    panel_set_visible(g_icon_folder,  !ro && g_btn_open);
+    // Back stays in both views.
+}
+
+static void update_row_badge(int idx) {
+    if (idx < 0 || idx >= g_displayed_mods) return;
+    int on = g_wl.mods[idx].enabled ? 1 : 0;
+    panel_set_visible(g_row_badge_on[idx], on);
+    panel_set_visible(g_row_badge_off[idx], !on);
 }
 
 static void update_details(int idx) {
@@ -305,12 +364,12 @@ static void defer_delete_screen(void *screen) {
 
 // Read-only view for the multiplayer lobby ("Active Mods" button, lobby.c): the
 // buttons that change mods are hidden, Back returns to the lobby screen.
-static void *g_return_screen;
 static void set_readonly(int on) {
     void *btns[] = { g_btn_toggle, g_btn_vanilla, g_btn_creator, g_btn_open };
     for (size_t i = 0; i < sizeof btns / sizeof btns[0]; i++)
         if (btns[i]) panel_set_visible(btns[i], !on);
     if (!on) g_return_screen = NULL;
+    update_button_icons(on);
 }
 
 static int __fastcall on_event(void *self, void *edx, void *panel, int code, int a, int b) {
@@ -342,6 +401,7 @@ static int __fastcall on_event(void *self, void *edx, void *panel, int code, int
 
                     update_toggle_button();
                     update_row_button(g_selected_mod);
+                    update_row_badge(g_selected_mod);
                     update_details(g_selected_mod);
 
                     snprintf(g_bottom_status, sizeof g_bottom_status,
@@ -468,11 +528,17 @@ static void *create_screen(void) {
         format_row_text(i, g_btn_texts[i], sizeof g_btn_texts[i]);
         g_row_btns[i] = button(s, s, g_btn_texts[i], NULL, LIST_X + 48, y, LIST_W - 48, 44, 0, 0, 0);
 
+        // Enabled badge: green tick / grey dash on the icon's lower right corner.
+        g_row_badge_on[i]  = ui_icon(s, "badge_on", LIST_X + 24, y + 26, 18, 18);
+        g_row_badge_off[i] = ui_icon(s, "badge_off", LIST_X + 24, y + 26, 18, 18);
+
+
         // Detail icon 96x96 at (DET_X,LIST_Y) - create one per listed mod
         g_detail_icons[i] = create_image_panel(s, wl_icon_scaled(icon_path, icon_id, 96), DET_X, LIST_Y, 96, 96);
         if (g_detail_icons[i]) {
             panel_set_visible(g_detail_icons[i], i == 0 ? 1 : 0);
         }
+        update_row_badge(i);
     }
 
     if (g_wl.listed_count > MAX_ROWS) {
@@ -522,26 +588,36 @@ static void *create_screen(void) {
 
     wl_log("mods: labels ok");
 
-    // Five buttons: Toggle, Vanilla Mode, Mod Creator, Open Mods Folder, Back
-    // (166 wide, 25 apart, spanning LIST_X=225 .. 1140 = DET_X+DET_W).
+    // Bottom row, spanning LIST_X=225 .. 1140 (DET_X+DET_W). Hierarchy:
+    // Toggle is the main action (tall, first); Vanilla / Creator / Folder are
+    // medium with their own icon; Back is a small button at the right end.
+    // Each icon is created after its button, so it draws on top of it.
     const char *toggle_text = (count > 0 && !g_wl.mods[0].enabled) ? "Enable Mod" : "Disable Mod";
     // Mod Creator only when <root>\Scriptorium.exe is there (release installers leave it out for now);
-    // without it the four other buttons share the row (210 wide, 25 apart).
+    // without it Mods Folder takes its place in the row.
     char sc_exe[MAX_PATH];
     snprintf(sc_exe, MAX_PATH, "%s\\Scriptorium.exe", g_wl.root);
-    if (GetFileAttributesA(sc_exe) != INVALID_FILE_ATTRIBUTES) {
-        g_btn_toggle  = button(s, s, toggle_text, NULL, 225, 660, 166, 40, 0, 0, 0);
-        g_btn_vanilla = button(s, s, vanilla_text(), NULL, 416, 660, 166, 40, 0, 0, 0);
-        g_btn_creator = button(s, s, "Mod Creator", NULL, 607, 660, 166, 40, 0, 0, 0);
-        g_btn_open    = button(s, s, "Mods Folder", NULL, 798, 660, 166, 40, 0, 0, 0);
-        g_btn_back    = button(s, s, "Back", NULL, 989, 660, 151, 40, 0, 0, 0);
+    int has_creator = GetFileAttributesA(sc_exe) != INVALID_FILE_ATTRIBUTES;
+
+    g_btn_toggle  = button(s, s, toggle_text, NULL, 225, 650, 230, 48, 0, 0, 0);
+    g_btn_vanilla = button(s, s, vanilla_text(), NULL, 465, 656, 215, 40, 0, 0, 0);
+    int folder_x = 690;
+    if (has_creator) {
+        g_btn_creator = button(s, s, "Mod Creator", NULL, 690, 656, 160, 40, 0, 0, 0);
+        folder_x = 860;
     } else {
         g_btn_creator = NULL;
-        g_btn_toggle  = button(s, s, toggle_text, NULL, 225, 660, 210, 40, 0, 0, 0);
-        g_btn_vanilla = button(s, s, vanilla_text(), NULL, 460, 660, 210, 40, 0, 0, 0);
-        g_btn_open    = button(s, s, "Mods Folder", NULL, 695, 660, 210, 40, 0, 0, 0);
-        g_btn_back    = button(s, s, "Back", NULL, 930, 660, 210, 40, 0, 0, 0);
     }
+    g_btn_open = button(s, s, "Mods Folder", NULL, folder_x, 656, 170, 40, 0, 0, 0);
+    g_btn_back = button(s, s, "Back", NULL, 1040, 659, 100, 34, 0, 0, 0);
+
+    g_icon_toggle_on  = ui_icon(s, "check", 237, 660, 28, 28);
+    g_icon_toggle_off = ui_icon(s, "cross", 237, 660, 28, 28);
+    g_icon_vanilla    = ui_icon(s, "swords", 473, 665, 22, 22);
+    g_icon_creator    = ui_icon(s, "quill", 698, 665, 22, 22);
+    g_icon_folder     = ui_icon(s, "folder", folder_x + 8, 665, 22, 22);
+    g_icon_back       = ui_icon(s, "back", 1048, 666, 20, 20);
+    update_button_icons(0);
     wl_log("Mods screen %p (toggle %p, open %p, back %p)", s, g_btn_toggle, g_btn_open, g_btn_back);
 
     return s;

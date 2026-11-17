@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.4.0"
+#define WOLOLOADER_VERSION "0.4.1"
 #define WL_MAX_MODS 256
 
 typedef struct {

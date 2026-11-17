@@ -437,7 +437,7 @@ window.onerror = function(message, source, lineno, colno, error) {
   // The icon endpoint needs the session token header, and <img src> cannot send it. So the icon
   // is fetched through api() and shown as a blob URL, cached per mod folder. A mod without
   // icon.png gets a generated shield (generatedIconSvg): its colour comes from the folder id, so
-  // it is stable and needs no file. Only a custom pick writes icon.png into the mod folder.
+  // it is stable. New mods get it written as icon.png so the in-game Mods screen shows it too.
   const ICON_SIZE = 256;
   const iconUrlCache = new Map();   // folder -> Promise<blob URL | null>
 
@@ -534,6 +534,22 @@ window.onerror = function(message, source, lineno, colno, error) {
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read this image')); };
       img.src = url;
+    });
+  }
+
+  // The generated shield as a 256x256 PNG blob (same look as tools/make_default_icon.py).
+  function generatedIconPng(folder, name) {
+    const svg = generatedIconSvg(folder, name).replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" ');
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = c.height = 256;
+        c.getContext('2d').drawImage(img, 0, 0, 256, 256);
+        c.toBlob(b => b ? resolve(b) : reject(new Error('PNG encoding failed')), 'image/png');
+      };
+      img.onerror = () => reject(new Error('icon render failed'));
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
     });
   }
 
@@ -778,9 +794,10 @@ window.onerror = function(message, source, lineno, colno, error) {
           method: 'POST',
           body: { name }
         });
-        if (picked) {
+        {
+          // No pick: save the generated shield, so the in-game Mods screen shows it too.
           try {
-            await saveModIcon(res.folder, picked);
+            await saveModIcon(res.folder, picked || await generatedIconPng(res.folder, name));
           } catch (err) {
             showToast('Mod created, but the icon could not be saved: ' + err.message, 'error', 6000);
           }

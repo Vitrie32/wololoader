@@ -78,6 +78,11 @@ install: build/version.dll build/Scriptorium.exe
 	# Wololoader's own command icons (iconmerge.c appends them to the game's sheets)
 	mkdir -p "$(GAME)/wololoader/mods/WololoaderBase/icons/50721"
 	cp base_mod/icons/50721/*.slp "$(GAME)/wololoader/mods/WololoaderBase/icons/50721/"
+	# Icons drawn over the Mods screen buttons and mod rows (ui_mods.c loads <game>\wololoader\ui\<name>.png)
+	mkdir -p build/ui "$(GAME)/wololoader/ui"
+	# One PNG per shown size (name_SIZE.png): the drawables are not scaled in ui_mods.c (see ui_icon).
+	for f in art/ui/*.svg; do for s in 28 22 20 18; do rsvg-convert -w $$s -h $$s "$$f" -o build/ui/$$(basename "$$f" .svg)_$$s.png || exit 1; done; done
+	cp build/ui/*.png "$(GAME)/wololoader/ui/"
 
 # Release installers (needs `make install` once: the Mods button images come from the game folder).
 VERSION := $(shell sed -n 's/^\#define WOLOLOADER_VERSION "\(.*\)"/\1/p' src/wololoader.h)
@@ -90,7 +95,7 @@ build/wlsetup_stub.exe: installer/wlsetup.c build/setup_res.o src/wololoader.h
 	$(CC) -O2 -Wall -Wextra -std=c11 -municode -mwindows -DWL_VERSION='"$(VERSION)"' -o $@ $(filter %.c %.o,$^) -static -lcomctl32 -lshell32 -lole32 -ladvapi32
 	i686-w64-mingw32-strip $@
 
-release: build/version.dll build/wlsetup_stub.exe installer/install.sh.in tools/package.py
+release: build/version.dll build/Scriptorium.exe build/wlsetup_stub.exe installer/install.sh.in tools/package.py
 	python3 -I tools/package.py "$(VERSION)" "$(GAME)" build/release build/wlsetup_stub.exe
 
 uninstall:
