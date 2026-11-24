@@ -14,6 +14,13 @@
 #define ADDR_CIV_MAP_FIND    0x59c990  // thiscall(map, int *id) -> Civilization* or 0
 #define ADDR_CIV_NAME_ID     0x62f080  // (civ id) -> name string id, ret 4
 #define ADDR_STRING_LOOKUP   0x448370  // thiscall(table, const char *key) -> const char*, ret 4
+#define ADDR_PKG_CIV_REMOVE  0x5ca1a0  // thiscall(pkg+0x98, DlcPackageCivilization*), ret 4
+#define ADDR_CIV_PKG_REMOVE  0x5ca140  // thiscall(civ+0x24, DlcPackageCivilization*), ret 4
+#define ADDR_UT_VEC          0xaf25e0  // std::vector<int> {begin, end, cap} of unique tech ids
+#define ADDR_UT_VEC_INSERT   0x479f30  // thiscall(vec, int *pos, const int *val), ret 8
+#define ADDR_CIVCHOICE_SET   0x607490  // thiscall(CivChoice*, int civ_id), ret 4
+#define ADDR_PROFILE_MGR     0xaf2b24  // ProfileManager** (pm = **(void***)0xaf2b24)
+#define ADDR_GAME_PTR        0xaf2c58  // Game* global
 
 #define FIRST_CUSTOM_CIV     35        // 32..34 are RANDOM/SPECTATOR/MIRROR in the exe
 // Our string ids: STR_BASE + civ*100 + slot. Slot 0 = civ name, slot 10 = AI
@@ -37,13 +44,42 @@ typedef struct {
     int ai_count;
     char ai_count_str[8];
     char mp3[MAX_PATH];             // relative to resources\_common\sound\civ\ (see below)
+    char victory_sound[MAX_PATH];   // absolute path to mod's victory audio (mp3/wav), or empty
     char slp_path[MAX_PATH];        // absolute path of the mod's interface panel art
     int unique_techs[2];            // castle_tech, imp_tech (or -1, -1 if default from base)
     char *uu_strings[20];           // SIDs 28500 + (civ-35)*20 + slot: 0..9 unique unit, 10..12 unique building
 } WlCiv;
 
-static WlCiv g_civs[MAX_CIVS];
-static int g_civ_count;
+// Double-buffered civ and command string tables for thread-safe hot reload:
+// hook_string_lookup can run on background threads and returns const char*
+// pointers into the active buffer. Reload writes into the inactive buffer
+// (freeing only strings from TWO reloads ago) and flips the active index under
+// g_civs_cs, so pointers already returned to another thread remain valid.
+static WlCiv g_civ_bufs[2][MAX_CIVS];
+static int g_civ_buf_idx;
+static int g_civ_counts[2];
+#define ACTIVE_CIVS      (g_civ_bufs[g_civ_buf_idx])
+#define ACTIVE_CIV_COUNT (g_civ_counts[g_civ_buf_idx])
+
+// Stable per-civ-id mp3 filename storage so Civilization+0x0c (which stores the
+// raw const char* passed to 0x5c9640) never points into a shifted WlCiv slot.
+static char g_civ_mp3_stable[MAX_CIVS][64];
+
+// Captured at startup in hook_register_rajas for hot-reload reconciliation.
+static void *g_rajas_pkg;
+static int g_vanilla_ut_count = -1;
+static int g_ever_reg_ids[MAX_CIVS];
+static int g_ever_reg_count;
+
+static CRITICAL_SECTION g_civs_cs;
+static int g_civs_cs_init;
+
+static void civs_cs_init(void) {
+    if (!g_civs_cs_init) {
+        InitializeCriticalSection(&g_civs_cs);
+        g_civs_cs_init = 1;
+    }
+}
 
 typedef void (__cdecl *RegisterPkg_t)(void *pkg);
 typedef void (__cdecl *RegisterCiv_t)(void *pkg, int id, const char *mp3, int name_str,
@@ -51,6 +87,9 @@ typedef void (__cdecl *RegisterCiv_t)(void *pkg, int id, const char *mp3, int na
 typedef BYTE *(__thiscall *CivFind_t)(void *map, int *id);
 typedef int (__thiscall *CivNameId_t)(void *self, int id);
 typedef const char *(__thiscall *StringLookup_t)(void *table, const char *key);
+typedef void (__thiscall *ListRemove_t)(void *list_head, void *node);
+typedef void (__thiscall *UtVecInsert_t)(void *vec, int *pos, const int *val);
+typedef void (__thiscall *CivChoiceSetInt_t)(void *choice, int civ_id);
 
 static RegisterPkg_t g_orig_register_rajas;
 static CivNameId_t g_orig_name_id;
@@ -58,10 +97,39 @@ static StringLookup_t g_orig_lookup;
 
 static void wl_install_civ_patches(void);
 
-static const WlCiv *find_civ(int id) {
-    for (int i = 0; i < g_civ_count; i++)
-        if (g_civs[i].id == id) return &g_civs[i];
+// Caller must hold g_civs_cs (or run before any reload is possible).
+static const WlCiv *find_civ_locked(int id) {
+    const WlCiv *arr = ACTIVE_CIVS;
+    int n = ACTIVE_CIV_COUNT;
+    for (int i = 0; i < n; i++)
+        if (arr[i].id == id) return &arr[i];
     return NULL;
+}
+
+int wl_civs_count(void) {
+    civs_cs_init();
+    EnterCriticalSection(&g_civs_cs);
+    int n = ACTIVE_CIV_COUNT;
+    LeaveCriticalSection(&g_civs_cs);
+    return n;
+}
+
+const char *wl_civ_get_sound(int civ_id) {
+    civs_cs_init();
+    EnterCriticalSection(&g_civs_cs);
+    const WlCiv *c = find_civ_locked(civ_id);
+    const char *r = (c && c->mp3[0]) ? c->mp3 : NULL;
+    LeaveCriticalSection(&g_civs_cs);
+    return r;
+}
+
+const char *wl_civ_get_victory_sound(int civ_id) {
+    civs_cs_init();
+    EnterCriticalSection(&g_civs_cs);
+    const WlCiv *c = find_civ_locked(civ_id);
+    const char *r = (c && c->victory_sound[0]) ? c->victory_sound : NULL;
+    LeaveCriticalSection(&g_civs_cs);
+    return r;
 }
 
 // The game's text system is UTF-8: its decoder 0x444e40 returns 0 WITHOUT
@@ -93,6 +161,7 @@ static char *dup_str(const char *s) {
 //   "description": text shown on civ selection / tech tree ("\n" for new lines)
 //   "ai_names": ["King A", "Queen B", ...]  AI player names in the lobby
 //   "sound": "select.mp3"                    file in the mod folder, played on selection
+//   "victory_sound": "victory.mp3"           file in the mod folder, played when local player wins
 //   "interface_slp": "game_b.slp"            in-game bottom panel art, file in the mod folder
 //   "unique_unit": Castle unique unit definition (name, elite_name, help, stats, costs)
 static void load_identity(WlCiv *c, const char *mod, const char *json_file) {
@@ -127,6 +196,18 @@ static void load_identity(WlCiv *c, const char *mod, const char *json_file) {
         } else {
             snprintf(c->mp3, sizeof c->mp3, "wololoader_civ%d.mp3", c->id);
             wl_add_redirect(c->mp3, full);
+        }
+    }
+
+    const char *vsnd = wl_json_str(wl_json_get(root, "victory_sound"), NULL);
+    if (vsnd && vsnd[0]) {
+        char full[MAX_PATH];
+        snprintf(full, sizeof full, "%s\\mods\\%s\\%s", g_wl.root, mod, vsnd);
+        for (char *p = full; *p; p++) if (*p == '/') *p = '\\';
+        if (GetFileAttributesA(full) == INVALID_FILE_ATTRIBUTES) {
+            wl_log("civs: %d victory_sound '%s' not found in mod %s, using vanilla", c->id, vsnd, mod);
+        } else {
+            lstrcpynA(c->victory_sound, full, sizeof c->victory_sound);
         }
     }
 
@@ -230,13 +311,65 @@ static void load_identity(WlCiv *c, const char *mod, const char *json_file) {
 // "civ<TAB>building<TAB>button<TAB>name<TAB>icon<TAB>help id".
 #define CMD_SID_FIRST 31210
 #define CMD_SID_LAST 32767
-static char *g_cmd_str[CMD_SID_LAST - CMD_SID_FIRST + 1];
-static WlLuaButton g_lbtn[64];
-static int g_nlbtn;
+#define CMD_SID_COUNT (CMD_SID_LAST - CMD_SID_FIRST + 1)
+static char *g_cmd_str_bufs[2][CMD_SID_COUNT];
+static WlLuaButton g_lbtn_bufs[2][64];
+static int g_nlbtn_bufs[2];
+static WlBuildingCmd g_bcmds_bufs[2][WL_MAX_BLDG_CMDS];
+static int g_nbcmds_bufs[2];
+static int g_cmd_buf_idx;
 
-const WlLuaButton *wl_lua_buttons(int *n) { *n = g_nlbtn; return g_lbtn; }
+const WlLuaButton *wl_lua_buttons(int *n) {
+    civs_cs_init();
+    EnterCriticalSection(&g_civs_cs);
+    int idx = g_cmd_buf_idx;
+    *n = g_nlbtn_bufs[idx];
+    const WlLuaButton *r = g_lbtn_bufs[idx];
+    LeaveCriticalSection(&g_civs_cs);
+    return r;
+}
 
-static void load_command_files(void) {
+const WlBuildingCmd *wl_building_commands(int *n) {
+    civs_cs_init();
+    EnterCriticalSection(&g_civs_cs);
+    int idx = g_cmd_buf_idx;
+    *n = g_nbcmds_bufs[idx];
+    const WlBuildingCmd *r = g_bcmds_bufs[idx];
+    LeaveCriticalSection(&g_civs_cs);
+    return r;
+}
+
+// Split a line on literal '\t' so empty fields ("\t\t") are preserved cleanly.
+static int split_tabs(char *line, char **fields, int max_fields) {
+    line[strcspn(line, "\r\n")] = 0;
+    if (!line[0]) return 0;
+    int n = 0;
+    char *p = line;
+    while (n < max_fields) {
+        fields[n++] = p;
+        char *tab = strchr(p, '\t');
+        if (!tab) break;
+        *tab = 0;
+        p = tab + 1;
+    }
+    return n;
+}
+
+static void free_cmd_buf(int slot) {
+    for (int i = 0; i < CMD_SID_COUNT; i++) {
+        free(g_cmd_str_bufs[slot][i]);
+        g_cmd_str_bufs[slot][i] = NULL;
+    }
+    g_nlbtn_bufs[slot] = 0;
+    g_nbcmds_bufs[slot] = 0;
+}
+
+static void load_command_files_into(int slot) {
+    free_cmd_buf(slot);
+    char **cmd_str = g_cmd_str_bufs[slot];
+    WlLuaButton *lbtn = g_lbtn_bufs[slot];
+    WlBuildingCmd *bcmds = g_bcmds_bufs[slot];
+    int nlbtn = 0, nbcmds = 0;
     char path[MAX_PATH], line[1200];
     snprintf(path, sizeof path, "%s\\cache\\strings.txt", g_wl.root);
     FILE *f = fopen(path, "rb");
@@ -253,30 +386,86 @@ static void load_command_files(void) {
                 else *o++ = *p;
             }
             *o = 0;
-            free(g_cmd_str[id - CMD_SID_FIRST]);
-            g_cmd_str[id - CMD_SID_FIRST] = dup_str(t);
+            free(cmd_str[id - CMD_SID_FIRST]);
+            cmd_str[id - CMD_SID_FIRST] = dup_str(t);
             ns++;
         }
         fclose(f);
     }
     snprintf(path, sizeof path, "%s\\cache\\commands.txt", g_wl.root);
     f = fopen(path, "rb");
-    g_nlbtn = 0;
     if (f) {
-        while (fgets(line, sizeof line, f) && g_nlbtn < 64) {
-            WlLuaButton *b = &g_lbtn[g_nlbtn];
-            char name[64];
-            if (sscanf(line, "%d\t%d\t%d\t%63[^\t]\t%d\t%d", &b->civ, &b->building, &b->button, name, &b->icon, &b->help) == 6) {
-                lstrcpynA(b->name, name, sizeof b->name);
-                g_nlbtn++;
+        while (fgets(line, sizeof line, f) && nbcmds < WL_MAX_BLDG_CMDS) {
+            char *fields[16];
+            int nf = split_tabs(line, fields, 16);
+            if (nf == 0) continue;
+
+            WlBuildingCmd *bc = &bcmds[nbcmds];
+            memset(bc, 0, sizeof(*bc));
+
+            // 11-field format: civ, bldg, page, btn, type, target, icon, help, name, cond_act, cond_name
+            if (nf >= 9 && (strcmp(fields[4], "train") == 0 ||
+                            strcmp(fields[4], "research") == 0 ||
+                            strcmp(fields[4], "lua") == 0)) {
+                int c_page = atoi(fields[2]);
+                bc->civ = atoi(fields[0]);
+                bc->building = atoi(fields[1]);
+                bc->page = c_page >= 1 ? c_page : 1;
+                bc->button = atoi(fields[3]);
+                lstrcpynA(bc->type, fields[4], sizeof bc->type);
+                bc->target_id = atoi(fields[5]);
+                bc->icon = atoi(fields[6]);
+                bc->help = atoi(fields[7]);
+                lstrcpynA(bc->name, fields[8], sizeof bc->name);
+                lstrcpynA(bc->cond_action, (nf >= 10 && fields[9][0]) ? fields[9] : "disable", sizeof bc->cond_action);
+                lstrcpynA(bc->cond_name, (nf >= 11) ? fields[10] : "", sizeof bc->cond_name);
+
+                if (strcmp(bc->type, "lua") == 0 && nlbtn < 64) {
+                    WlLuaButton *b = &lbtn[nlbtn];
+                    b->civ = bc->civ;
+                    b->building = bc->building;
+                    b->button = bc->button;
+                    b->icon = bc->icon;
+                    b->help = bc->help;
+                    lstrcpynA(b->name, bc->name, sizeof b->name);
+                    nlbtn++;
+                }
+                nbcmds++;
+            } else if (nf == 6) {
+                // Legacy 6-field format: civ, bldg, btn, name, icon, help
+                bc->civ = atoi(fields[0]);
+                bc->building = atoi(fields[1]);
+                bc->page = 1;
+                bc->button = atoi(fields[2]);
+                lstrcpynA(bc->type, "lua", sizeof bc->type);
+                bc->target_id = 0;
+                bc->icon = atoi(fields[4]);
+                bc->help = atoi(fields[5]);
+                lstrcpynA(bc->name, fields[3], sizeof bc->name);
+                lstrcpynA(bc->cond_action, "disable", sizeof bc->cond_action);
+                bc->cond_name[0] = '\0';
+                nbcmds++;
+
+                if (nlbtn < 64) {
+                    WlLuaButton *b = &lbtn[nlbtn];
+                    b->civ = bc->civ;
+                    b->building = bc->building;
+                    b->button = bc->button;
+                    b->icon = bc->icon;
+                    b->help = bc->help;
+                    lstrcpynA(b->name, bc->name, sizeof b->name);
+                    nlbtn++;
+                }
             }
         }
         fclose(f);
     }
-    if (ns || g_nlbtn) wl_log("civs: %d command string(s), %d Lua button(s)", ns, g_nlbtn);
+    g_nlbtn_bufs[slot] = nlbtn;
+    g_nbcmds_bufs[slot] = nbcmds;
+    if (ns || nbcmds) wl_log("civs: %d command string(s), %d building command(s)", ns, nbcmds);
 }
 
-static const char *command_string(int n) {
+static const char *command_string_locked(int n) {
     // rich texts like the unique units: name + 21000 (tech tree) and create/research + 20000
     // (button rollover) show the triple's third string; help fields are 79000 + id
     if (n >= CMD_SID_FIRST + 21000 && n <= CMD_SID_LAST + 21000 && (n - 21000 - CMD_SID_FIRST) % 3 == 0) n = n - 21000 + 2;
@@ -284,20 +473,34 @@ static const char *command_string(int n) {
     else if (n >= CMD_SID_FIRST + 79000 && n <= CMD_SID_LAST + 79000) n -= 79000;
     else if (n >= CMD_SID_FIRST + 150000 && n <= CMD_SID_LAST + 150000) n -= 150000;
     if (n < CMD_SID_FIRST || n > CMD_SID_LAST) return NULL;
-    return g_cmd_str[n - CMD_SID_FIRST];
+    return g_cmd_str_bufs[g_cmd_buf_idx][n - CMD_SID_FIRST];
 }
 
-static void load_civs_txt(void) {
+static void free_civ_buf(int slot) {
+    int n = g_civ_counts[slot];
+    for (int i = 0; i < n; i++) {
+        WlCiv *c = &g_civ_bufs[slot][i];
+        free(c->description);
+        for (int j = 0; j < c->ai_count; j++) free(c->ai_names[j]);
+        for (int j = 0; j < 20; j++) free(c->uu_strings[j]);
+    }
+    memset(g_civ_bufs[slot], 0, sizeof g_civ_bufs[slot]);
+    g_civ_counts[slot] = 0;
+}
+
+static void load_civs_txt_into(int slot) {
+    free_civ_buf(slot);
     char path[MAX_PATH];
     snprintf(path, MAX_PATH, "%s\\cache\\civs.txt", g_wl.root);
     FILE *f = fopen(path, "rb");
-    if (!f) { wl_log("civs: no cache\\civs.txt (run tools/build.py)"); return; }
+    if (!f) { wl_log("civs: no cache\\civs.txt"); return; }
     char line[512];
-    while (fgets(line, sizeof line, f) && g_civ_count < MAX_CIVS) {
+    int count = 0;
+    while (fgets(line, sizeof line, f) && count < MAX_CIVS) {
         line[strcspn(line, "\r\n")] = 0;
         char *id = strtok(line, "\t"), *base = strtok(NULL, "\t"), *name = strtok(NULL, "\t");
         if (!id || !base || !name) continue;
-        WlCiv *c = &g_civs[g_civ_count];
+        WlCiv *c = &g_civ_bufs[slot][count];
         memset(c, 0, sizeof *c);
         c->unique_techs[0] = -1;
         c->unique_techs[1] = -1;
@@ -314,39 +517,258 @@ static void load_civs_txt(void) {
             c->unique_techs[0] = atoi(t1_s);
             c->unique_techs[1] = atoi(t2_s);
         }
-        wl_log("civs: %d '%s' (base %d)%s%s%s%s", c->id, c->name, c->base,
+        wl_log("civs: %d '%s' (base %d)%s%s%s%s%s", c->id, c->name, c->base,
                c->description ? " +description" : "", c->mp3[0] ? " +sound" : "",
+               c->victory_sound[0] ? " +victory_sound" : "",
                c->slp_path[0] ? " +interface" : "",
                (c->unique_techs[0] >= 0) ? " +unique_techs" : "");
-        g_civ_count++;
+        count++;
     }
     fclose(f);
+    g_civ_counts[slot] = count;
+}
+
+static void record_ever_registered(int id) {
+    for (int i = 0; i < g_ever_reg_count; i++)
+        if (g_ever_reg_ids[i] == id) return;
+    if (g_ever_reg_count < MAX_CIVS) g_ever_reg_ids[g_ever_reg_count++] = id;
+}
+
+static const char *stable_civ_mp3(const WlCiv *c, const BYTE *base) {
+    if (c->mp3[0]) {
+        int idx = c->id - FIRST_CUSTOM_CIV;
+        if (idx >= 0 && idx < MAX_CIVS) {
+            lstrcpynA(g_civ_mp3_stable[idx], c->mp3, sizeof g_civ_mp3_stable[0]);
+            return g_civ_mp3_stable[idx];
+        }
+    }
+    return *(const char **)(base + 0xc);
+}
+
+// Push one unique-tech id onto the game's global std::vector<int> at 0xaf25e0..0xaf25e8
+// (mirrors Civilization::ctor 0x5c93f1..0x5c944b, using 0x479f30 when capacity is full).
+static void ut_vec_push_back(int val) {
+    int **vec = (int **)ADDR_UT_VEC;
+    if (vec[1] != vec[2]) {
+        *vec[1] = val;
+        vec[1]++;
+    } else {
+        ((UtVecInsert_t)ADDR_UT_VEC_INSERT)((void *)ADDR_UT_VEC, vec[1], &val);
+    }
 }
 
 // Runs after the game registered Rajas civs; every base civ exists by now.
 static void __cdecl hook_register_rajas(void *pkg) {
     wl_civs_ensure();
+    g_rajas_pkg = pkg;
     g_orig_register_rajas(pkg);
-    for (int i = 0; i < g_civ_count; i++) {
-        WlCiv *c = &g_civs[i];
+    // Record vanilla unique-tech vector size before custom civs append theirs
+    // so hot reload can truncate back to vanilla and re-append active custom techs.
+    int **ut_vec = (int **)ADDR_UT_VEC;
+    if (ut_vec[0] && ut_vec[1] >= ut_vec[0])
+        g_vanilla_ut_count = (int)(ut_vec[1] - ut_vec[0]);
+    wl_log("civs: rajas pkg %p, vanilla unique techs %d", pkg, g_vanilla_ut_count);
+
+    int n = ACTIVE_CIV_COUNT;
+    for (int i = 0; i < n; i++) {
+        WlCiv *c = &ACTIVE_CIVS[i];
         int base_id = c->base;
         BYTE *base = ((CivFind_t)ADDR_CIV_MAP_FIND)((void *)ADDR_CIV_MAP, &base_id);
         if (!base) { wl_log("civs: base civ %d not registered, skip %d", c->base, c->id); continue; }
         // Civilization: +0xc mp3 (char*), +0x14 bonus string base, +0x18/+0x1c tech ids.
         // +0x14 is the AI player name list (count string at the id, names after it).
-        const char *mp3 = c->mp3[0] ? c->mp3 : *(const char **)(base + 0xc);
+        const char *mp3 = stable_civ_mp3(c, base);
         int ai = c->ai_count ? STR_BASE + c->id * 100 + STR_AI_COUNT : *(int *)(base + 0x14);
         int t1 = (c->unique_techs[0] >= 0) ? c->unique_techs[0] : *(int *)(base + 0x18);
         int t2 = (c->unique_techs[1] >= 0) ? c->unique_techs[1] : *(int *)(base + 0x1c);
         ((RegisterCiv_t)ADDR_REGISTER_CIV)(pkg, c->id, mp3, STR_BASE + c->id * 100 + STR_NAME, ai, t1, t2, 1);
+        record_ever_registered(c->id);
         wl_log("civs: registered %d (mp3 %s, techs %d,%d, pkg %p)", c->id, mp3 ? mp3 : "?", t1, t2, pkg);
     }
+}
+
+// Reload Wololoader's civ & command string tables from cache\ into the inactive
+// double-buffer and swap atomically under g_civs_cs.
+int wl_civs_reload_tables(int *old_ids, int *old_n, int *new_ids, int *new_n) {
+    civs_cs_init();
+    int cur_c = g_civ_buf_idx, next_c = 1 - cur_c;
+    int cur_s = g_cmd_buf_idx, next_s = 1 - cur_s;
+
+    if (old_ids && old_n) {
+        int n = g_civ_counts[cur_c];
+        for (int i = 0; i < n; i++) old_ids[i] = g_civ_bufs[cur_c][i].id;
+        *old_n = n;
+    }
+
+    load_civs_txt_into(next_c);
+    load_command_files_into(next_s);
+
+    EnterCriticalSection(&g_civs_cs);
+    g_civ_buf_idx = next_c;
+    g_cmd_buf_idx = next_s;
+    int count = g_civ_counts[next_c];
+    LeaveCriticalSection(&g_civs_cs);
+
+    if (new_ids && new_n) {
+        for (int i = 0; i < count; i++) new_ids[i] = g_civ_bufs[next_c][i].id;
+        *new_n = count;
+    }
+    return count;
+}
+
+// Reset any PlayerSlot[0..7] inside a GameSettings object that points at a
+// disabled custom Civilization (id >= 35, playable == 0) to Random (0x20).
+// Verified offsets (AoK HD.exe 5.8):
+// - PlayerSlot[i]: settings + 0xb0 + i*0x68
+// - CivChoice: slot + 0x58 (0x6159b3: lea 0x58(%esi),%ecx; call 0x607490)
+// - CivChoice+0 = CivilizationMode* (+8 == 0 means specific civ, 0x607820)
+// - CivChoice+4 = Civilization* (+8 = id, +0x20 = playable byte)
+// - CivChoice::setFromInt(0x607490): __thiscall(choice, 0x20), ret 4
+static int sanitize_game_settings(void *settings) {
+    if (!settings) return 0;
+    int reset_count = 0;
+    for (int i = 0; i < 8; i++) {
+        void *choice = (char *)settings + 0xb0 + i * 0x68 + 0x58;
+        void *mode_obj = *(void **)choice;
+        BYTE *civ = *(BYTE **)((char *)choice + 4);
+        if (!mode_obj || !civ) continue;
+        if (*(int *)((char *)mode_obj + 8) != 0) continue;  // Random/Spectator/Mirror
+        int cid = *(int *)(civ + 8);
+        BYTE playable = *(BYTE *)(civ + 0x20);
+        if (cid >= FIRST_CUSTOM_CIV && playable == 0) {
+            ((CivChoiceSetInt_t)ADDR_CIVCHOICE_SET)(choice, 0x20);
+            wl_log("civs: reset GameSettings %p slot %d (removed civ %d) -> Random", settings, i, cid);
+            reset_count++;
+        }
+    }
+    return reset_count;
+}
+
+// Reconcile the game's civ registry (g_rajas_pkg+0x98, 0xaf25ec, 0xaf25e0) and
+// persistent Profile/CommHandler GameSettings with the reloaded ACTIVE_CIVS.
+// Must run on the main thread at the Main Menu (World == NULL).
+int wl_civs_reconcile_registry(void) {
+    if (!g_rajas_pkg) {
+        wl_log("civs: reconcile skipped (rajas package not captured yet)");
+        return 0;
+    }
+    // Verify prologue bytes of every game helper we call (AGENTS.md rule 2).
+    static const BYTE b_reg[]    = { 0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0x06, 0x50, 0x93, 0x00 };
+    static const BYTE b_rm_pkg[] = { 0x55, 0x8b, 0xec, 0x53, 0x56, 0x8b, 0x75, 0x08, 0x8b, 0xd9 };
+    static const BYTE b_rm_civ[] = { 0x55, 0x8b, 0xec, 0x53, 0x56, 0x8b, 0x75, 0x08, 0x8b, 0xd9 };
+    static const BYTE b_ut_ins[] = { 0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0x70, 0xff, 0x90, 0x00 };
+    static const BYTE b_setint[] = { 0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0xd9, 0xe7, 0x93, 0x00 };
+    if (memcmp((void *)ADDR_REGISTER_CIV, b_reg, sizeof b_reg) != 0 ||
+        memcmp((void *)ADDR_PKG_CIV_REMOVE, b_rm_pkg, sizeof b_rm_pkg) != 0 ||
+        memcmp((void *)ADDR_CIV_PKG_REMOVE, b_rm_civ, sizeof b_rm_civ) != 0 ||
+        memcmp((void *)ADDR_UT_VEC_INSERT, b_ut_ins, sizeof b_ut_ins) != 0 ||
+        memcmp((void *)ADDR_CIVCHOICE_SET, b_setint, sizeof b_setint) != 0) {
+        wl_log("civs: reconcile aborted (unexpected exe bytes)");
+        return -1;
+    }
+
+    // 1. Unlink every custom DlcPackageCivilization (id >= 35) from g_rajas_pkg+0x98
+    //    and civ+0x24. Each remove decrements node->rc (+4); rc goes 2->1->0 and the
+    //    game's own virtual dtor frees DlcPackageCivilization via 0x8d480f.
+    //    Civilization objects stay in 0xaf25ec with playable (+0x20) = 0 so no
+    //    external refcounted Civilization* can ever become a dangling pointer.
+    void *pkg_list = (char *)g_rajas_pkg + 0x98;
+    void *node = *(void **)pkg_list;   // 0x43c0d0: head ptr at list_head+0
+    int unlinked = 0;
+    while (node) {
+        void *next = *(void **)((char *)node + 0x14);  // 0x5d2ef0 / 0x427930: pkg list next at +0x14
+        BYTE *civ = *(BYTE **)((char *)node + 0x08);   // 0x5c9764: Civilization* at +0x08
+        if (civ && *(int *)(civ + 8) >= FIRST_CUSTOM_CIV) {
+            ((ListRemove_t)ADDR_PKG_CIV_REMOVE)(pkg_list, node);
+            ((ListRemove_t)ADDR_CIV_PKG_REMOVE)(civ + 0x24, node);
+            *(BYTE *)(civ + 0x20) = 0;
+            unlinked++;
+        }
+        node = next;
+    }
+    for (int i = 0; i < g_ever_reg_count; i++) {
+        int id = g_ever_reg_ids[i];
+        BYTE *civ = ((CivFind_t)ADDR_CIV_MAP_FIND)((void *)ADDR_CIV_MAP, &id);
+        if (civ) *(BYTE *)(civ + 0x20) = 0;
+    }
+
+    // 2. Truncate unique-tech std::vector<int> at 0xaf25e0 back to vanilla size.
+    int **ut_vec = (int **)ADDR_UT_VEC;
+    if (g_vanilla_ut_count >= 0 && ut_vec[0] && ut_vec[1] >= ut_vec[0] + g_vanilla_ut_count) {
+        ut_vec[1] = ut_vec[0] + g_vanilla_ut_count;
+    }
+
+    // 3. Register / re-enable every currently active custom civ.
+    int n = ACTIVE_CIV_COUNT;
+    int registered = 0;
+    for (int i = 0; i < n; i++) {
+        const WlCiv *c = &ACTIVE_CIVS[i];
+        int base_id = c->base;
+        BYTE *base = ((CivFind_t)ADDR_CIV_MAP_FIND)((void *)ADDR_CIV_MAP, &base_id);
+        if (!base) { wl_log("civs: reconcile: base civ %d missing, skip %d", c->base, c->id); continue; }
+        const char *mp3 = stable_civ_mp3(c, base);
+        int ai = c->ai_count ? STR_BASE + c->id * 100 + STR_AI_COUNT : *(int *)(base + 0x14);
+        int t1 = (c->unique_techs[0] >= 0) ? c->unique_techs[0] : *(int *)(base + 0x18);
+        int t2 = (c->unique_techs[1] >= 0) ? c->unique_techs[1] : *(int *)(base + 0x1c);
+
+        int cid = c->id;
+        BYTE *existing = ((CivFind_t)ADDR_CIV_MAP_FIND)((void *)ADDR_CIV_MAP, &cid);
+        if (existing) {
+            // 0x5c9640 skips Civilization::ctor when already in 0xaf25ec, so update
+            // fields in place and re-append unique techs before creating the new
+            // DlcPackageCivilization via 0x5c9640.
+            *(const char **)(existing + 0x0c) = mp3;
+            *(int *)(existing + 0x10) = STR_BASE + c->id * 100 + STR_NAME;
+            *(int *)(existing + 0x14) = ai;
+            *(int *)(existing + 0x18) = t1;
+            *(int *)(existing + 0x1c) = t2;
+            *(BYTE *)(existing + 0x20) = 1;
+            ut_vec_push_back(t1);
+            ut_vec_push_back(t2);
+        }
+        ((RegisterCiv_t)ADDR_REGISTER_CIV)(g_rajas_pkg, c->id, mp3,
+                                           STR_BASE + c->id * 100 + STR_NAME, ai, t1, t2, 1);
+        record_ever_registered(c->id);
+        registered++;
+    }
+
+    // 4. Sanitize persistent Profile GameSettings (+0x4c, +0x50, +0x54, +0x58)
+    //    and CommHandler's current GameSettings so no slot references a removed civ.
+    int slots_reset = 0;
+    void **pm_holder = *(void ***)ADDR_PROFILE_MGR;
+    void *pm = pm_holder ? *pm_holder : NULL;
+    if (pm) {
+        void **pbegin = *(void ***)((char *)pm + 0x14);
+        void **pend   = *(void ***)((char *)pm + 0x18);
+        if (pbegin && pend && pend >= pbegin && (pend - pbegin) <= 64) {
+            static const int k_gs_off[4] = { 0x4c, 0x50, 0x54, 0x58 };
+            for (void **pp = pbegin; pp < pend; pp++) {
+                void *prof = *pp;
+                if (!prof) continue;
+                for (int k = 0; k < 4; k++) {
+                    void *gs = *(void **)((char *)prof + k_gs_off[k]);
+                    slots_reset += sanitize_game_settings(gs);
+                }
+            }
+        }
+    }
+    void *game = *(void **)ADDR_GAME_PTR;
+    void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
+    void *cur_gs = comm ? *(void **)((char *)comm + 0xd54) : NULL;
+    slots_reset += sanitize_game_settings(cur_gs);
+
+    wl_log("civs: reconciled registry (unlinked %d, active %d, slots reset %d)",
+           unlinked, registered, slots_reset);
+    return registered;
 }
 
 // The original only maps ids 1..31 through the registry; custom ids return -2.
 static int __fastcall hook_civ_name_id(void *self, void *edx, int id) {
     (void)edx;
-    if (find_civ(id)) return STR_BASE + id * 100 + STR_NAME;
+    EnterCriticalSection(&g_civs_cs);
+    int found = find_civ_locked(id) != NULL;
+    LeaveCriticalSection(&g_civs_cs);
+    if (found) return STR_BASE + id * 100 + STR_NAME;
     return g_orig_name_id(self, id);
 }
 
@@ -360,55 +782,56 @@ static const char *__fastcall hook_string_lookup(void *table, void *edx, const c
     // show our own name there instead of "Validating Subscriptions".
     if (key && key[0] == 'M' && strcmp(key, "MODMGR_DOWNLOAD_TITLE") == 0)
         return "Wololoader - loading mods...";
-    // Wololoader's own UI strings (buildpage.c "Mod Buildings" button help, id 28490).
+    // Wololoader's own UI strings (buildpage.c "Mod Buildings" button help, id 28490; "Next Page", id 28491).
     if (key && strcmp(key, "28490") == 0) return "<b>Mod Buildings<b> \nDisplay the buildings added by mods.";
+    if (key && strcmp(key, "28491") == 0) return "<b>Next Page<b> \nCycle to the next page of commands.";
     if (key && key[0] >= '1' && key[0] <= '9') {
-        const char *cs = command_string(atoi(key));
-        if (cs) return cs;
-    }
-    if (key && key[0] >= '1' && key[0] <= '9' && g_civ_count) {
         int n = atoi(key);
-        // Custom unique unit strings: SID(slot) = 28500 + (civ_id - 35) * 20 + slot; SID = 28500 + (civ-35)*20 + slot: the game reads unit/tech name ids as SIGNED int16, so ids must be < 32768 (55000 showed the internal name); 28440..30100 is unused in the string files
-        // Slots 0..9: unit names, creation tooltips, help, research names/tooltips.
-        // Tech tree screen asks for name id + 21000 (seen in the log: 49500,
-        // 49503) for the box tooltip; the box name seems to come from that text
-        // too (it fell back to the internal name "MONKX" without it).
-        // Map our name slots 0 / 3 to their rich texts in slots 2 / 5.
-        if (n >= 28500 + 21000 && n < 30100 + 21000) {
-            int s = (n - 21000 - 28500) % 20;
-            if (s == 0 || s == 3 || s == 10) n = n - 21000 + 2;
-        }
-        // Unit button rollover asks for creation id + 20000 (Teutonic Knight
-        // 6112 -> 26112). Seen in the log for our unit: 28501 then 48501.
-        // Map our creation slots 1 / 4 to their rich texts in slots 2 / 5.
-        if (n >= 28500 + 20000 && n < 30100 + 20000) {
-            int s = (n - 20000 - 28500) % 20;
-            if (s == 1 || s == 4 || s == 11) n = n - 20000 + 1;
-        }
-        // Help field (79000 + id) in case some screen looks it up directly.
-        if (n >= 28500 + 79000 && n < 30100 + 79000) n -= 79000;
-        if (n >= 28500 && n < 30100) {
-            int cid = 35 + (n - 28500) / 20;
-            int slot = (n - 28500) % 20;
-            if (slot >= 0 && slot < 20) {
-                const WlCiv *c = find_civ(cid);
-                if (c && c->uu_strings[slot]) return c->uu_strings[slot];
+        const char *res = NULL;
+        EnterCriticalSection(&g_civs_cs);
+        res = command_string_locked(n);
+        if (!res && ACTIVE_CIV_COUNT) {
+            int un = n;
+            // Custom unique unit strings: SID(slot) = 28500 + (civ_id - 35) * 20 + slot.
+            // Tech tree asks for name id + 21000 -> rich texts in slots 2 / 5 / 12.
+            if (un >= 28500 + 21000 && un < 30100 + 21000) {
+                int s = (un - 21000 - 28500) % 20;
+                if (s == 0 || s == 3 || s == 10) un = un - 21000 + 2;
+            }
+            // Unit button rollover asks for creation id + 20000 -> rich texts in slots 2 / 5 / 12.
+            if (un >= 28500 + 20000 && un < 30100 + 20000) {
+                int s = (un - 20000 - 28500) % 20;
+                if (s == 1 || s == 4 || s == 11) un = un - 20000 + 1;
+            }
+            // Help field (79000 + id) in case some screen looks it up directly.
+            if (un >= 28500 + 79000 && un < 30100 + 79000) un -= 79000;
+            if (un >= 28500 && un < 30100) {
+                int cid = 35 + (un - 28500) / 20;
+                int slot = (un - 28500) % 20;
+                if (slot >= 0 && slot < 20) {
+                    const WlCiv *c = find_civ_locked(cid);
+                    if (c && c->uu_strings[slot]) res = c->uu_strings[slot];
+                }
+            }
+            if (!res && n >= STR_BASE && n < STR_BASE + 100000) {
+                const WlCiv *c = find_civ_locked((n - STR_BASE) / 100);
+                int slot = (n - STR_BASE) % 100;
+                if (c && slot == STR_NAME) res = c->name;
+                else if (c && slot == STR_AI_COUNT) res = c->ai_count_str;
+                else if (c && slot > STR_AI_COUNT && slot <= STR_AI_COUNT + c->ai_count)
+                    res = c->ai_names[slot - STR_AI_COUNT - 1];
+            }
+            if (!res) {
+                int d = n - DESC_BASE_DLC;
+                if (d < FIRST_CUSTOM_CIV) d = n - DESC_BASE_GAME;
+                if (d >= FIRST_CUSTOM_CIV && d < FIRST_CUSTOM_CIV + MAX_CIVS) {
+                    const WlCiv *c = find_civ_locked(d);
+                    if (c && c->description) res = c->description;
+                }
             }
         }
-        if (n >= STR_BASE && n < STR_BASE + 100000) {
-            const WlCiv *c = find_civ((n - STR_BASE) / 100);
-            int slot = (n - STR_BASE) % 100;
-            if (c && slot == STR_NAME) return c->name;
-            if (c && slot == STR_AI_COUNT) return c->ai_count_str;
-            if (c && slot > STR_AI_COUNT && slot <= STR_AI_COUNT + c->ai_count)
-                return c->ai_names[slot - STR_AI_COUNT - 1];
-        }
-        int d = n - DESC_BASE_DLC;
-        if (d < FIRST_CUSTOM_CIV) d = n - DESC_BASE_GAME;
-        if (d >= FIRST_CUSTOM_CIV && d < FIRST_CUSTOM_CIV + MAX_CIVS) {
-            const WlCiv *c = find_civ(d);
-            if (c && c->description) return c->description;
-        }
+        LeaveCriticalSection(&g_civs_cs);
+        if (res) return res;
     }
     return g_orig_lookup(table, key);
 }
@@ -425,12 +848,14 @@ void wl_civs_ensure(void) {
     if (g_civs_state == 2) return;
     if (InterlockedCompareExchange(&g_civs_state, 1, 0) == 0) {
         g_civs_thread = GetCurrentThreadId();
+        civs_cs_init();
         wl_autobuild();
-        load_civs_txt();
-        load_command_files();
+        load_civs_txt_into(g_civ_buf_idx);
+        load_command_files_into(g_cmd_buf_idx);
         // Mods are scanned (DllMain) and built by now; Lua is created here, lazily,
         // because its CRT/allocator use must not run inside DllMain (AGENTS.md rule 5).
         wl_script_init();
+        wl_hotreload_mark_baseline();
         InterlockedExchange(&g_civs_state, 2);
         return;
     }
@@ -440,13 +865,15 @@ void wl_civs_ensure(void) {
 
 // Vanilla Mode: only the string lookup hook, for the main-menu button name
 // ("Mods" instead of "Steam Workshop") and the startup title. No custom civs are
-// registered then (g_civ_count == 0), so no game text changes.
+// registered then (ACTIVE_CIV_COUNT == 0), so no game text changes.
 void wl_install_string_hook_only(void) {
+    civs_cs_init();
     if (g_orig_lookup) return;
     g_orig_lookup = (StringLookup_t)wl_hook(ADDR_STRING_LOOKUP, hook_string_lookup, 5);
 }
 
 void wl_install_civ_hooks(void) {
+    civs_cs_init();
     // 55 8b ec 6a ff = push ebp; mov ebp,esp; push -1
     g_orig_lookup = (StringLookup_t)wl_hook(ADDR_STRING_LOOKUP, hook_string_lookup, 5);
     // Installed unconditionally: civs.txt is read later (wl_civs_ensure) and
@@ -462,9 +889,11 @@ void wl_install_civ_hooks(void) {
 // keeps its own id when its mod ships "interface_slp" (files.c redirects
 // game_b<id>.slp to it), otherwise it uses the base civ's art.
 int __cdecl wl_ui_civ_id(int id) {
-    const WlCiv *c = find_civ(id);
-    if (!c) return id;
-    return c->slp_path[0] ? id : c->base;
+    EnterCriticalSection(&g_civs_cs);
+    const WlCiv *c = find_civ_locked(id);
+    int r = !c ? id : (c->slp_path[0] ? id : c->base);
+    LeaveCriticalSection(&g_civs_cs);
+    return r;
 }
 
 // Replaces at 0x6c5aa9 (6 bytes):  mov eax,[eax+8] ; mov [ebp-0x78],eax
@@ -493,8 +922,12 @@ static CivCount_t g_orig_civ_count;
 static int __fastcall hook_civ_count(void *self, void *edx) {
     (void)edx;
     int n = g_orig_civ_count(self);
-    for (int i = 0; i < g_civ_count; i++)
-        if (g_civs[i].id > n) n = g_civs[i].id;
+    EnterCriticalSection(&g_civs_cs);
+    int cnt = ACTIVE_CIV_COUNT;
+    const WlCiv *arr = ACTIVE_CIVS;
+    for (int i = 0; i < cnt; i++)
+        if (arr[i].id > n) n = arr[i].id;
+    LeaveCriticalSection(&g_civs_cs);
     return n;
 }
 
@@ -504,8 +937,11 @@ static int __fastcall hook_civ_count(void *self, void *edx) {
 // "#load-if-defined <CIV>-CIV" blocks, so a civ without a symbol fails with
 // "ERR2004: Missing identifier". Custom civs therefore play as their base civ.
 int __cdecl wl_ai_civ_id(int id) {
-    const WlCiv *c = find_civ(id);
-    return c ? c->base : id;
+    EnterCriticalSection(&g_civs_cs);
+    const WlCiv *c = find_civ_locked(id);
+    int r = c ? c->base : id;
+    LeaveCriticalSection(&g_civs_cs);
+    return r;
 }
 
 // Replaces at 0x4f660c (6 bytes):  mov eax,[eax+8] ; cmp eax,0x1f

@@ -138,8 +138,10 @@ body .inline-empty span { display: block; margin-top: 2px; font-size: 12.5px; co
 /* ---------------------------------------------------------------- lists and rows */
 body .list {
   display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 11px;
-  background: var(--surface-2); overflow: hidden;
+  background: var(--surface-2); overflow: visible;
 }
+body .list > :first-child { border-top: 0; border-top-left-radius: 11px; border-top-right-radius: 11px; }
+body .list > :last-child { border-bottom-left-radius: 11px; border-bottom-right-radius: 11px; }
 body .list-row {
   display: grid; grid-template-columns: 42px minmax(0, 1fr) auto 16px; align-items: center; gap: 13px;
   width: 100%; padding: 12px 14px 12px 12px; border: 0; border-top: 1px solid var(--line);
@@ -226,7 +228,7 @@ body .player-bar {
   display: flex; align-items: center; gap: 14px; padding: 9px 14px; border: 1px solid var(--line);
   border-radius: 11px; background: var(--surface-2);
 }
-body .player-bar.idle { opacity: .85; }
+body .player-bar[hidden] { display: none !important; }
 body .player-label { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 body .player-label strong { color: var(--text); font-weight: 620; }
 body audio.player { width: 340px; max-width: 45%; height: 34px; color-scheme: dark; }
@@ -334,12 +336,36 @@ body .form-hint { margin: -4px 0 12px; font-size: 12px; line-height: 1.55; color
 body .form-hint code { color: var(--text-2); }
 body .form-error { min-height: 1.2em; margin: -4px 0 10px; font-size: 12.5px; color: var(--danger); }
 body .form-file {
-  width: 100%; padding: 10px 12px; border: 1px dashed var(--line-strong) !important; border-radius: 9px;
-  background: var(--surface-0) !important; color: var(--text-2); font-size: 12.5px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong) !important;
+  border-radius: var(--radius-lg, 11px);
+  background: var(--surface-0) !important;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  box-sizing: border-box;
+}
+body .form-file:hover, body .form-file.dragover {
+  border-color: var(--accent) !important;
+  background: var(--surface-1) !important;
 }
 body .form-file::file-selector-button {
-  margin-right: 12px; padding: 6px 11px; border: 1px solid var(--line-strong); border-radius: 7px;
-  background: var(--surface-3); color: var(--text); font: inherit; font-weight: 600; cursor: pointer;
+  margin-right: 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius, 7px);
+  background: var(--surface-3);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+body .form-file::file-selector-button:hover {
+  background: #303036;
+  border-color: #4a4a54;
 }
 body .modal-dialog input[type="text"], body .modal-dialog input[type="number"] { width: 100%; box-sizing: border-box; }
 

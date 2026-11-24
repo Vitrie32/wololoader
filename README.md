@@ -11,10 +11,15 @@ game and adds, without replacing the game's data files:
 - **Lua scripting**: game events, commands (resources, units, techs, ages), timers on game time.
 - **Non-pausing on-screen UI** for mods: frames, labels, buttons, text boxes, images, hotkeys.
 - **Custom icons** and asset overrides (`<mod>/resources/...` replaces the game's files).
-- An in-game **Mods** screen to turn mods on and off.
+- **Custom units** (`custom_units` in a civ file), civ victory sounds and history pages.
+- An in-game **Mods** screen: filters, details for every mod, turn mods on and off.
+- An in-game **Mod Hub**: browse, install, update and remove mods from
+  [wololoader-mods](https://github.com/Vitrie32/wololoader-mods).
+- **Hot reload**: mod changes apply when you leave the Mods screen or press Reload Mods, no restart.
+- A **Lua console** (Ctrl+Shift+C) and Dev Panel in the Wololoader Base mod (multiplayer: only with cheats on).
+- **Scriptorium**, a mod editor (civs, scripts, node graphs, sprites, taunts), with a "Test it" button.
 
-Two example mods come with it: **Monklanians** (a custom civ with an Abbey) and **Dev Panel** (a
-developer panel: resources, ages, units).
+One example mod comes with it: **Monklanians** (a custom civ with an Abbey). **Woodlanders** is in the Mod Hub.
 
 ## Install
 

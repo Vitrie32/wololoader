@@ -37,20 +37,64 @@ static u64 fnv_file(u64 h, const char *path) {
     return h;
 }
 
-// Hash every *.json in `dir` (name + content). FindFirstFile order is stable
-// for an unchanged folder, which is all a fingerprint needs.
-static u64 fnv_json_dir(u64 h, const char *dir) {
+// Hash every file matching `ext` in `dir` (name + content). When `sorted` is
+// non-zero, filenames are sorted case-insensitively so two machines produce the
+// same checksum regardless of filesystem directory order.
+static int cmp_str_ci(const void *a, const void *b) {
+    const char *sa = *(const char *const *)a, *sb = *(const char *const *)b;
+    int r = _stricmp(sa, sb);
+    return r ? r : strcmp(sa, sb);
+}
+
+static u64 fnv_dir(u64 h, const char *dir, const char *ext, int sorted) {
     char pattern[MAX_PATH], path[MAX_PATH];
-    snprintf(pattern, MAX_PATH, "%s\\*.json", dir);
+    snprintf(pattern, MAX_PATH, "%s\\*.%s", dir, ext);
     WIN32_FIND_DATAA fd;
     HANDLE f = FindFirstFileA(pattern, &fd);
     if (f == INVALID_HANDLE_VALUE) return h;
+    if (!sorted) {
+        do {
+            snprintf(path, MAX_PATH, "%s\\%s", dir, fd.cFileName);
+            h = fnv_str(h, fd.cFileName);
+            h = fnv_file(h, path);
+        } while (FindNextFileA(f, &fd));
+        FindClose(f);
+        return h;
+    }
+    int cap = 32, n = 0;
+    char **names = malloc((size_t)cap * sizeof *names);
+    if (!names) { FindClose(f); return h; }
     do {
-        snprintf(path, MAX_PATH, "%s\\%s", dir, fd.cFileName);
-        h = fnv_str(h, fd.cFileName);
-        h = fnv_file(h, path);
+        if (n == cap) {
+            cap *= 2;
+            char **tmp = realloc(names, (size_t)cap * sizeof *names);
+            if (!tmp) break;
+            names = tmp;
+        }
+        names[n++] = _strdup(fd.cFileName);
     } while (FindNextFileA(f, &fd));
     FindClose(f);
+    qsort(names, (size_t)n, sizeof *names, cmp_str_ci);
+    for (int i = 0; i < n; i++) {
+        if (!names[i]) continue;
+        snprintf(path, MAX_PATH, "%s\\%s", dir, names[i]);
+        h = fnv_str(h, names[i]);
+        h = fnv_file(h, path);
+        free(names[i]);
+    }
+    free(names);
+    return h;
+}
+
+static u64 hash_mod_files(u64 h, const WlMod *m, int sorted) {
+    char path[MAX_PATH];
+    h = fnv_str(h, m->id);
+    snprintf(path, MAX_PATH, "%s\\mod.json", m->dir);
+    h = fnv_file(h, path);
+    snprintf(path, MAX_PATH, "%s\\civs", m->dir);
+    h = fnv_dir(h, path, "json", sorted);
+    snprintf(path, MAX_PATH, "%s\\icons\\buildings", m->dir);
+    h = fnv_dir(h, path, "slp", sorted);
     return h;
 }
 
@@ -62,19 +106,51 @@ static u64 fingerprint(const char *src_dat) {
         h = fnv(h, &a.nFileSizeLow, sizeof a.nFileSizeLow);
         h = fnv(h, &a.ftLastWriteTime, sizeof a.ftLastWriteTime);
     }
-    for (int i = 0; i < g_wl.listed_count; i++) {
-        const WlMod *m = &g_wl.mods[i];
-        char path[MAX_PATH];
-        h = fnv_str(h, m->id);
-        snprintf(path, MAX_PATH, "%s\\mod.json", m->dir);
-        h = fnv_file(h, path);
-        snprintf(path, MAX_PATH, "%s\\civs", m->dir);
-        h = fnv_json_dir(h, path);
-    }
+    for (int i = 0; i < g_wl.listed_count; i++)
+        h = hash_mod_files(h, &g_wl.mods[i], 0);
     return h;
 }
 
-void wl_autobuild(void) {
+static int cmp_mod_id(const void *a, const void *b) {
+    const WlMod *ma = *(const WlMod *const *)a, *mb = *(const WlMod *const *)b;
+    int r = _stricmp(ma->id, mb->id);
+    return r ? r : strcmp(ma->id, mb->id);
+}
+
+static char g_checksum_cached[9];
+
+void wl_content_checksum_invalidate(void) {
+    g_checksum_cached[0] = 0;
+}
+
+unsigned long long wl_autobuild_fingerprint(void) {
+    char src[MAX_PATH];
+    snprintf(src, MAX_PATH, "%s\\resources\\_common\\dat\\empires2_x2_p1.dat", g_wl.game_dir);
+    return fingerprint(src);
+}
+
+// 8-hex-char checksum of active multiplayer content: Wololoader version,
+// builder revision, and enabled mods (sorted deterministically so filesystem
+// order and local file timestamps never cause false mismatches).
+void wl_content_checksum(char out[9]) {
+    if (!g_checksum_cached[0]) {
+        u64 h = fnv_str(FNV_OFFSET, WOLOLOADER_VERSION);
+        h = fnv_str(h, WL_BUILDER_REV);
+        const WlMod *enabled[WL_MAX_MODS];
+        int n = 0;
+        for (int i = 0; i < g_wl.listed_count; i++)
+            if (g_wl.mods[i].enabled) enabled[n++] = &g_wl.mods[i];
+        qsort(enabled, (size_t)n, sizeof *enabled, cmp_mod_id);
+        for (int i = 0; i < n; i++)
+            h = hash_mod_files(h, enabled[i], 1);
+        unsigned sum = (unsigned)((h ^ (h >> 32)) & 0xffffffffu);
+        snprintf(g_checksum_cached, sizeof g_checksum_cached, "%08x", sum);
+    }
+    memcpy(out, g_checksum_cached, 9);
+}
+
+int wl_autobuild_run(void) {
+    g_wl_build_error[0] = 0;
     char src[MAX_PATH], cache[MAX_PATH], out_dat[MAX_PATH], out_civs[MAX_PATH], out_strings[MAX_PATH], out_commands[MAX_PATH], stamp_path[MAX_PATH];
     snprintf(src, MAX_PATH, "%s\\resources\\_common\\dat\\empires2_x2_p1.dat", g_wl.game_dir);
     snprintf(cache, MAX_PATH, "%s\\cache", g_wl.root);
@@ -92,7 +168,7 @@ void wl_autobuild(void) {
     have[strcspn(have, "\r\n")] = 0;
     if (strcmp(want, have) == 0 && GetFileAttributesA(out_dat) != INVALID_FILE_ATTRIBUTES) {
         wl_log("build: cache up to date (%s)", want);
-        return;
+        return 0;
     }
 
     wl_log("build: mods changed (%s -> %s), rebuilding...", have[0] ? have : "none", want);
@@ -111,10 +187,15 @@ void wl_autobuild(void) {
         DeleteFileA(out_commands);
         DeleteFileA(stamp_path);
         wl_log("build: FAILED: %s (using the original dat)", err);
-        return;
+        return -1;
     }
     f = fopen(stamp_path, "wb");
     if (f) { fputs(want, f); fclose(f); }
     wl_log("build: ok, %d custom civ(s), %lu ms", civs, GetTickCount() - t0);
     wl_loadscreen_status("Loading game data...");
+    return 1;
+}
+
+void wl_autobuild(void) {
+    (void)wl_autobuild_run();
 }

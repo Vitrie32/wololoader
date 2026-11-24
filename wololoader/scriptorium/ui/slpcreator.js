@@ -103,7 +103,7 @@
     const infos = [];
     let currentBodyOffset = headBytes.length + infoSize;
 
-    for (const { rows, hx, hy } of frames) {
+    for (const { rows, hx, hy, properties } of frames) {
       const h = rows.length;
       const w = rows[0].length;
       const encoded = rows.map(r => _encodeRow(r));
@@ -147,7 +147,7 @@
       infoView.setUint32(0, cmdTabOff, true);
       infoView.setUint32(4, outlineOff, true);
       infoView.setUint32(8, 0, true);
-      infoView.setUint32(12, 0, true);
+      infoView.setUint32(12, properties || 0, true);
       infoView.setInt32(16, w, true);
       infoView.setInt32(20, h, true);
       infoView.setInt32(24, hx, true);
@@ -184,6 +184,18 @@
     return arr;
   })();
 
+  // UI icon palette indices: exclude index 0 (transparent), all 8 player-colour ramps
+  // (16..23, 32..39, 48..55, 64..71, 80..87, 96..103, 112..119, 128..135), and 240..255
+  // (special UI/minimap indices that render with wrong colours on HD building icons).
+  const ICON_USABLE_INDICES = (() => {
+    const arr = [];
+    for (let i = 1; i < 240; i++) {
+      if (i >= 16 && i < 136 && (i % 16) < 8) continue;
+      arr.push(i);
+    }
+    return arr;
+  })();
+
   function rgbToLab(r, g, b) {
     const lin = v => {
       v /= 255.0;
@@ -206,13 +218,14 @@
       return labCache.get(i);
     };
 
+    const usable = opts.icon ? ICON_USABLE_INDICES : USABLE_INDICES;
     const nearestCache = new Map();
     const nearest = (r, g, b) => {
       const key = (r << 16) | (g << 8) | b;
       if (nearestCache.has(key)) return nearestCache.get(key);
       const L = rgbToLab(r, g, b);
-      let best = 0, bestDist = 1e30;
-      for (const i of USABLE_INDICES) {
+      let best = usable[0], bestDist = 1e30;
+      for (const i of usable) {
         const pL = getLabForPalette(i);
         const d = (pL[0] - L[0]) ** 2 + (pL[1] - L[1]) ** 2 + (pL[2] - L[2]) ** 2;
         if (d < bestDist) {
@@ -286,6 +299,75 @@
     return { rows: cropped, hx: hx - x0, hy: hy - y0 };
   };
 
+  // Convert an image (File, Blob, or HTMLImageElement) directly to SLP 2.0N bytes
+  SlpCreator.convertImageToSlp = async function(fileOrImg, opts = {}) {
+    let img = fileOrImg;
+    if (typeof File !== 'undefined' && (fileOrImg instanceof File || fileOrImg instanceof Blob)) {
+      img = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => reject(new Error('Failed to decode image'));
+          image.src = e.target.result;
+        };
+        reader.onerror = () => reject(new Error('Failed to read image file'));
+        reader.readAsDataURL(fileOrImg);
+      });
+    }
+
+    let pal = opts.palette;
+    if (!pal) {
+      if (typeof window !== 'undefined' && window.GameData && window.GameData.palette) {
+        pal = await window.GameData.palette();
+      } else if (typeof window !== 'undefined' && window.Scriptorium && window.Scriptorium.api) {
+        pal = await window.Scriptorium.api('/api/palette');
+      }
+    }
+    if (!pal || !Array.isArray(pal) || pal.length !== 256) {
+      throw new Error('Game palette not available');
+    }
+
+    const isIcon = opts.kind === 'icon';
+    const scale = opts.scale || 1.0;
+    const w = isIcon ? 36 : Math.round(img.width * scale);
+    const h = isIcon ? 36 : Math.round(img.height * scale);
+
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = w;
+    tempCanvas.height = h;
+    const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+    tempCtx.imageSmoothingEnabled = isIcon || opts.scaleMode === 'smooth';
+    tempCtx.drawImage(img, 0, 0, w, h);
+
+    const imageData = tempCtx.getImageData(0, 0, w, h);
+    const rows = SlpCreator.quantize(imageData.data, w, h, pal, {
+      icon: isIcon,
+      playerColour: isIcon ? false : (opts.playerColour !== false),
+      shadow: isIcon ? false : (opts.shadow !== false)
+    });
+
+    let finalFrame;
+    if (isIcon) {
+      // Vanilla gamedata_x2/50706.slp icon frames use properties = 0x10.
+      finalFrame = { rows, hx: 0, hy: 0, properties: 0x10 };
+    } else {
+      const isBuilding = opts.kind === 'building';
+      const hx = Math.round((opts.hotspotX !== undefined ? opts.hotspotX : (w / 2)) * scale);
+      const hy = Math.round((opts.hotspotY !== undefined ? opts.hotspotY : (isBuilding ? h * 0.75 : h * 0.85)) * scale);
+      finalFrame = SlpCreator.crop(rows, hx, hy);
+    }
+    const slpBytes = SlpCreator.encode([finalFrame], opts.comment || 'Wololoader');
+
+    return {
+      slpBytes,
+      width: finalFrame.rows[0].length,
+      height: finalFrame.rows.length,
+      hx: finalFrame.hx,
+      hy: finalFrame.hy
+    };
+  };
+
   // ==========================================================================
   // UI Dialog
   // ==========================================================================
@@ -346,25 +428,27 @@
               </div>
             ` : ''}
 
-            <div class="slpcreator-section">
-              <h4>Options</h4>
-              <label class="slpcreator-checkbox">
-                <input type="checkbox" id="slp-opt-pc" ${playerColour ? 'checked' : ''}>
-                <span>Player colour (magenta = team colour)</span>
-              </label>
-              <label class="slpcreator-checkbox">
-                <input type="checkbox" id="slp-opt-shadow" ${shadow ? 'checked' : ''}>
-                <span>Shadow</span>
-              </label>
-              <div class="slpcreator-scale-row">
-                <label>Scale: <input type="range" id="slp-scale" min="50" max="200" value="100" step="10" style="width:120px;"></label>
-                <span id="slp-scale-val">100%</span>
+            <details class="sc-advanced" data-pref-key="slpc-options">
+              <summary>Conversion options (Player colour, Shadow, Scale)</summary>
+              <div class="sc-advanced-body">
+                <label class="slpcreator-checkbox">
+                  <input type="checkbox" id="slp-opt-pc" ${playerColour ? 'checked' : ''}>
+                  <span>Player colour (magenta = team colour)</span>
+                </label>
+                <label class="slpcreator-checkbox">
+                  <input type="checkbox" id="slp-opt-shadow" ${shadow ? 'checked' : ''}>
+                  <span>Shadow</span>
+                </label>
+                <div class="slpcreator-scale-row">
+                  <label>Scale: <input type="range" id="slp-scale" min="50" max="200" value="100" step="10" style="width:120px;"></label>
+                  <span id="slp-scale-val">100%</span>
+                </div>
+                <div class="slpcreator-mode-btns" style="margin-top:4px;">
+                  <button class="slpcreator-mode-btn slpcreator-scale-mode active" data-scale-mode="nearest">Nearest</button>
+                  <button class="slpcreator-mode-btn slpcreator-scale-mode" data-scale-mode="smooth">Smooth</button>
+                </div>
               </div>
-              <div class="slpcreator-mode-btns" style="margin-top:8px;">
-                <button class="slpcreator-mode-btn slpcreator-scale-mode active" data-scale-mode="nearest">Nearest</button>
-                <button class="slpcreator-mode-btn slpcreator-scale-mode" data-scale-mode="smooth">Smooth</button>
-              </div>
-            </div>
+            </details>
           </div>
 
           <div class="slpcreator-right">
@@ -376,13 +460,13 @@
               <button class="btn btn-wood btn-sm" id="slp-zoom-out">Zoom -</button>
               <span id="slp-zoom-label">2x</span>
               <button class="btn btn-wood btn-sm" id="slp-zoom-in">Zoom +</button>
-              ${kind === 'animation' ? `<button class="btn btn-wood btn-sm" id="slp-play-anim">▶ Play</button>` : ''}
+              ${kind === 'animation' ? `<button class="btn btn-wood btn-sm" id="slp-play-anim">Play</button>` : ''}
             </div>
           </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-wood" id="slp-cancel">Cancel</button>
-          <button class="btn btn-wood btn-save" id="slp-create" disabled>Create SLP</button>
+          <button class="btn btn-save" id="slp-create" disabled>Create SLP</button>
         </div>
       </div>
     `;
@@ -483,13 +567,13 @@
       if (animInterval) {
         clearInterval(animInterval);
         animInterval = null;
-        e.target.textContent = '▶ Play';
+        e.target.textContent = 'Play';
       } else {
         animInterval = setInterval(() => {
           animFrame = (animFrame + 1) % currentFrames;
           updatePreview();
         }, 100);
-        e.target.textContent = '⏸ Pause';
+        e.target.textContent = 'Pause';
       }
     });
 
@@ -507,7 +591,7 @@
       tempCtx.drawImage(currentImage, 0, 0, w, h);
 
       const imageData = tempCtx.getImageData(0, 0, w, h);
-      const rows = SlpCreator.quantize(imageData.data, w, h, palette, { playerColour, shadow });
+      const rows = SlpCreator.quantize(imageData.data, w, h, palette, { icon: kind === 'icon', playerColour, shadow });
 
       // Render preview
       const displayW = w * zoom;
@@ -596,7 +680,7 @@
       tempCtx.drawImage(currentImage, 0, 0, w, h);
 
       const imageData = tempCtx.getImageData(0, 0, w, h);
-      let rows = SlpCreator.quantize(imageData.data, w, h, palette, { playerColour, shadow });
+      let rows = SlpCreator.quantize(imageData.data, w, h, palette, { icon: kind === 'icon', playerColour, shadow });
 
       const hx = Math.round(hotspotX * scale);
       const hy = Math.round(hotspotY * scale);
@@ -627,7 +711,7 @@
           }
         }
       } else {
-        framesList.push({ rows: cropped.rows, hx: cropped.hx, hy: cropped.hy });
+        framesList.push({ rows: cropped.rows, hx: cropped.hx, hy: cropped.hy, properties: kind === 'icon' ? 0x10 : 0 });
       }
 
       const slpBytes = SlpCreator.encode(framesList);
@@ -646,7 +730,13 @@
       onDone(slpBytes, info);
     });
 
-    loadPalette();
+    if (window.Scriptorium && window.Scriptorium.wireDisclosures) {
+      window.Scriptorium.wireDisclosures(modal);
+    }
+
+    loadPalette().then(() => {
+      if (config.file) handleFile(config.file);
+    });
   };
 
   // Export for both browser and Node

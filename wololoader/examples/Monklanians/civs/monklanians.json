@@ -12,6 +12,12 @@
   ],
   "sound": "select.mp3",
   "interface_slp": "game_b.slp",
+  "history": {
+    "title": "The Monklanians",
+    "text_file": "history/monklanians.txt",
+    "image": "history/monklanians.png",
+    "side_image": "history/monklanians_side.png"
+  },
   "unique_unit": {
     "copy_from": 125,
     "name": "Wololo Monk",

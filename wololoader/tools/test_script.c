@@ -120,6 +120,13 @@ static int fg_researched(int pid, short *out, int max) {
     return n;
 }
 
+static int g_reload_mods_calls;
+static int fake_reload_mods(char *msg, size_t cap) {
+    g_reload_mods_calls++;
+    snprintf(msg, cap, "Mods reloaded (2 civs, 3 mods)");
+    return 1;
+}
+
 int main(void) {
     const char *home = getenv("HOME");
     char base[MAX_PATH];
@@ -527,6 +534,24 @@ int main(void) {
     g_nlines_total = 0;
     wl_script_event("a_log");
     CHECK(g_nlines_total < 2100 && has_line("further output of this mod is not logged"));
+    // ---- full restart & wl.reload_mods() ----------------------------------------------
+    printf("-- wl_script_restart & wl.reload_mods\n");
+    wl_script_set_reload_mods(fake_reload_mods);
+    write_mod(0, "remod",
+        "wl.log('REMOD_BOOT v1')\n"
+        "wl.on('ping_rm', function()\n"
+        "  local ok, msg = wl.reload_mods()\n"
+        "  wl.log('REMOD_CALL', tostring(ok), tostring(msg))\n"
+        "end)\n");
+    g_wl.listed_count = 1;
+    wl_script_restart();
+    CHECK(has_line("[lua:remod] REMOD_BOOT v1"));
+    wl_script_event("ping_rm");
+    CHECK(g_reload_mods_calls == 1);
+    CHECK(has_line("[lua:remod] REMOD_CALL\ttrue\tMods reloaded (2 civs, 3 mods)"));
+    write_mod(0, "remod", "wl.log('REMOD_BOOT v2')\n");
+    wl_script_restart();
+    CHECK(has_line("[lua:remod] REMOD_BOOT v2"));
     printf(g_fail ? "TEST FAILED\n" : "TEST PASSED\n");
     return g_fail;
 }

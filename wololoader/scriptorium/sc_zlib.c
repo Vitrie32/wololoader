@@ -59,15 +59,20 @@ static struct {
     ScDeflateBound_t  deflate_bound;
 } s_sc_z;
 
-// Raw inflate: window_bits = -15 specifies raw DEFLATE format
-static int sc_inflate_raw(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len) {
+// Raw inflate with output size cap: window_bits = -15 specifies raw DEFLATE format.
+int sc_inflate_raw_bounded(const unsigned char *in, size_t in_len, size_t max_out,
+                           unsigned char **out, size_t *out_len) {
     if (!s_sc_z.inflate) return -1;
 
     ScZStream s;
     memset(&s, 0, sizeof(s));
     if (s_sc_z.inflate_init2(&s, -15, "1.2.7", sizeof(s)) != SC_Z_OK) return -1;
 
-    size_t cap = (in_len * 8 > 1024 * 1024) ? in_len * 8 : (1024 * 1024);
+    size_t cap = in_len * 4;
+    if (cap < 4096) cap = 4096;
+    if (max_out > 0 && cap > max_out) cap = max_out;
+    if (max_out == 0) cap = 64;
+
     size_t len = 0;
     unsigned char *buf = malloc(cap);
     if (!buf) {
@@ -81,23 +86,37 @@ static int sc_inflate_raw(const unsigned char *in, size_t in_len, unsigned char 
 
     while (buf && rc == SC_Z_OK) {
         if (len == cap) {
-            unsigned char *bigger = realloc(buf, cap * 2);
+            if (len >= max_out) {
+                free(buf);
+                buf = NULL;
+                break;
+            }
+            size_t next_cap = cap * 2;
+            if (next_cap < cap || next_cap > max_out) next_cap = max_out;
+            unsigned char *bigger = realloc(buf, next_cap);
             if (!bigger) {
                 free(buf);
                 buf = NULL;
                 break;
             }
             buf = bigger;
-            cap *= 2;
+            cap = next_cap;
         }
+        size_t space = cap - len;
+        if (max_out == 0) space = cap; // allow detecting non-empty output when max_out == 0
         s.next_out = buf + len;
-        s.avail_out = (unsigned int)(cap - len);
+        s.avail_out = (unsigned int)space;
         rc = s_sc_z.inflate(&s, SC_Z_NO_FLUSH);
         len = cap - s.avail_out;
+        if (len > max_out) {
+            free(buf);
+            buf = NULL;
+            break;
+        }
     }
 
     s_sc_z.inflate_end(&s);
-    if (!buf || rc != SC_Z_STREAM_END) {
+    if (!buf || rc != SC_Z_STREAM_END || len > max_out) {
         free(buf);
         return -1;
     }
@@ -105,6 +124,11 @@ static int sc_inflate_raw(const unsigned char *in, size_t in_len, unsigned char 
     *out = buf;
     *out_len = len;
     return 0;
+}
+
+// Raw inflate: window_bits = -15 specifies raw DEFLATE format
+static int sc_inflate_raw(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len) {
+    return sc_inflate_raw_bounded(in, in_len, 256u * 1024u * 1024u, out, out_len);
 }
 
 // Raw deflate: window_bits = -15 specifies raw DEFLATE stream without headers

@@ -33,14 +33,17 @@ void wl_open_folder(const char *path) {
 
 // Start the mod creator <root>\Scriptorium.exe (it opens its own app window).
 // The game keeps running; changes apply after a game restart (autobuild).
-BOOL wl_launch_scriptorium(void) {
-    char exe[MAX_PATH], cmd[MAX_PATH + 16];
+BOOL wl_launch_scriptorium(void) { return wl_launch_scriptorium_args(NULL); }
+
+// args: extra command line, e.g. "--hub" to open the Mod Hub view.
+BOOL wl_launch_scriptorium_args(const char *args) {
+    char exe[MAX_PATH], cmd[MAX_PATH + 192];
     snprintf(exe, MAX_PATH, "%s\\Scriptorium.exe", g_wl.root);
     if (GetFileAttributesA(exe) == INVALID_FILE_ATTRIBUTES) {
         wl_log("Scriptorium not found: %s", exe);
         return FALSE;
     }
-    snprintf(cmd, sizeof cmd, "\"%s\"", exe);
+    snprintf(cmd, sizeof cmd, "\"%s\"%s%s", exe, args ? " " : "", args ? args : "");
     STARTUPINFOA si;
     ZeroMemory(&si, sizeof si);
     si.cb = sizeof si;

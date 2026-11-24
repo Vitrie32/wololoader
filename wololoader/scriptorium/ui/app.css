@@ -194,7 +194,6 @@ html, body {
   font-family: var(--font-title);
   font-size: 18px;
   color: var(--gold-highlight);
-  text-shadow: 1px 1px 2px #000;
 }
 
 .app-status {
@@ -218,7 +217,6 @@ html, body {
   font-family: var(--font-title);
   font-size: 17px;
   font-weight: bold;
-  text-shadow: 1px 1px 0 #000;
   vertical-align: middle;
 }
 
@@ -524,7 +522,6 @@ html, body {
   font-size: 20px;
   font-weight: bold;
   color: var(--gold-highlight);
-  text-shadow: 1px 1px 0 #000;
 }
 
 .mod-ver-tag {
@@ -538,7 +535,6 @@ html, body {
   font-size: 12px;
   font-weight: bold;
   color: #ff5252;
-  text-shadow: 1px 1px 0 #000;
 }
 
 .mod-sub-row {
@@ -590,7 +586,6 @@ html, body {
   border: 1px solid;
   border-color: #725234 #120904 #120904 #725234;
   color: var(--text-light);
-  text-shadow: 1px 1px 0 #000;
 }
 
 .btn-wood:hover, .btn-secondary:hover {
@@ -609,7 +604,6 @@ html, body {
   border-color: #331f11;
   color: #554433;
   cursor: not-allowed;
-  text-shadow: none;
 }
 
 .btn-save, .btn-gold {
@@ -617,7 +611,6 @@ html, body {
   border: 1px solid;
   border-color: var(--gold-border) #120904 #120904 var(--gold-border);
   color: var(--gold-highlight);
-  text-shadow: 1px 1px 0 #000;
 }
 
 .btn-save:hover, .btn-gold:hover {
@@ -729,7 +722,6 @@ html, body {
   font-size: 16px;
   font-weight: bold;
   color: var(--gold-highlight);
-  text-shadow: 1px 1px 0 #000;
 }
 
 .btn-modal-close {

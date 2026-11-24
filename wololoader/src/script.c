@@ -25,11 +25,20 @@
 // matching functions refuse a pattern whose worst case on the given text is too
 // large (pattern_cost). A custom allocator caps the state at WL_SCRIPT_MEM_LIMIT
 // bytes, log output is capped per mod, and UI images must be inside a mod folder.
+#ifndef _WIN32
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
 #include "wololoader.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
@@ -114,6 +123,40 @@ static int api_raw_ui_create(lua_State *L);
 static int api_raw_ui_set(lua_State *L);
 static int api_raw_ui_destroy(lua_State *L);
 static int api_raw_ui_text(lua_State *L);
+static int api_raw_set_cond(lua_State *L);
+static int api_raw_unit_by_id(lua_State *L);
+static int api_raw_is_multiplayer(lua_State *L);
+static int api_raw_cheats_enabled(lua_State *L);
+static int api_feature(lua_State *L);
+static int api_dev_eval(lua_State *L);
+static int api_reload(lua_State *L);
+static int api_reload_mods(lua_State *L);
+
+static int g_in_game;
+static uint32_t g_mod_gen;
+static int g_dispatch_depth;
+static int g_handlers_dirty;
+
+static int (*g_is_mp)(void);
+static int (*g_cheats_on)(void);
+static BOOL (*g_feature_fn)(const char *);
+static void (*g_set_dev_ctx)(int);
+static int (*g_reload_mods_fn)(char *msg, size_t cap);
+
+void wl_script_set_mp_info(int (*is_mp)(void), int (*cheats_on)(void)) {
+    g_is_mp = is_mp;
+    g_cheats_on = cheats_on;
+}
+void wl_script_set_feature(BOOL (*feature_fn)(const char *)) { g_feature_fn = feature_fn; }
+void wl_script_set_dev_ctx_fn(void (*set_dev_ctx)(int)) { g_set_dev_ctx = set_dev_ctx; }
+void wl_script_set_reload_mods(int (*fn)(char *msg, size_t cap)) { g_reload_mods_fn = fn; }
+
+static int is_multiplayer(void) { return g_is_mp ? g_is_mp() : 0; }
+static int cheats_enabled(void) { return g_cheats_on ? g_cheats_on() : 0; }
+static int dev_allowed(void) { return !(is_multiplayer() && !cheats_enabled()); }
+
+#define WL_CONDS_KEY "wl_conditions"
+#define WL_CONSOLE_ENV_KEY "wl.console_env"
 
 // g_depth: only the outermost call starts a budget (a nested call shares it).
 static int g_depth;
@@ -137,13 +180,17 @@ static int guarded_pcall(lua_State *L, int nargs) {
 #define WL_MAX_TASKS  64
 #define WL_MAX_ASKS   16
 typedef struct { int used; int id; DWORD next, interval; int fn; char mod[64]; } WlTimer;
-typedef struct { int used; int ref; lua_State *co; DWORD wake; char mod[64]; } WlTask;
+typedef struct { int used; int ref; uint32_t seq; lua_State *co; DWORD wake; char mod[64]; } WlTask;
 typedef struct { int used; int token; int fn; int nil_pending; char mod[64]; } WlAsk;
 static WlTimer g_timers[WL_MAX_TIMERS];
 static WlTask g_tasks[WL_MAX_TASKS];
 static WlAsk g_asks[WL_MAX_ASKS];
 static int g_next_timer_id = 1, g_next_ask_token = 1;
+static uint32_t g_next_task_seq = 1;
 static char g_err[512];                         // message of the last failed step
+
+typedef struct { int used; char mod[64]; char text[128]; } WlModCounter;
+static WlModCounter g_mod_counters[WL_MAX_MODS];
 
 enum { STEP_DONE, STEP_YIELD, STEP_ERROR };
 
@@ -195,6 +242,7 @@ static int start_coroutine(lua_State *L, int nargs, const char *mod) {
     if (slot >= 0) {
         WlTask *t = &g_tasks[slot];
         t->used = 1;
+        t->seq = g_next_task_seq++;
         t->co = co;
         t->wake = g_now + wait;
         snprintf(t->mod, sizeof t->mod, "%s", mod);
@@ -234,7 +282,9 @@ static void free_ask(WlAsk *a) {
 
 void wl_script_game_reset(DWORD now_ms) {
     g_now = now_ms;
+    g_in_game = 0;
     memset(g_logcount, 0, sizeof g_logcount);
+    memset(g_mod_counters, 0, sizeof g_mod_counters);
     if (!g_L) return;
     for (int i = 0; i < WL_MAX_TIMERS; i++) free_timer(&g_timers[i]);
     for (int i = 0; i < WL_MAX_ASKS; i++) free_ask(&g_asks[i]);
@@ -285,10 +335,14 @@ void wl_script_frame(DWORD now_ms) {
         WlTask *t = &g_tasks[i];
         if (!t->used || (int32_t)(now_ms - t->wake) < 0) continue;
         lua_State *co = t->co;
+        int ref = t->ref;
+        uint32_t seq = t->seq;
         char mod[64];
         snprintf(mod, sizeof mod, "%s", t->mod);
         DWORD wait;
         int st = task_step(co, 0, &wait);
+        // task_step may have triggered wl_script_game_reset or mod reload (freeing t->ref).
+        if (!t->used || t->co != co || t->ref != ref || t->seq != seq) continue;
         if (st == STEP_YIELD) { t->wake = now_ms + wait; continue; }
         if (st == STEP_ERROR) wl_log("[lua:%s] error in coroutine (stopped): %s", mod, g_err);
         luaL_unref(g_L, LUA_REGISTRYINDEX, t->ref);   // coroutine is finished, let the GC have it
@@ -338,6 +392,12 @@ static int api_message(lua_State *L) {
     else wl_log("[lua] message: %s", t);
     wl_script_msg_color = -1;
     return 0;
+}
+
+static void show_ui_message(const char *t) {
+    wl_script_msg_color = -1;
+    if (g_ui_message) g_ui_message(t);
+    else wl_log("[lua] message: %s", t);
 }
 
 // wl.chat(text [, sender [, player]]): player 1..8 = colour, anything else = default
@@ -435,11 +495,62 @@ static int api_sound(lua_State *L) {
 }
 
 // wl.counter(text): one line in the countdown-clock area; nil or "" hides it.
+// Tracked per mod so multiple mods share the line ("  |  ") and unloading a mod clears only its own.
+static void sync_counter_display(int log_when_no_backend) {
+    char combined[512];
+    size_t pos = 0;
+    combined[0] = 0;
+    for (int i = 0; i < WL_MAX_MODS; i++) {
+        if (!g_mod_counters[i].used || !g_mod_counters[i].text[0]) continue;
+        if (pos > 0 && pos + 5 < sizeof combined) {
+            memcpy(combined + pos, "  |  ", 5);
+            pos += 5;
+        }
+        size_t rem = sizeof combined - 1 - pos;
+        size_t len = strlen(g_mod_counters[i].text);
+        if (len > rem) len = rem;
+        memcpy(combined + pos, g_mod_counters[i].text, len);
+        pos += len;
+        combined[pos] = 0;
+    }
+    const char *arg = combined[0] ? combined : NULL;
+    if (g_ui_counter) g_ui_counter(arg);
+    else if (log_when_no_backend) wl_log("[lua] counter: %s", arg ? arg : "(hidden)");
+}
+
+static void unload_mod_counter(const char *mod) {
+    int changed = 0;
+    for (int i = 0; i < WL_MAX_MODS; i++) {
+        if (g_mod_counters[i].used && strcmp(g_mod_counters[i].mod, mod) == 0) {
+            if (g_mod_counters[i].text[0]) changed = 1;
+            g_mod_counters[i].used = 0;
+            g_mod_counters[i].text[0] = 0;
+        }
+    }
+    if (changed) sync_counter_display(0);
+}
+
 static int api_counter(lua_State *L) {
+    const char *mod = lua_tostring(L, lua_upvalueindex(1));
     const char *t = lua_isnoneornil(L, 1) ? NULL : luaL_checkstring(L, 1);
     if (t && !*t) t = NULL;
-    if (g_ui_counter) g_ui_counter(t);
-    else wl_log("[lua] counter: %s", t ? t : "(hidden)");
+    int slot = -1;
+    for (int i = 0; i < WL_MAX_MODS; i++) {
+        if (g_mod_counters[i].used && strcmp(g_mod_counters[i].mod, mod) == 0) { slot = i; break; }
+        if (!g_mod_counters[i].used && slot < 0) slot = i;
+    }
+    if (slot >= 0) {
+        WlModCounter *c = &g_mod_counters[slot];
+        if (t) {
+            c->used = 1;
+            snprintf(c->mod, sizeof c->mod, "%s", mod);
+            snprintf(c->text, sizeof c->text, "%s", t);
+        } else {
+            c->used = 0;
+            c->text[0] = 0;
+        }
+    }
+    sync_counter_display(1);
     return 0;
 }
 
@@ -586,9 +697,17 @@ static void push_table_copy(lua_State *L, int idx) {
     }
 }
 
+// Case-insensitive exact match using _strnicmp (tools/fake_windows/windows.h lacks _stricmp).
+static int is_base_mod_id(const char *id) {
+    return id && strlen(id) == 14 && _strnicmp(id, "WololoaderBase", 14) == 0;
+}
+
 // Pushes a fresh _ENV for one mod. Real globals of the state are only read here.
 static void push_mod_env(lua_State *L, const WlMod *m, int index) {
-    (void)index;
+    int is_console = (index < 0);
+    int is_base = !is_console && is_base_mod_id(m->id);
+    int is_dev = is_base || is_console;
+    uint32_t gen = ++g_mod_gen;
     lua_newtable(L);
     int env = lua_gettop(L);
     lua_pushglobaltable(L);
@@ -620,7 +739,7 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_setfield(L, env, "MOD");
 
     // wl API (per mod so wl.log / wl.on know who is calling)
-    lua_createtable(L, 0, 12);
+    lua_createtable(L, 0, 16);
     PUSH_MOD_CFUNC(L, api_after, m->id);   lua_setfield(L, -2, "after");
     PUSH_MOD_CFUNC(L, api_every, m->id);   lua_setfield(L, -2, "every");
     PUSH_MOD_CFUNC(L, api_ask, m->id);     lua_setfield(L, -2, "ask");
@@ -631,7 +750,7 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_message);     lua_setfield(L, -2, "message");
     lua_pushcfunction(L, api_dialog);      lua_setfield(L, -2, "dialog");
     lua_pushcfunction(L, api_sound);       lua_setfield(L, -2, "sound");
-    lua_pushcfunction(L, api_counter);     lua_setfield(L, -2, "counter");
+    PUSH_MOD_CFUNC(L, api_counter, m->id); lua_setfield(L, -2, "counter");
     lua_pushcfunction(L, api_chat);        lua_setfield(L, -2, "chat");
     lua_pushstring(L, WOLOLOADER_VERSION); lua_setfield(L, -2, "version");
     lua_pushcfunction(L, api_raw_local);    lua_setfield(L, -2, "raw_local");
@@ -639,14 +758,30 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_resource); lua_setfield(L, -2, "raw_resource");
     lua_pushcfunction(L, api_raw_is_enemy); lua_setfield(L, -2, "raw_is_enemy");
     lua_pushcfunction(L, api_raw_units);    lua_setfield(L, -2, "raw_units");
-    lua_pushcfunction(L, api_raw_cmd);      lua_setfield(L, -2, "raw_cmd");
+    lua_pushboolean(L, is_dev);
+    lua_pushcclosure(L, api_raw_cmd, 1);    lua_setfield(L, -2, "raw_cmd");
     lua_pushcfunction(L, api_raw_selected); lua_setfield(L, -2, "raw_selected");
     lua_pushcfunction(L, api_raw_researched); lua_setfield(L, -2, "raw_researched");
     lua_pushcfunction(L, api_raw_time);     lua_setfield(L, -2, "raw_time");
-    lua_pushcfunction(L, api_raw_ui_create);  lua_setfield(L, -2, "raw_ui_create");
-    lua_pushcfunction(L, api_raw_ui_set);     lua_setfield(L, -2, "raw_ui_set");
-    lua_pushcfunction(L, api_raw_ui_destroy); lua_setfield(L, -2, "raw_ui_destroy");
-    lua_pushcfunction(L, api_raw_ui_text);    lua_setfield(L, -2, "raw_ui_text");
+    lua_pushcfunction(L, api_raw_is_multiplayer); lua_setfield(L, -2, "raw_is_multiplayer");
+    lua_pushcfunction(L, api_raw_cheats_enabled); lua_setfield(L, -2, "raw_cheats_enabled");
+    lua_pushstring(L, m->id);
+    lua_pushinteger(L, (lua_Integer)gen);
+    lua_pushcclosure(L, api_raw_ui_create, 2);  lua_setfield(L, -2, "raw_ui_create");
+    lua_pushinteger(L, (lua_Integer)gen);
+    lua_pushcclosure(L, api_raw_ui_set, 1);     lua_setfield(L, -2, "raw_ui_set");
+    lua_pushinteger(L, (lua_Integer)gen);
+    lua_pushcclosure(L, api_raw_ui_destroy, 1); lua_setfield(L, -2, "raw_ui_destroy");
+    lua_pushinteger(L, (lua_Integer)gen);
+    lua_pushcclosure(L, api_raw_ui_text, 1);    lua_setfield(L, -2, "raw_ui_text");
+    PUSH_MOD_CFUNC(L, api_raw_set_cond, m->id); lua_setfield(L, -2, "raw_set_cond");
+    lua_pushcfunction(L, api_raw_unit_by_id); lua_setfield(L, -2, "raw_unit_by_id");
+    lua_pushcfunction(L, api_reload);       lua_setfield(L, -2, "reload");
+    lua_pushcfunction(L, api_reload_mods);  lua_setfield(L, -2, "reload_mods");
+    if (is_base) {
+        lua_pushcfunction(L, api_feature);  lua_setfield(L, -2, "feature");
+        lua_pushcfunction(L, api_dev_eval); lua_setfield(L, -2, "dev_eval");
+    }
     lua_setfield(L, env, "wl");
 
     push_require(L, env, m);
@@ -708,18 +843,119 @@ static int api_raw_selected(lua_State *L) {
     push_units(L, g_ubuf, n);
     return 1;
 }
+
+// Per-refresh cache for building command condition evaluation (avoids scanning all
+// player units once per conditioned button on every panel refresh).
+typedef struct { char name[64]; int result; } WlCondCacheEntry;
+static int g_cond_refresh_active;
+static int g_cond_refresh_unit_id;
+static int g_cond_refresh_unit_loaded; // 0 = not fetched, 1 = found, -1 = not found
+static WlUnitInfo g_cond_refresh_unit;
+static WlCondCacheEntry g_cond_cache[32];
+static int g_cond_cache_cnt;
+
+void wl_script_cond_begin_refresh(int unit_id) {
+    g_cond_refresh_active = 1;
+    g_cond_refresh_unit_id = unit_id;
+    g_cond_refresh_unit_loaded = 0;
+    g_cond_cache_cnt = 0;
+}
+
+void wl_script_cond_end_refresh(void) {
+    g_cond_refresh_active = 0;
+    g_cond_refresh_unit_loaded = 0;
+    g_cond_cache_cnt = 0;
+}
+
+static int lookup_unit_by_id(int id, WlUnitInfo *out) {
+    if (g_cond_refresh_active && id == g_cond_refresh_unit_id && g_cond_refresh_unit_loaded != 0) {
+        if (g_cond_refresh_unit_loaded == 1) { *out = g_cond_refresh_unit; return 1; }
+        return 0;
+    }
+    int found = 0;
+    if (g_game) {
+        // Check selected units first (O(1) for the selected building whose panel is open).
+        if (g_game->selected) {
+            int n = g_game->selected(g_ubuf, 60);
+            for (int i = 0; i < n; i++) {
+                if (g_ubuf[i].id == id) { *out = g_ubuf[i]; found = 1; break; }
+            }
+        }
+        if (!found && g_game->units && g_game->local_player) {
+            int pid = g_game->local_player();
+            if (pid >= 0) {
+                int n = g_game->units(pid, g_ubuf, 2048);
+                for (int i = 0; i < n; i++) {
+                    if (g_ubuf[i].id == id) { *out = g_ubuf[i]; found = 1; break; }
+                }
+            }
+        }
+    }
+    if (g_cond_refresh_active && id == g_cond_refresh_unit_id) {
+        if (found) g_cond_refresh_unit = *out;
+        g_cond_refresh_unit_loaded = found ? 1 : -1;
+    }
+    return found;
+}
+
+static int api_raw_unit_by_id(lua_State *L) {
+    int id = (int)luaL_checkinteger(L, 1);
+    WlUnitInfo u;
+    if (!lookup_unit_by_id(id, &u)) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 8);
+    lua_pushinteger(L, u.id);           lua_setfield(L, -2, "id");
+    lua_pushnumber(L, u.x);             lua_setfield(L, -2, "x");
+    lua_pushnumber(L, u.y);             lua_setfield(L, -2, "y");
+    lua_pushinteger(L, u.cls);          lua_setfield(L, -2, "class");
+    lua_pushboolean(L, u.building);     lua_setfield(L, -2, "building");
+    lua_pushinteger(L, u.type);         lua_setfield(L, -2, "type");
+    lua_pushinteger(L, u.owner);        lua_setfield(L, -2, "owner");
+    lua_pushboolean(L, u.state == 2);   lua_setfield(L, -2, "ready");
+    return 1;
+}
+
+static int api_raw_set_cond(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    lua_getfield(L, LUA_REGISTRYINDEX, WL_CONDS_KEY);
+    lua_createtable(L, 0, 2);
+    lua_pushvalue(L, 2);
+    lua_setfield(L, -2, "fn");
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_setfield(L, -2, "mod");
+    lua_setfield(L, -2, name);
+    lua_pop(L, 1);
+    return 0;
+}
 static int api_raw_time(lua_State *L) {
     double t = (g_game && g_game->game_time) ? g_game->game_time() : -1.0;
     if (t < 0) lua_pushnil(L); else lua_pushnumber(L, t);
+    return 1;
+}
+static int api_raw_is_multiplayer(lua_State *L) {
+    lua_pushboolean(L, is_multiplayer());
+    return 1;
+}
+static int api_raw_cheats_enabled(lua_State *L) {
+    lua_pushboolean(L, cheats_enabled());
+    return 1;
+}
+static int api_feature(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    lua_pushboolean(L, g_feature_fn ? g_feature_fn(name) : 1);
     return 1;
 }
 
 // wl.raw_cmd(name, ...) -> true (sent from this machine) / false (another machine sends it);
 // raises an error for invalid arguments or when no game is running. See gamecmd.c.
 static int api_raw_cmd(lua_State *L) {
+    int is_dev = lua_toboolean(L, lua_upvalueindex(1));
+    if (is_dev && !dev_allowed())
+        return luaL_error(L, "DevPanel actions are disabled in multiplayer unless cheats are enabled");
     const char *what = luaL_checkstring(L, 1);
     int rc = -1;
     if (!g_game || !g_game->add_resource) return luaL_error(L, "game commands are not available here");
+    if (is_dev && g_set_dev_ctx) g_set_dev_ctx(1);
     if (strcmp(what, "resource") == 0)
         rc = g_game->add_resource((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3), (float)luaL_checknumber(L, 4));
     else if (strcmp(what, "research") == 0)
@@ -731,20 +967,92 @@ static int api_raw_cmd(lua_State *L) {
         rc = g_game->set_age((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3));
     else if (strcmp(what, "delete") == 0)
         rc = g_game->delete_unit((int)luaL_checkinteger(L, 2));
-    else return luaL_error(L, "unknown command %s", what);
+    else {
+        if (is_dev && g_set_dev_ctx) g_set_dev_ctx(0);
+        return luaL_error(L, "unknown command %s", what);
+    }
+    if (is_dev && g_set_dev_ctx) g_set_dev_ctx(0);
     if (rc < 0) return luaL_error(L, "%s: invalid arguments or no game running", what);
     lua_pushboolean(L, rc > 0);
     return 1;
 }
 
 // On-screen UI backend (uikit.c). Without it (native test) elements still exist in Lua.
+// Tracked per mod and per sandbox generation so reloading a mod destroys all its elements
+// (and stale closures from an older generation cannot touch reused slot IDs).
 static const WlUiApi *g_ui;
 void wl_script_set_uikit(const WlUiApi *api) { g_ui = api; }
 static int g_fake_ui_id;
+typedef struct { int id; int parent; uint32_t gen; char mod[64]; } WlUiOwned;
+static WlUiOwned *g_ui_owned;
+static int g_ui_owned_count, g_ui_owned_cap;
+
+static WlUiOwned *ui_owned_find(int id) {
+    for (int i = 0; i < g_ui_owned_count; i++)
+        if (g_ui_owned[i].id == id) return &g_ui_owned[i];
+    return NULL;
+}
+static void ui_owned_remove_at(int idx) {
+    if (idx < 0 || idx >= g_ui_owned_count) return;
+    if (idx + 1 < g_ui_owned_count)
+        memmove(&g_ui_owned[idx], &g_ui_owned[idx + 1], (size_t)(g_ui_owned_count - idx - 1) * sizeof g_ui_owned[0]);
+    g_ui_owned_count--;
+}
+static void ui_owned_remove_tree(int id) {
+    for (int i = 0; i < g_ui_owned_count; ) {
+        if (g_ui_owned[i].parent == id) {
+            ui_owned_remove_tree(g_ui_owned[i].id);
+            i = 0;
+        } else {
+            i++;
+        }
+    }
+    for (int i = 0; i < g_ui_owned_count; i++) {
+        if (g_ui_owned[i].id == id) { ui_owned_remove_at(i); break; }
+    }
+}
+static void ui_owned_add(int id, uint32_t gen, const char *mod) {
+    ui_owned_remove_tree(id);
+    if (g_ui_owned_count >= g_ui_owned_cap) {
+        int ncap = g_ui_owned_cap ? g_ui_owned_cap * 2 : 64;
+        WlUiOwned *nb = (WlUiOwned *)realloc(g_ui_owned, (size_t)ncap * sizeof nb[0]);
+        if (!nb) return;
+        g_ui_owned = nb;
+        g_ui_owned_cap = ncap;
+    }
+    WlUiOwned *e = &g_ui_owned[g_ui_owned_count++];
+    e->id = id;
+    e->parent = 0;
+    e->gen = gen;
+    snprintf(e->mod, sizeof e->mod, "%s", mod);
+}
+static void unload_mod_ui(const char *mod) {
+    for (;;) {
+        int pick = -1;
+        for (int i = 0; i < g_ui_owned_count; i++) {
+            if (strcmp(g_ui_owned[i].mod, mod) == 0) { pick = g_ui_owned[i].id; break; }
+        }
+        if (pick < 0) break;
+        for (int guard = 0; guard < 256; guard++) {
+            WlUiOwned *e = ui_owned_find(pick);
+            if (!e || e->parent <= 0) break;
+            WlUiOwned *p = ui_owned_find(e->parent);
+            if (!p || strcmp(p->mod, mod) != 0) break;
+            pick = p->id;
+        }
+        ui_owned_remove_tree(pick);
+        if (g_ui) g_ui->destroy(pick);
+    }
+}
+
 static int api_raw_ui_create(lua_State *L) {
     int type = (int)luaL_checkinteger(L, 1);
+    const char *mod = lua_tostring(L, lua_upvalueindex(1));
+    uint32_t gen = (uint32_t)lua_tointeger(L, lua_upvalueindex(2));
     int id = g_ui ? g_ui->create(type) : ++g_fake_ui_id;
-    if (id < 0) lua_pushnil(L); else lua_pushinteger(L, id);
+    if (id < 0) { lua_pushnil(L); return 1; }
+    ui_owned_add(id, gen, mod);
+    lua_pushinteger(L, id);
     return 1;
 }
 // UI images must be files inside an enabled mod's folder (no "..", no other absolute path).
@@ -760,6 +1068,7 @@ static int image_path_ok(const char *p) {
 static int api_raw_ui_set(lua_State *L) {
     int id = (int)luaL_checkinteger(L, 1);
     const char *key = luaL_checkstring(L, 2);
+    uint32_t gen = (uint32_t)lua_tointeger(L, lua_upvalueindex(1));
     int v = 0;
     const char *str = NULL;
     if (lua_type(L, 3) == LUA_TSTRING) str = lua_tostring(L, 3);
@@ -767,16 +1076,34 @@ static int api_raw_ui_set(lua_State *L) {
     else if (!lua_isnoneornil(L, 3)) v = (int)luaL_checknumber(L, 3);
     if (str && !strcmp(key, "Image") && !image_path_ok(str))
         return luaL_error(L, "Image must be a file inside the mod folder: %s", str);
-    lua_pushboolean(L, g_ui ? g_ui->set(id, key, v, str) : 1);
+    WlUiOwned *e = ui_owned_find(id);
+    if (!e || e->gen != gen) { lua_pushboolean(L, 0); return 1; }
+    int ok = g_ui ? g_ui->set(id, key, v, str) : 1;
+    if (ok && strcmp(key, "Parent") == 0) {
+        e = ui_owned_find(id);
+        if (e) e->parent = (v > 0) ? v : 0;
+    }
+    lua_pushboolean(L, ok);
     return 1;
 }
 static int api_raw_ui_text(lua_State *L) {
-    const char *t = (g_ui && g_ui->get_text) ? g_ui->get_text((int)luaL_checkinteger(L, 1)) : NULL;
+    int id = (int)luaL_checkinteger(L, 1);
+    uint32_t gen = (uint32_t)lua_tointeger(L, lua_upvalueindex(1));
+    if (id != -1) {
+        WlUiOwned *e = ui_owned_find(id);
+        if (!e || e->gen != gen) { lua_pushnil(L); return 1; }
+    }
+    const char *t = (g_ui && g_ui->get_text) ? g_ui->get_text(id) : NULL;
     if (t) lua_pushstring(L, t); else lua_pushnil(L);
     return 1;
 }
 static int api_raw_ui_destroy(lua_State *L) {
-    if (g_ui) g_ui->destroy((int)luaL_checkinteger(L, 1));
+    int id = (int)luaL_checkinteger(L, 1);
+    uint32_t gen = (uint32_t)lua_tointeger(L, lua_upvalueindex(1));
+    WlUiOwned *e = ui_owned_find(id);
+    if (!e || e->gen != gen) return 0;
+    ui_owned_remove_tree(id);
+    if (g_ui) g_ui->destroy(id);
     return 0;
 }
 
@@ -877,6 +1204,20 @@ static const char k_prelude[] =
 "    fn(setmetatable(b, getmetatable(b) or Unit))\n"
 "  end)\n"
 "end\n"
+"function Game.CommandCondition(name, fn)\n"
+"  wl.raw_set_cond(tostring(name), function(id)\n"
+"    local me = Game.LocalPlayer\n"
+"    local u = wl.raw_unit_by_id(id)\n"
+"    local b\n"
+"    if u then\n"
+"      b = setmetatable({ Id = u.id, X = u.x, Y = u.y, Class = u.class, ClassName = CLASS_NAME[u.class],\n"
+"        IsBuilding = u.building, Built = u.building and u.ready, Type = u.type, Owner = player(u.owner) or me }, Unit)\n"
+"    else\n"
+"      b = setmetatable({ Id = id, Owner = me }, Unit)\n"
+"    end\n"
+"    return fn(b)\n"
+"  end)\n"
+"end\n"
 "function Game.OnSecond(fn) return on('every_second', fn) end\n"
 "-- Polled events (checked once a second from the game's frame; reading only, MP safe):\n"
 "-- Game.OnAgeUp(fn(player, ageName)), Game.OnUnitCreated(fn(unit)), Game.OnUnitDied(fn(id, player)),\n"
@@ -927,7 +1268,8 @@ static const char k_prelude[] =
 "    end\n"
 "  end\n"
 "end)\n"
-"Game.IsMultiplayer = nil\n"
+"function Game.IsMultiplayer() return wl.raw_is_multiplayer() end\n"
+"function Game.CheatsEnabled() return wl.raw_cheats_enabled() end\n"
 "local SOUNDS = { Chat = 'chat', CantDo = 'cantdo', Tribute = 'tribute', Attack = 'attack',\n"
 "  TownBell = 'townbell', TownRecall = 'townrecall', Objective = 'objective', Relic = 'relic' }\n"
 "Sound = { Play = function(name) wl.sound(SOUNDS[name] or name) end }\n"
@@ -1088,7 +1430,7 @@ static const char k_prelude[] =
 "  if props ~= nil and type(props) ~= 'table' then props = { Text = props } end\n"
 "  local id = wl.raw_ui_create(num)\n"
 "  if not id then error('too many UI elements (256 at most)', 3) end\n"
-"  local e = setmetatable({ _id = id, _kind = kind, _p = {}, _click = {}, _hover = {}, _leave = {}, _changed = {}, _submit = {} }, Element)\n"
+"  local e = setmetatable({ _id = id, _kind = kind, _p = {}, _click = {}, _hover = {}, _leave = {}, _changed = {}, _submit = {}, _key = {}, _scroll = {} }, Element)\n"
 "  elements[id] = e\n"
 "  props = props or {}\n"
 "  if props.Parent then e.Parent = props.Parent end\n"
@@ -1098,6 +1440,8 @@ static const char k_prelude[] =
 "    elseif k == 'OnLeave' then e:OnLeave(v)\n"
 "    elseif k == 'OnChanged' then e:OnChanged(v)\n"
 "    elseif k == 'OnSubmit' then e:OnSubmit(v)\n"
+"    elseif k == 'OnKey' then e:OnKey(v)\n"
+"    elseif k == 'OnScroll' then e:OnScroll(v)\n"
 "    elseif k ~= 'Parent' then e[k] = v end\n"
 "  end\n"
 "  return e\n"
@@ -1115,6 +1459,36 @@ static const char k_prelude[] =
 "  local c = { Connected = true }; function c:Disconnect() c.Connected = false end\n"
 "  local list = self._submit; list[#list + 1] = { fn = fn, c = c }; return c\n"
 "end\n"
+"function Element:OnKey(fn)\n"
+"  local c = { Connected = true }; function c:Disconnect() c.Connected = false end\n"
+"  local list = self._key; list[#list + 1] = { fn = fn, c = c }; return c\n"
+"end\n"
+"function Element:OnScroll(fn)\n"
+"  local c = { Connected = true }; function c:Disconnect() c.Connected = false end\n"
+"  local list = self._scroll; list[#list + 1] = { fn = fn, c = c }; return c\n"
+"end\n"
+"local KEY_NAMES = { [0x09]='Tab', [0x21]='PageUp', [0x22]='PageDown', [0x26]='Up', [0x28]='Down' }\n"
+"wl.on('ui_key', function(packed)\n"
+"  local id = packed >> 16; local vk = packed & 0xffff\n"
+"  local e = elements[id]; if not e then return end\n"
+"  local name = KEY_NAMES[vk] or tostring(vk)\n"
+"  for _, h in ipairs(e._key) do\n"
+"    if h.c.Connected then\n"
+"      local ok, err = pcall(h.fn, e, name)\n"
+"      if not ok then print('OnKey error: ' .. tostring(err)) end\n"
+"    end\n"
+"  end\n"
+"end)\n"
+"wl.on('ui_scroll', function(packed)\n"
+"  local id = packed >> 16; local dir = (packed & 0xffff) == 1 and 1 or -1\n"
+"  local e = elements[id]; if not e then return end\n"
+"  for _, h in ipairs(e._scroll) do\n"
+"    if h.c.Connected then\n"
+"      local ok, err = pcall(h.fn, e, dir)\n"
+"      if not ok then print('OnScroll error: ' .. tostring(err)) end\n"
+"    end\n"
+"  end\n"
+"end)\n"
 "local function text_event(list_name, label)\n"
 "  return function(id)\n"
 "    local e = elements[id]\n"
@@ -1164,6 +1538,223 @@ static const char k_prelude[] =
 "  Every = function(s, fn) return wl.every(s, fn) end, Cancel = wl.cancel }\n"
 "\n";
 
+// --- DevPanel Lua console (dedicated env, REPL =/expr, same sandbox) ------
+#define WL_CON_MAX_LINES 128
+static char g_con_lines[WL_CON_MAX_LINES][300];
+static int g_con_nlines;
+
+static void con_append_line(const char *s, size_t n) {
+    if (g_con_nlines >= WL_CON_MAX_LINES) {
+        memmove(g_con_lines, g_con_lines[1], (size_t)(WL_CON_MAX_LINES - 1) * sizeof g_con_lines[0]);
+        g_con_nlines = WL_CON_MAX_LINES - 1;
+    }
+    char *dst = g_con_lines[g_con_nlines++];
+    size_t o = 0;
+    for (size_t i = 0; i < n && o + 1 < sizeof g_con_lines[0]; i++) {
+        if (s[i] == '\t') {
+            if (o + 2 < sizeof g_con_lines[0]) { dst[o++] = ' '; dst[o++] = ' '; }
+        } else if (s[i] != '\r') {
+            dst[o++] = s[i];
+        }
+    }
+    dst[o] = 0;
+}
+
+static void con_append(const char *s) {
+    if (!s) return;
+    const char *p = s;
+    for (;;) {
+        const char *nl = strchr(p, '\n');
+        if (!nl) { con_append_line(p, strlen(p)); break; }
+        con_append_line(p, (size_t)(nl - p));
+        p = nl + 1;
+    }
+}
+
+static int api_console_print(lua_State *L) {
+    luaL_Buffer b;
+    join_args(L, &b);
+    luaL_pushresult(&b);
+    const char *s = lua_tostring(L, -1);
+    if (s) {
+        if (log_allowed("console")) wl_log("[lua:console] %s", s);
+        con_append(s);
+    }
+    return 0;
+}
+
+static int console_pcall(lua_State *L, int nargs, int nresults) {
+    lua_Hook oh = lua_gethook(L);
+    int om = lua_gethookmask(L), oc = lua_gethookcount(L);
+    if (g_depth++ == 0) budget_start(L);
+    else lua_sethook(L, insn_hook, LUA_MASKCOUNT, g_aborting ? 1 : WL_HOOK_STEP);
+    int rc = lua_pcall(L, nargs, nresults, 0);
+    lua_sethook(L, oh, om, oc);
+    if (--g_depth == 0) g_aborting = 0;
+    return rc;
+}
+
+static void get_console_env(lua_State *L) {
+    lua_getfield(L, LUA_REGISTRYINDEX, WL_CONSOLE_ENV_KEY);
+    if (lua_istable(L, -1)) return;
+    lua_pop(L, 1);
+
+    WlMod cm;
+    memset(&cm, 0, sizeof cm);
+    snprintf(cm.id, sizeof cm.id, "console");
+    snprintf(cm.name, sizeof cm.name, "Dev Console");
+    snprintf(cm.version, sizeof cm.version, "%s", WOLOLOADER_VERSION);
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        if (is_base_mod_id(g_wl.mods[i].id)) {
+            snprintf(cm.dir, sizeof cm.dir, "%s", g_wl.mods[i].dir);
+            break;
+        }
+    }
+    push_mod_env(L, &cm, -1);
+    lua_pushcfunction(L, api_console_print);
+    lua_setfield(L, -2, "print");
+    lua_getfield(L, -1, "wl");
+    lua_pushcfunction(L, api_console_print);
+    lua_setfield(L, -2, "log");
+    lua_pop(L, 1);
+
+    if (luaL_loadbufferx(L, k_prelude, sizeof k_prelude - 1, "=wololoader_api", "t") == LUA_OK) {
+        lua_pushvalue(L, -2);
+        lua_setupvalue(L, -2, 1);
+        if (guarded_pcall(L, 0) != LUA_OK) { wl_log("[lua:console] api error: %s", lua_tostring(L, -1)); lua_pop(L, 1); }
+    } else {
+        wl_log("[lua:console] api load error: %s", lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+    lua_pushvalue(L, -1);
+    lua_setfield(L, LUA_REGISTRYINDEX, WL_CONSOLE_ENV_KEY);
+}
+
+static void push_con_lines(lua_State *L) {
+    lua_createtable(L, g_con_nlines, 0);
+    for (int i = 0; i < g_con_nlines; i++) {
+        lua_pushstring(L, g_con_lines[i]);
+        lua_rawseti(L, -2, i + 1);
+    }
+}
+
+static int format_ret_fn(lua_State *L) {
+    int nret = lua_gettop(L);
+    luaL_Buffer b;
+    luaL_buffinit(L, &b);
+    for (int i = 1; i <= nret; i++) {
+        luaL_tolstring(L, i, NULL);
+        if (i > 1) luaL_addstring(&b, ", ");
+        luaL_addvalue(&b);
+    }
+    luaL_pushresult(&b);
+    return 1;
+}
+
+// wl.dev_eval(line) -> ok, lines_table, err_or_nil
+static int api_dev_eval(lua_State *L) {
+    size_t raw_len = 0;
+    const char *raw = luaL_checklstring(L, 1, &raw_len);
+    if (!dev_allowed()) {
+        wl_log("[lua:console] refused in multiplayer without cheats");
+        lua_pushboolean(L, 0);
+        lua_newtable(L);
+        lua_pushstring(L, "Dev console is unavailable in multiplayer unless cheats are enabled.");
+        return 3;
+    }
+    const char *start = raw, *end = raw + raw_len;
+    while (start < end && (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n')) start++;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) end--;
+    size_t len = (size_t)(end - start);
+    if (len == 0) {
+        lua_pushboolean(L, 1);
+        lua_newtable(L);
+        return 2;
+    }
+    if ((unsigned char)start[0] == 0x1b) {
+        lua_pushboolean(L, 0);
+        lua_newtable(L);
+        lua_pushstring(L, "binary chunks are not allowed");
+        return 3;
+    }
+
+    g_con_nlines = 0;
+    int top = lua_gettop(L);
+    int rc = LUA_ERRSYNTAX;
+    if (start[0] == '=') {
+        size_t rlen = len - 1;
+        char *buf = (char *)malloc(rlen + 8);
+        if (!buf) return luaL_error(L, "out of memory");
+        memcpy(buf, "return ", 7);
+        memcpy(buf + 7, start + 1, rlen);
+        buf[7 + rlen] = 0;
+        rc = luaL_loadbufferx(L, buf, 7 + rlen, "=console", "t");
+        free(buf);
+    } else {
+        char *buf = (char *)malloc(len + 8);
+        if (!buf) return luaL_error(L, "out of memory");
+        memcpy(buf, "return ", 7);
+        memcpy(buf + 7, start, len);
+        buf[7 + len] = 0;
+        rc = luaL_loadbufferx(L, buf, 7 + len, "=console", "t");
+        free(buf);
+        if (rc != LUA_OK) {
+            lua_pop(L, 1);
+            rc = luaL_loadbufferx(L, start, len, "=console", "t");
+        }
+    }
+    if (rc != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        char msg[300];
+        snprintf(msg, sizeof msg, "%s", err ? err : "syntax error");
+        lua_settop(L, top);
+        lua_pushboolean(L, 0);
+        lua_newtable(L);
+        lua_pushstring(L, msg);
+        return 3;
+    }
+
+    get_console_env(L);
+    lua_setupvalue(L, -2, 1);  // _ENV = dedicated console env
+    int call_base = lua_gettop(L) - 1;
+    rc = console_pcall(L, 0, LUA_MULTRET);
+    if (rc != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        char msg[300];
+        snprintf(msg, sizeof msg, "%s", err ? err : "(error)");
+        wl_log("[lua:console] error: %s", msg);
+        lua_settop(L, top);
+        lua_pushboolean(L, 0);
+        push_con_lines(L);
+        lua_pushstring(L, msg);
+        return 3;
+    }
+
+    int nret = lua_gettop(L) - call_base;
+    if (nret > 0) {
+        lua_pushcfunction(L, format_ret_fn);
+        lua_insert(L, call_base + 1);
+        rc = console_pcall(L, nret, 1);
+        if (rc != LUA_OK) {
+            const char *err = lua_tostring(L, -1);
+            char msg[300];
+            snprintf(msg, sizeof msg, "%s", err ? err : "(error)");
+            wl_log("[lua:console] error: %s", msg);
+            lua_settop(L, top);
+            lua_pushboolean(L, 0);
+            push_con_lines(L);
+            lua_pushstring(L, msg);
+            return 3;
+        }
+        const char *res = lua_tostring(L, -1);
+        if (res) con_append(res);
+    }
+    lua_settop(L, top);
+    lua_pushboolean(L, 1);
+    push_con_lines(L);
+    return 2;
+}
+
 // --- file loading -----------------------------------------------------------
 static char *read_whole(const char *path, size_t *len) {
     FILE *f = fopen(path, "rb");
@@ -1181,12 +1772,14 @@ static char *read_whole(const char *path, size_t *len) {
     return buf;
 }
 
-static void load_mod_script(lua_State *L, const WlMod *m, int index) {
+enum { LOAD_OK = 1, LOAD_MISSING = 0, LOAD_ERR = -1 };
+
+static int run_mod_main(lua_State *L, const WlMod *m, int index, char *err_out, size_t err_cap) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%s" WL_SEP "scripts" WL_SEP "main.lua", m->dir);
     size_t len = 0;
     char *src = read_whole(path, &len);
-    if (!src) return;  // mod has no script (normal)
+    if (!src) return LOAD_MISSING;  // mod has no script (normal)
     // Skip UTF-8 BOM so Notepad-saved files load.
     const char *code = src;
     if (len >= 3 && (unsigned char)code[0] == 0xEF && (unsigned char)code[1] == 0xBB && (unsigned char)code[2] == 0xBF) {
@@ -1199,9 +1792,11 @@ static void load_mod_script(lua_State *L, const WlMod *m, int index) {
     int rc = luaL_loadbufferx(L, code, len, chunk, "t");
     free(src);
     if (rc != LUA_OK) {
-        wl_log("[lua:%s] load error: %s", m->id, lua_tostring(L, -1));
+        const char *msg = lua_tostring(L, -1);
+        wl_log("[lua:%s] load error: %s", m->id, msg ? msg : "syntax error");
+        if (err_out && err_cap) snprintf(err_out, err_cap, "%s", msg ? msg : "syntax error");
         lua_settop(L, top);
-        return;
+        return LOAD_ERR;
     }
     push_mod_env(L, m, index);
     // Roblox-style API (k_prelude) in the same env, before main.lua
@@ -1213,8 +1808,496 @@ static void load_mod_script(lua_State *L, const WlMod *m, int index) {
     lua_setupvalue(L, -2, 1);  // upvalue 1 of a main chunk is _ENV; pops the env
     wl_log("[lua:%s] running scripts\\main.lua", m->id);
     rc = guarded_pcall(L, 0);
-    if (rc != LUA_OK) wl_log("[lua:%s] error: %s", m->id, lua_tostring(L, -1));
+    if (rc != LUA_OK) {
+        const char *msg = lua_tostring(L, -1);
+        wl_log("[lua:%s] error: %s", m->id, msg ? msg : "runtime error");
+        if (err_out && err_cap) snprintf(err_out, err_cap, "%s", msg ? msg : "runtime error");
+        lua_settop(L, top);
+        return LOAD_ERR;
+    }
     lua_settop(L, top);
+    return LOAD_OK;
+}
+
+// --- hot reload: change detection, clean per-mod unload, reload -------------
+typedef struct {
+    int has_main;
+    int file_count;
+    uint64_t total_size;
+    uint64_t newest_mtime;
+    uint64_t hash;
+} WlScriptFp;
+
+typedef struct {
+    int loaded;
+    WlScriptFp loaded_fp;
+    int pending;
+    WlScriptFp pend_fp;
+    DWORD pend_since_ms;
+} WlModWatch;
+
+static WlModWatch g_watch[WL_MAX_MODS];
+static DWORD g_last_poll_ms;
+static int g_have_poll;
+
+static int fp_equal(const WlScriptFp *a, const WlScriptFp *b) {
+    return a->has_main == b->has_main && a->file_count == b->file_count &&
+           a->total_size == b->total_size && a->newest_mtime == b->newest_mtime &&
+           a->hash == b->hash;
+}
+
+static int is_lua_filename(const char *name) {
+    size_t n = strlen(name);
+    if (n < 5) return 0;
+    const char *e = name + n - 4;
+    return e[0] == '.' && (e[1] | 32) == 'l' && (e[2] | 32) == 'u' && (e[3] | 32) == 'a';
+}
+
+static uint64_t hash_file_entry(const char *rel, uint64_t mtime, uint64_t size) {
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (const unsigned char *p = (const unsigned char *)rel; *p; p++) { h ^= *p; h *= 0x100000001b3ULL; }
+    for (int i = 0; i < 8; i++) { h ^= (mtime >> (i * 8)) & 0xff; h *= 0x100000001b3ULL; }
+    for (int i = 0; i < 8; i++) { h ^= (size  >> (i * 8)) & 0xff; h *= 0x100000001b3ULL; }
+    return h;
+}
+
+static void record_lua_entry(WlScriptFp *fp, const char *rel, int depth, const char *name, uint64_t mtime, uint64_t size) {
+    fp->file_count++;
+    fp->total_size += size;
+    if (mtime > fp->newest_mtime) fp->newest_mtime = mtime;
+    fp->hash ^= hash_file_entry(rel, mtime, size);
+    if (depth == 0 && strlen(name) == 8 && _strnicmp(name, "main.lua", 8) == 0)
+        fp->has_main = 1;
+}
+
+static void scan_dir_lua(const char *dir, const char *rel_prefix, int depth, WlScriptFp *fp) {
+    if (depth > 8) return;
+#ifdef _WIN32
+    char pat[MAX_PATH + 32];
+    snprintf(pat, sizeof pat, "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        const char *name = fd.cFileName;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        char rel[MAX_PATH];
+        if (rel_prefix[0]) snprintf(rel, sizeof rel, "%s/%s", rel_prefix, name);
+        else snprintf(rel, sizeof rel, "%s", name);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            char sub[MAX_PATH + 32];
+            snprintf(sub, sizeof sub, "%s\\%s", dir, name);
+            scan_dir_lua(sub, rel, depth + 1, fp);
+        } else if (is_lua_filename(name)) {
+            uint64_t mt = ((uint64_t)fd.ftLastWriteTime.dwHighDateTime << 32) | (uint64_t)fd.ftLastWriteTime.dwLowDateTime;
+            uint64_t sz = ((uint64_t)fd.nFileSizeHigh << 32) | (uint64_t)fd.nFileSizeLow;
+            record_lua_entry(fp, rel, depth, name, mt, sz);
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        const char *name = de->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        char full[MAX_PATH + 64], rel[MAX_PATH];
+        snprintf(full, sizeof full, "%s/%s", dir, name);
+        if (rel_prefix[0]) snprintf(rel, sizeof rel, "%s/%s", rel_prefix, name);
+        else snprintf(rel, sizeof rel, "%s", name);
+        struct stat st;
+        if (stat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            scan_dir_lua(full, rel, depth + 1, fp);
+        } else if (S_ISREG(st.st_mode) && is_lua_filename(name)) {
+            uint64_t mt = (uint64_t)st.st_mtime * 1000000000ULL + (uint64_t)st.st_mtim.tv_nsec;
+            uint64_t sz = (uint64_t)st.st_size;
+            record_lua_entry(fp, rel, depth, name, mt, sz);
+        }
+    }
+    closedir(d);
+#endif
+}
+
+static void scan_mod_scripts(const char *mod_dir, WlScriptFp *out) {
+    memset(out, 0, sizeof *out);
+    char sdir[MAX_PATH + 16];
+    snprintf(sdir, sizeof sdir, "%s" WL_SEP "scripts", mod_dir);
+    scan_dir_lua(sdir, "", 0, out);
+}
+
+static void compact_handler_list(lua_State *L, int list_idx) {
+    lua_Integer total = (lua_Integer)lua_rawlen(L, list_idx), w = 1;
+    for (lua_Integer i = 1; i <= total; i++) {
+        lua_rawgeti(L, list_idx, i);
+        lua_getfield(L, -1, "dead");
+        int is_dead = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        if (!is_dead) lua_rawseti(L, list_idx, w++);
+        else lua_pop(L, 1);
+    }
+    for (lua_Integer i = w; i <= total; i++) { lua_pushnil(L); lua_rawseti(L, list_idx, i); }
+}
+
+static void cleanup_dirty_handlers(lua_State *L) {
+    int top = lua_gettop(L);
+    lua_getfield(L, LUA_REGISTRYINDEX, WL_HANDLERS_KEY);
+    if (!lua_istable(L, -1)) { lua_settop(L, top); return; }
+    int htbl = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, htbl)) {
+        if (lua_istable(L, -1)) {
+            compact_handler_list(L, lua_gettop(L));
+            if (lua_rawlen(L, -1) == 0) {
+                lua_pushvalue(L, -2);
+                lua_pushnil(L);
+                lua_settable(L, htbl);
+            }
+        }
+        lua_pop(L, 1);
+    }
+    g_handlers_dirty = 0;
+    lua_settop(L, top);
+}
+
+static void unload_mod_handlers(lua_State *L, const char *mod_id) {
+    int top = lua_gettop(L);
+    lua_getfield(L, LUA_REGISTRYINDEX, WL_HANDLERS_KEY);
+    if (!lua_istable(L, -1)) { lua_settop(L, top); return; }
+    int htbl = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, htbl)) {
+        if (lua_istable(L, -1)) {
+            int list = lua_gettop(L);
+            lua_Integer n = (lua_Integer)lua_rawlen(L, list);
+            int marked = 0;
+            for (lua_Integer i = 1; i <= n; i++) {
+                lua_rawgeti(L, list, i);
+                if (lua_istable(L, -1)) {
+                    lua_getfield(L, -1, "mod");
+                    const char *m = lua_tostring(L, -1);
+                    if (m && strcmp(m, mod_id) == 0) {
+                        lua_pushboolean(L, 1);
+                        lua_setfield(L, -3, "dead");
+                        marked = 1;
+                    }
+                    lua_pop(L, 1);
+                }
+                lua_pop(L, 1);
+            }
+            if (marked) {
+                if (g_dispatch_depth == 0) {
+                    compact_handler_list(L, list);
+                    if (lua_rawlen(L, list) == 0) {
+                        lua_pushvalue(L, -2);
+                        lua_pushnil(L);
+                        lua_settable(L, htbl);
+                    }
+                } else {
+                    g_handlers_dirty = 1;
+                }
+            }
+        }
+        lua_pop(L, 1);
+    }
+    lua_settop(L, top);
+}
+
+static void unload_mod_conditions(lua_State *L, const char *mod_id) {
+    int top = lua_gettop(L);
+    lua_getfield(L, LUA_REGISTRYINDEX, WL_CONDS_KEY);
+    if (!lua_istable(L, -1)) { lua_settop(L, top); return; }
+    int ctbl = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, ctbl)) {
+        int match = 0;
+        if (lua_istable(L, -1)) {
+            lua_getfield(L, -1, "mod");
+            const char *m = lua_tostring(L, -1);
+            match = (m && strcmp(m, mod_id) == 0);
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        if (match) {
+            lua_pushvalue(L, -1);
+            lua_pushnil(L);
+            lua_settable(L, ctbl);
+        }
+    }
+    g_cond_cache_cnt = 0;
+    lua_settop(L, top);
+}
+
+static void unload_mod(lua_State *L, const char *mod_id) {
+    if (!L || !mod_id || !mod_id[0]) return;
+    unload_mod_handlers(L, mod_id);
+    unload_mod_conditions(L, mod_id);
+    for (int i = 0; i < WL_MAX_TIMERS; i++)
+        if (g_timers[i].used && strcmp(g_timers[i].mod, mod_id) == 0) free_timer(&g_timers[i]);
+    for (int i = 0; i < WL_MAX_ASKS; i++)
+        if (g_asks[i].used && strcmp(g_asks[i].mod, mod_id) == 0) free_ask(&g_asks[i]);
+    for (int i = 0; i < WL_MAX_TASKS; i++) {
+        if (g_tasks[i].used && strcmp(g_tasks[i].mod, mod_id) == 0) {
+            luaL_unref(L, LUA_REGISTRYINDEX, g_tasks[i].ref);
+            g_tasks[i].used = 0;
+        }
+    }
+    unload_mod_ui(mod_id);
+    unload_mod_counter(mod_id);
+    for (int i = 0; i < 64 && g_logcount[i].mod[0]; i++) {
+        if (strcmp(g_logcount[i].mod, mod_id) == 0) { g_logcount[i].lines = 0; break; }
+    }
+}
+
+static void short_lua_err(const char *err, char *out, size_t cap) {
+    if (!cap) return;
+    const char *p = err ? err : "error";
+    const char *s = strstr(p, "scripts/");
+    if (!s) s = strstr(p, "scripts\\");
+    if (s) p = s;
+    size_t w = 0;
+    for (; *p && w + 1 < cap; p++) {
+        char c = (*p == '\n' || *p == '\r' || *p == '\t') ? ' ' : *p;
+        out[w++] = c;
+    }
+    out[w] = 0;
+}
+
+static void dispatch_filtered(const char *name, const char *mod_filter, int has_arg, int arg);
+
+enum { RELOAD_OK = 1, RELOAD_MISSING = 0, RELOAD_ERR = -1, RELOAD_NOT_FOUND = -2, RELOAD_DENIED = -3 };
+
+static int reload_mod_at(int idx, int notify, char *err_out, size_t err_cap) {
+    const WlMod *m = &g_wl.mods[idx];
+    int was_loaded = g_watch[idx].loaded;
+    unload_mod(g_L, m->id);
+    lua_gc(g_L, LUA_GCCOLLECT, 0);
+
+    char raw_err[512] = "";
+    int rc = run_mod_main(g_L, m, idx, raw_err, sizeof raw_err);
+    if (rc == LOAD_MISSING) {
+        g_watch[idx].loaded = 0;
+        if (was_loaded) {
+            wl_log("[lua:%s] scripts\\main.lua missing, mod unloaded", m->id);
+            if (notify) {
+                char msg[160];
+                snprintf(msg, sizeof msg, "Unloaded %s", m->id);
+                show_ui_message(msg);
+            }
+        }
+        if (err_out && err_cap) snprintf(err_out, err_cap, "no scripts/main.lua");
+        return RELOAD_MISSING;
+    }
+    if (rc == LOAD_ERR) {
+        // Keep the mod unloaded on syntax or runtime error (discarding partial registrations).
+        unload_mod(g_L, m->id);
+        lua_gc(g_L, LUA_GCCOLLECT, 0);
+        g_watch[idx].loaded = 0;
+        wl_log("[lua:%s] reload failed: %s", m->id, raw_err);
+        char serr[180];
+        short_lua_err(raw_err, serr, sizeof serr);
+        char msg[240];
+        snprintf(msg, sizeof msg, "Reload failed: %s: %s", m->id, serr);
+        if (notify) show_ui_message(msg);
+        if (err_out && err_cap) snprintf(err_out, err_cap, "%s", msg);
+        return RELOAD_ERR;
+    }
+
+    g_watch[idx].loaded = 1;
+    wl_log("[lua:%s] reloaded", m->id);
+    // Mid-game reload: run this mod's Game.OnStart handlers so match-start timers and UI work.
+    if (g_in_game) dispatch_filtered("game_start", m->id, 0, 0);
+    if (notify) {
+        char msg[160];
+        snprintf(msg, sizeof msg, "Reloaded %s", m->id);
+        show_ui_message(msg);
+    }
+    return RELOAD_OK;
+}
+
+static int find_enabled_mod(const char *key) {
+    if (!key || !key[0]) return -1;
+    size_t klen = strlen(key);
+    for (int i = 0; i < g_wl.listed_count; i++)
+        if (g_wl.mods[i].enabled && strcmp(g_wl.mods[i].id, key) == 0) return i;
+    for (int i = 0; i < g_wl.listed_count; i++)
+        if (g_wl.mods[i].enabled && strlen(g_wl.mods[i].id) == klen && _strnicmp(g_wl.mods[i].id, key, klen) == 0) return i;
+    for (int i = 0; i < g_wl.listed_count; i++)
+        if (g_wl.mods[i].enabled && strlen(g_wl.mods[i].name) == klen && _strnicmp(g_wl.mods[i].name, key, klen) == 0) return i;
+    return -1;
+}
+
+int wl_script_reload_mod(const char *mod_id, char *err_out, size_t err_cap) {
+    if (!g_L || !g_init_done || g_wl_vanilla) return RELOAD_NOT_FOUND;
+    if (!dev_allowed()) {
+        if (err_out && err_cap) snprintf(err_out, err_cap, "reload is disabled in multiplayer unless cheats are enabled");
+        return RELOAD_DENIED;
+    }
+    int idx = find_enabled_mod(mod_id);
+    if (idx < 0) {
+        if (err_out && err_cap) snprintf(err_out, err_cap, "mod '%s' not found or not enabled", mod_id ? mod_id : "");
+        return RELOAD_NOT_FOUND;
+    }
+    scan_mod_scripts(g_wl.mods[idx].dir, &g_watch[idx].loaded_fp);
+    g_watch[idx].pending = 0;
+    return reload_mod_at(idx, 1, err_out, err_cap);
+}
+
+// Polls <mod>/scripts/*.lua about once per second (250 ms while debouncing) and reloads
+// changed mods one at a time after a 250 ms quiet window so half-written saves are skipped.
+void wl_script_hotreload_frame(DWORD now_ms) {
+    if (!g_L || !g_init_done || g_wl_vanilla) return;
+    if (!dev_allowed()) return;
+    int any_pending = 0;
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        if (g_wl.mods[i].enabled && g_watch[i].pending) { any_pending = 1; break; }
+    }
+    DWORD interval = any_pending ? 250 : 1000;
+    if (g_have_poll && (int32_t)(now_ms - g_last_poll_ms) < (int32_t)interval) return;
+    g_last_poll_ms = now_ms;
+    g_have_poll = 1;
+
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        const WlMod *m = &g_wl.mods[i];
+        if (!m->enabled) continue;
+        WlScriptFp fp;
+        scan_mod_scripts(m->dir, &fp);
+        if (fp_equal(&fp, &g_watch[i].loaded_fp)) {
+            g_watch[i].pending = 0;
+            continue;
+        }
+        if (!g_watch[i].pending || !fp_equal(&fp, &g_watch[i].pend_fp)) {
+            g_watch[i].pending = 1;
+            g_watch[i].pend_fp = fp;
+            g_watch[i].pend_since_ms = now_ms;
+            continue;
+        }
+        if ((int32_t)(now_ms - g_watch[i].pend_since_ms) >= 250) {
+            g_watch[i].pending = 0;
+            g_watch[i].loaded_fp = fp;
+            reload_mod_at(i, 1, NULL, 0);
+        }
+    }
+}
+
+// wl.reload([mod_id]): reloads one mod (returns true | false, err) or all changed mods (returns reloaded, errors).
+static int api_reload(lua_State *L) {
+    if (!dev_allowed())
+        return luaL_error(L, "reload is disabled in multiplayer unless cheats are enabled");
+    if (!lua_isnoneornil(L, 1)) {
+        const char *target = luaL_checkstring(L, 1);
+        char err[256] = "";
+        int rc = wl_script_reload_mod(target, err, sizeof err);
+        if (rc == RELOAD_OK) { lua_pushboolean(L, 1); return 1; }
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, err[0] ? err : "reload failed");
+        return 2;
+    }
+    lua_newtable(L);
+    lua_newtable(L);
+    int n_ok = 0, n_err = 0;
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        const WlMod *m = &g_wl.mods[i];
+        if (!m->enabled) continue;
+        WlScriptFp fp;
+        scan_mod_scripts(m->dir, &fp);
+        if (fp_equal(&fp, &g_watch[i].loaded_fp)) continue;
+        g_watch[i].loaded_fp = fp;
+        g_watch[i].pending = 0;
+        char err[256] = "";
+        int rc = reload_mod_at(i, 1, err, sizeof err);
+        if (rc == RELOAD_OK) {
+            lua_pushstring(L, m->id);
+            lua_rawseti(L, -3, ++n_ok);
+        } else if (rc == RELOAD_ERR) {
+            lua_pushstring(L, err);
+            lua_rawseti(L, -2, ++n_err);
+        }
+    }
+    return 2;
+}
+
+// wl.reload_mods(): full Level 2 mod hot reload at the main menu (World == NULL).
+// Returns (true, status_msg) on success or (false, reason_or_error) if refused/failed.
+static int api_reload_mods(lua_State *L) {
+    if (!g_reload_mods_fn) {
+        lua_pushboolean(L, 0);
+        lua_pushstring(L, "mod hot reload is not available here");
+        return 2;
+    }
+    char msg[512] = "";
+    int rc = g_reload_mods_fn(msg, sizeof msg);
+    lua_pushboolean(L, rc > 0);
+    lua_pushstring(L, msg[0] ? msg : (rc > 0 ? "Mods reloaded" : "Reload failed"));
+    return 2;
+}
+
+// Full Lua runtime restart for Level 2 hot reload (hotreload.c).
+// When called outside Lua (e.g. from Mods screen), destroys and recreates g_L.
+// When called from inside a Lua frame (wl.reload_mods()), reloads every mod in place
+// so the active Lua stack frame remains valid on return.
+void wl_script_restart(void) {
+    if (g_wl_vanilla) return;
+    if (!g_L || !g_init_done) {
+        wl_script_init();
+        return;
+    }
+    if (g_depth > 0) {
+        // Inside an active Lua pcall (e.g. wl.reload_mods()): keep g_L alive,
+        // unload every old mod's handlers/UI/timers/conditions, then load all enabled mods.
+        lua_State *L = g_L;
+        wl_script_game_reset(g_now);
+        while (g_ui_owned_count > 0) {
+            int id = g_ui_owned[0].id;
+            if (g_ui && g_ui->destroy) g_ui->destroy(id);
+            ui_owned_remove_tree(id);
+        }
+        lua_newtable(L);
+        lua_setfield(L, LUA_REGISTRYINDEX, WL_HANDLERS_KEY);
+        lua_newtable(L);
+        lua_setfield(L, LUA_REGISTRYINDEX, WL_CONDS_KEY);
+        lua_pushnil(L);
+        lua_setfield(L, LUA_REGISTRYINDEX, WL_CONSOLE_ENV_KEY);
+        g_cond_cache_cnt = 0;
+        g_cond_refresh_active = 0;
+        memset(g_watch, 0, sizeof g_watch);
+        lua_gc(L, LUA_GCCOLLECT, 0);
+        int ran = 0;
+        for (int i = 0; i < g_wl.listed_count; i++) {
+            const WlMod *m = &g_wl.mods[i];
+            if (!m->enabled) continue;
+            scan_mod_scripts(m->dir, &g_watch[i].loaded_fp);
+            g_watch[i].pending = 0;
+            g_watch[i].loaded = (run_mod_main(L, m, i, NULL, 0) == LOAD_OK);
+            ran++;
+        }
+        wl_log("[lua] runtime reloaded in-place (%d enabled mod(s) checked)", ran);
+        return;
+    }
+
+    // Outside Lua: tear down all UI widgets, timers, and the Lua VM completely, then re-init.
+    wl_script_game_reset(0);
+    while (g_ui_owned_count > 0) {
+        int id = g_ui_owned[0].id;
+        if (g_ui && g_ui->destroy) g_ui->destroy(id);
+        ui_owned_remove_tree(id);
+    }
+    if (g_ui_counter) g_ui_counter(NULL);
+    lua_close(g_L);
+    g_L = NULL;
+    g_init_done = 0;
+    g_mem_used = 0;
+    g_in_game = 0;
+    g_dispatch_depth = 0;
+    g_handlers_dirty = 0;
+    g_depth = 0;
+    g_aborting = 0;
+    g_cond_cache_cnt = 0;
+    g_cond_refresh_active = 0;
+    g_have_poll = 0;
+    memset(g_watch, 0, sizeof g_watch);
+    wl_script_init();
 }
 
 // --- public API -------------------------------------------------------------
@@ -1354,21 +2437,25 @@ void wl_script_init(void) {
     harden_libs(L);
     lua_newtable(L);
     lua_setfield(L, LUA_REGISTRYINDEX, WL_HANDLERS_KEY);
+    lua_newtable(L);
+    lua_setfield(L, LUA_REGISTRYINDEX, WL_CONDS_KEY);
 
     g_L = L;
     int ran = 0;
     for (int i = 0; i < g_wl.listed_count; i++) {
         const WlMod *m = &g_wl.mods[i];
         if (!m->enabled) continue;
-        load_mod_script(L, m, i);
+        scan_mod_scripts(m->dir, &g_watch[i].loaded_fp);
+        g_watch[i].pending = 0;
+        g_watch[i].loaded = (run_mod_main(L, m, i, NULL, 0) == LOAD_OK);
         ran++;
     }
     wl_log("[lua] runtime ready (%d enabled mod(s) checked)", ran);
 }
 
-// Calls all handlers of `name` in registration (= mod) order. A handler that
-// errors is removed; the others keep running.
-static void dispatch(const char *name, int has_arg, int arg) {
+// Calls all handlers of `name` (or only `mod_filter`'s handlers when non-NULL) in
+// registration (= mod) order. A handler that errors is removed; the others keep running.
+static void dispatch_filtered(const char *name, const char *mod_filter, int has_arg, int arg) {
     lua_State *L = g_L;
     if (!L || !name) return;
     int top = lua_gettop(L);
@@ -1377,14 +2464,21 @@ static void dispatch(const char *name, int has_arg, int arg) {
     if (!lua_istable(L, -1)) { lua_settop(L, top); return; }
     int list = lua_gettop(L);
     lua_Integer n = (lua_Integer)lua_rawlen(L, list);  // handlers added during dispatch run next time
+    g_dispatch_depth++;
     int dead = 0;
     for (lua_Integer i = 1; i <= n; i++) {
         lua_rawgeti(L, list, i);
         int entry = lua_gettop(L);
+        if (!lua_istable(L, entry)) { lua_settop(L, entry - 1); continue; }
+        lua_getfield(L, entry, "dead");
+        int is_dead = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        if (is_dead) { lua_settop(L, entry - 1); continue; }
         lua_getfield(L, entry, "mod");
         char mod[64];
         snprintf(mod, sizeof mod, "%s", lua_tostring(L, -1));
         lua_pop(L, 1);
+        if (mod_filter && strcmp(mod, mod_filter) != 0) { lua_settop(L, entry - 1); continue; }
         lua_getfield(L, entry, "fn");
         int nargs = 0;
         if (has_arg) { lua_pushinteger(L, arg); nargs = 1; }
@@ -1398,26 +2492,73 @@ static void dispatch(const char *name, int has_arg, int arg) {
         }
         lua_settop(L, entry - 1);
     }
-    if (dead) {  // compact the list, dropping disabled handlers
-        lua_Integer total = (lua_Integer)lua_rawlen(L, list), w = 1;
-        for (lua_Integer i = 1; i <= total; i++) {
-            lua_rawgeti(L, list, i);
-            lua_getfield(L, -1, "dead");
-            int is_dead = lua_toboolean(L, -1);
-            lua_pop(L, 1);
-            if (!is_dead) { lua_rawseti(L, list, w++); }
-            else lua_pop(L, 1);
-        }
-        for (lua_Integer i = w; i <= total; i++) { lua_pushnil(L); lua_rawseti(L, list, i); }
-    }
+    if (dead) g_handlers_dirty = 1;
+    g_dispatch_depth--;
+    if (g_dispatch_depth == 0 && g_handlers_dirty) cleanup_dirty_handlers(L);
     lua_settop(L, top);
 }
 
-void wl_script_event(const char *name) { dispatch(name, 0, 0); }
-void wl_script_event_int(const char *name, int arg) { dispatch(name, 1, arg); }
+void wl_script_event(const char *name) {
+    if (name && strcmp(name, "game_start") == 0) g_in_game = 1;
+    dispatch_filtered(name, NULL, 0, 0);
+}
+void wl_script_event_int(const char *name, int arg) { dispatch_filtered(name, NULL, 1, arg); }
 // Mod building Lua button pressed (buildpage.c): handlers of Game.OnCommand(name, fn).
 void wl_script_command(const char *name, int unit_id) {
     char ev[96];
     snprintf(ev, sizeof ev, "cmd:%s", name ? name : "");
-    dispatch(ev, 1, unit_id);
+    dispatch_filtered(ev, NULL, 1, unit_id);
+}
+
+// Evaluates a condition registered via Game.CommandCondition(name, fn).
+// Unregistered names default to 1 (available). Returning nil or false counts as 0 (not available);
+// Lua errors are logged and return 0. Results are cached per panel refresh when wrapped by
+// wl_script_cond_begin_refresh / wl_script_cond_end_refresh.
+int wl_script_eval_condition(const char *name, int unit_id) {
+    if (!g_L || !g_init_done || !name || !name[0]) return 1;
+    if (g_cond_refresh_active && unit_id == g_cond_refresh_unit_id) {
+        for (int i = 0; i < g_cond_cache_cnt; i++) {
+            if (strcmp(g_cond_cache[i].name, name) == 0) return g_cond_cache[i].result;
+        }
+    }
+    lua_State *L = g_L;
+    int top = lua_gettop(L);
+    lua_getfield(L, LUA_REGISTRYINDEX, WL_CONDS_KEY);
+    if (!lua_istable(L, -1)) { lua_settop(L, top); return 1; }
+    lua_getfield(L, -1, name);
+    if (!lua_istable(L, -1)) { lua_settop(L, top); return 1; }
+
+    char mod[64] = "?";
+    lua_getfield(L, -1, "mod");
+    if (lua_isstring(L, -1)) snprintf(mod, sizeof mod, "%s", lua_tostring(L, -1));
+    lua_pop(L, 1);
+
+    lua_getfield(L, -1, "fn");
+    if (!lua_isfunction(L, -1)) { lua_settop(L, top); return 1; }
+    lua_pushinteger(L, unit_id);
+
+    lua_Hook oh = lua_gethook(L);
+    int om = lua_gethookmask(L), oc = lua_gethookcount(L);
+    if (g_depth++ == 0) budget_start(L);
+    else lua_sethook(L, insn_hook, LUA_MASKCOUNT, g_aborting ? 1 : WL_HOOK_STEP);
+
+    int res = 0;
+    if (lua_pcall(L, 1, 1, 0) == LUA_OK) {
+        // Standard Lua truthiness: nil and false both evaluate to 0 (unavailable).
+        res = lua_toboolean(L, -1);
+    } else {
+        const char *msg = lua_tostring(L, -1);
+        wl_log("[lua:%s] CommandCondition '%s' error: %s", mod, name, msg ? msg : "unknown error");
+        res = 0;
+    }
+    lua_sethook(L, oh, om, oc);
+    if (--g_depth == 0) g_aborting = 0;
+    lua_settop(L, top);
+
+    if (g_cond_refresh_active && unit_id == g_cond_refresh_unit_id && g_cond_cache_cnt < 32) {
+        snprintf(g_cond_cache[g_cond_cache_cnt].name, sizeof g_cond_cache[0].name, "%s", name);
+        g_cond_cache[g_cond_cache_cnt].result = res;
+        g_cond_cache_cnt++;
+    }
+    return res;
 }

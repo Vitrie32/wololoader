@@ -1,52 +1,62 @@
-// "Mod buildings" page: the villager's next-page button cycles economy -> military -> mod
-// buildings -> economy when the player can build a Wololoader unique building. Without such
-// buildings it works as before.
+// "Mod buildings" page and multi-page building command panels.
 //
-// A mod building is a building (master type byte +4 == 80) in the unique-building unit slots
-// 1300..1400 (builders: tools/build.py add_unique_building, slots count down from 1400) whose
-// command_attribute (master byte +0x97, the game's "interface kind") is 2 = economy. Keeping 2
-// matters: the selection panel picks icon sheets and panels from that byte in many places
-// (0x7116a4, 0x7155dc, 0x717a0a ...); an unknown value (30, first try) showed a unit icon.
+// 1) Villager "Mod Buildings" page:
+//    The villager's next-page button cycles economy -> military -> mod buildings -> economy
+//    when the player can build a Wololoader unique building. Without such buildings it works
+//    as before.
+//    A mod building is a building (master type byte +4 == 80) in the unique-building unit slots
+//    1300..1400 (builders: tools/build.py add_unique_building, slots count down from 1400) whose
+//    command_attribute (master byte +0x97, the game's "interface kind") is 2 = economy. Keeping 2
+//    matters: the selection panel picks icon sheets and panels from that byte in many places
+//    (0x7116a4, 0x7155dc, 0x717a0a ...); an unknown value (30, first try) showed a unit icon.
 //
-// Verified in the disassembly (2026-11-15):
-// - GameScreen 0x6ba900 = economy build page (mode [screen+0x1288] = 3), 0x6bac30 = military page
-//   (0x6bac66 movl $4,0x1288(%edi)); both __thiscall(screen), plain ret (0x6bac24, 0x6baf2f).
-//   They list what the villager can build with 0x741a30 __thiscall(player, list*, count*, 118)
-//   ret 0xc into [screen+0xd6c] (entries 0x38 bytes, unit id int16 at +4) / [screen+0xd74]
-//   (count int16), with the master in %ebx, then filter on +0x97:
-//     economy  0x6ba9d5 `80 bb 97 00 00 00 02  74 1a` cmpb $2 ; je 0x6ba9f8 (add button)
-//              else 0x6ba9de: adds it anyway when player resource 82 > 0, otherwise 0x6bab10 (skip)
-//     military 0x6bad07 `80 bb 97 00 00 00 0a  0f 85 17 01 00 00` cmpb $10 ; jne 0x6bae2b (skip),
-//              falls through to 0x6bad14 (add button)
-//   Both are replaced by a jump to an asm stub that asks wl_bp_accept and jumps to one of those
-//   targets. %eax/%ecx/%edx are saved; %ebx (master) is not changed.
-// - The mod page is the military page with g_mods_page set (the refresh, jump table 0x6c64b6, calls
-//   the page function by mode, so it keeps showing whatever g_mods_page says).
-// - 0x6bda60 = next-page button: `mov 0x1288(%ecx),%eax; cmp $3; je 0x6bac30; cmp $4; je 0x6ba900;
-//   ret` (25 bytes). Replaced by page_toggle (9 stolen bytes, no relative jumps in them).
-// - 0x6c020a `e8 21 aa ff ff` = the "build military" command calling 0x6bac30: patched to
-//   military_page, which leaves the mod page first.
-// - "Mod Buildings" command button on the villager panel: the villager branch of the unit
-//   command panel 0x6c96b0 adds Build (slot 0, cmd 0x74, icon 30, help 41061), Military (slot 1,
-//   cmd 0x73, icon 31, help 41062) and Repair (slot 2, `e8 df ec ff ff` call 0x6c9200 at
-//   0x6ca51c, then jmp 0x6ca6b9). That call is patched to add_repair_and_mods, which adds the
-//   repair button and then ours (slot WL_MODS_SLOT, cmd WL_MODS_CMD) when the player can build a
-//   mod building. 0x6c9200 = add command button, __thiscall(screen, sheet [screen+0xab4], slot,
-//   icon, cmd, 0, help {u8 1, int string id, 0xad0380, 0, 0} by value, -1, 0, 0, 0, 0, 0),
-//   ret 0x40 (0x6c945f); the economy page builds the help struct the same way (0x6bab5c..).
-//   Icon: frame "modbuildings" appended to 50721.slp by iconmerge.c (fallback 32, the game's
-//   More Buildings arrow). Help text: string id WL_MODS_HELP, served by civs.c.
-// - command handler 0x6bfc40 __thiscall(screen, cmd, a, b) ret 0xc (0x6c0aa4); cmd 1..0xb7 go
-//   through its jump table, others do nothing, so WL_MODS_CMD = 200 is free. Hooked (stolen
-//   `55 8b ec 6a ff` = push ebp; mov ebp,esp; push -1).
-// - Lua buttons on a mod building's own panel: 0x6c9dc0 builds the command panel of the selected
-//   object [screen+0xd5c] (__thiscall(screen), plain ret 0x6cb960; reached from the panel refresh
-//   0x6c6514 for the unit/building modes). Hooked (stolen `55 8b ec 6a ff`): after the game's
-//   buttons, a finished ([unit+0x4c] == 2, as the research executor checks at 0x815c51) building
-//   of the local player whose unit id has Lua buttons (cache\commands.txt) gets them, slot =
-//   button - 1, cmd WL_LUA_CMD + index; pressing one calls Game.OnCommand handlers (script.c).
-// - local player: 0x540c90 __thiscall(game [0xaf2c58]); masters [player+0x14], count [player+0x10].
+// 2) Multi-page building command panels + button conditions:
+//    Filtering happens at the source inside GameScreen's building panel builder 0x6bb100
+//    (__thiscall(screen), plain ret at 0x6bc601; reached from 0x6c9dc0, 0x6c6490 mode 10, and
+//    0x6bfc40 case 0x79/0xaa). Hooking 0x6bb100 covers every caller, and inline jumps inside its
+//    train loop (0x6bb507) and research loop (0x6bb703) skip any command not belonging to the
+//    active page (or hidden by a Lua condition) BEFORE 0x6c9200 populates a slot. Commands on
+//    different pages can therefore share a button number without overwriting each other, and we
+//    never force visibility onto slots the game did not populate (which previously resurrected
+//    stale icons from hidden buttons because 0x6c6040/0x6bf840 do not clear icon sheet/frame).
+//
+// Verified in the disassembly (AoK HD.exe 5.8, see re/FINDINGS.md "Building command pages"):
+// - 0x6ba900 = economy build page (mode [screen+0x1288] = 3), 0x6bac30 = military page (mode 4);
+//   both __thiscall(screen), plain ret (0x6bac24, 0x6baf2f).
+//   0x741a30 __thiscall(player, list*, count*, 118) ret 0xc lists buildable units into
+//   [screen+0xd6c] (entries 0x38 bytes, unit id int16 at +4) / [screen+0xd74] (count int16).
+//     economy  0x6ba9d5 `80 bb 97 00 00 00 02 74 1a` cmpb $2,0x97(%ebx); je 0x6ba9f8 (add)
+//              else 0x6ba9de, skip 0x6bab10
+//     military 0x6bad07 `80 bb 97 00 00 00 0a 0f 85 17 01 00 00` cmpb $10,0x97(%ebx); jne 0x6bae2b
+//              fallthrough 0x6bad14 (add), skip 0x6bae2b
+// - 0x6bda60 = villager next-page toggle: 9 stolen bytes `8b 81 88 12 00 00 83 f8 03`
+//   (`mov 0x1288(%ecx),%eax; cmp $3,%eax`), no relative jumps.
+// - 0x6c020a `e8 21 aa ff ff` = call 0x6bac30 ("build military" command): patched to military_page.
+// - 0x6ca51c `e8 df ec ff ff` = call 0x6c9200 (villager Repair button): patched to add_repair_and_mods.
+// - 0x6c9200 = GameScreen::setup_command_button __thiscall(screen, 16 dwords) ret 0x40 (0x6c945f).
+//   Sets [btn+0x720] = 1, calls btn->vtable[7](btn, !disabled) (0x479840 ret 4), stores cmd at
+//   [btn + *(short*)(btn+0x54a)*0x70 + 0x1a8] and sub_id at +0x1ac.
+// - 0x6bfc40 = command click dispatcher __thiscall(screen, cmd, a, b) ret 0xc (0x6c0aa4);
+//   5 stolen bytes `55 8b ec 6a ff` (`push ebp; mov ebp,esp; push -1`).
+// - 0x6bb100 = building command panel builder __thiscall(screen) ret (0x6bc601);
+//   5 stolen bytes `55 8b ec 6a ff` (`push ebp; mov ebp,esp; push -1`).
+//   - Train loop filter site 0x6bb507 (7 bytes): `0f b6 b0 a2 01 00 00` (`movzx esi, BYTE PTR [eax+0x1a2]`).
+//     Registers: ebx=screen, edi=player, eax=unit master, ecx=train unit_id, edx=loop index (must preserve!).
+//     Continue 0x6bb50e (`cmp esi, 0xe6`), skip 0x6bb638 (`mov ecx,[ebp-0x414]; inc edx`).
+//   - Research loop filter site 0x6bb703 (9 bytes): `0f b6 c0 89 85 8c fb ff ff`
+//     (`movzx eax, al; mov [ebp-0x474], eax`).
+//     Registers: ebx=screen, edi=player, esi=&screen+0xd64 (research list ptr), [ebp-0x414]=byte offset
+//     (tech_id is WORD at [*(esi) + [ebp-0x414] + 4]), al=button_id.
+//     Continue 0x6bb70c (`cmp eax, 0xe6`), skip 0x6bb87e (`mov edx,[ebp-0x428]; ...`).
+//   - Gather Point added at 0x6bbd99..0x6bbda9: slot 4, action 0x33.
+//   - Ungarrison ("Unload") added at 0x6bbecc..0x6bbedc: slot 9, action 0x4e.
+//   - Calls 0x6bf840 (FinalizeVisibility __thiscall(screen) ret 0x6bf900) at 0x6bc5e1.
+// - Local player: 0x540c90 __thiscall(game [0xaf2c58]); masters [player+0x14], count [player+0x10],
+//   civ object [player+0x1ae4] with civ id int at +8 (verified at 0x6bbe09 and 0x6c5a99..0x6c5aa9).
+// - Button vtable[4] (+0x10 = 0x484f20, ret 4): Panel::set_visible(btn, int visible).
+// - Button vtable[7] (+0x1c = 0x479840, ret 4): Button::set_enabled(btn, int enabled) -> [btn+0xc9], [btn+0x24].
 #include "wololoader.h"
+#include <string.h>
 
 typedef void (__thiscall *Page_t)(void *screen);
 typedef void *(__thiscall *LocalPlayer_t)(void *game);
@@ -56,9 +66,11 @@ static const Page_t econ_page = (Page_t)0x6ba900;
 static const Page_t mil_page = (Page_t)0x6bac30;
 static int g_mods_page;
 
-// Jump targets for the stubs (globals so the asm can reach them).
+// Jump targets for the asm stubs (globals so the asm can reach them).
 DWORD wl_bp_econ_add = 0x6ba9f8, wl_bp_econ_skip = 0x6bab10, wl_bp_econ_else = 0x6ba9de;
 DWORD wl_bp_mil_add = 0x6bad14, wl_bp_mil_skip = 0x6bae2b;
+DWORD wl_bp_train_cont = 0x6bb50e, wl_bp_train_skip = 0x6bb638;
+DWORD wl_bp_res_cont = 0x6bb70c, wl_bp_res_skip = 0x6bb87e;
 
 static int is_mod_building(const BYTE *master) {
     if (!master || master[4] != 80 || master[0x97] != 2) return 0;
@@ -76,8 +88,59 @@ int __cdecl wl_bp_accept(const BYTE *master, int page) {
     return master[0x97] == 10;
 }
 
+static int get_player_civ(void *player) {
+    if (!player) return -1;
+    BYTE *civ_obj = *(BYTE **)((char *)player + 0x1ae4);
+    return civ_obj ? *(int *)(civ_obj + 8) : -1;
+}
+
+// Active building command-page filter context (set during bldg_panel_hook -> o_bldg_panel).
+static int g_bldg_active_page = 1;
+static void *g_bldg_last_unit = NULL;
+static int g_bldg_last_unit_id = -1;
+static int g_filter_active = 0;
+static int g_filter_civ = -1;
+static int g_filter_bldg = -1;
+static int g_filter_unit_id = -1;
+
+// Returns 1 to let 0x6bb100 populate this train/research item, 0 to skip it at the source.
+static int filter_bldg_item(const char *kind, int target_id) {
+    if (!g_filter_active) return 1;
+    int nb = 0;
+    const WlBuildingCmd *bcmds = wl_building_commands(&nb);
+    const WlBuildingCmd *matched = NULL;
+    for (int i = 0; i < nb; i++) {
+        if (bcmds[i].building == g_filter_bldg && bcmds[i].civ == g_filter_civ &&
+            strcmp(bcmds[i].type, kind) == 0 && bcmds[i].target_id == target_id) {
+            matched = &bcmds[i];
+            break;
+        }
+    }
+    if (!matched) {
+        // Untracked vanilla item on an extended building belongs on page 1 only.
+        return g_bldg_active_page == 1 ? 1 : 0;
+    }
+    if (matched->page != g_bldg_active_page) return 0;
+    if (matched->cond_name[0] && strcmp(matched->cond_action, "hide") == 0) {
+        if (!wl_script_eval_condition(matched->cond_name, g_filter_unit_id)) return 0;
+    }
+    return 1;
+}
+
+int __cdecl wl_bp_filter_train(void *screen, int train_unit_id) {
+    (void)screen;
+    return filter_bldg_item("train", train_unit_id);
+}
+
+int __cdecl wl_bp_filter_research(void *screen, int tech_id) {
+    (void)screen;
+    return filter_bldg_item("research", tech_id);
+}
+
 void wl_bp_stub_econ(void);
 void wl_bp_stub_mil(void);
+void wl_bp_stub_train(void);
+void wl_bp_stub_research(void);
 __asm__(
     ".text\n"
     ".globl _wl_bp_stub_econ\n"
@@ -94,7 +157,33 @@ __asm__(
     "  pushl $1\n  pushl %ebx\n  call _wl_bp_accept\n  addl $8, %esp\n"
     "  testl %eax, %eax\n  jnz 3f\n"
     "  popl %edx\n  popl %ecx\n  popl %eax\n  jmp *_wl_bp_mil_skip\n"
-    "3:\n  popl %edx\n  popl %ecx\n  popl %eax\n  jmp *_wl_bp_mil_add\n");
+    "3:\n  popl %edx\n  popl %ecx\n  popl %eax\n  jmp *_wl_bp_mil_add\n"
+    // Replaces 0x6bb507 (7 bytes): 0f b6 b0 a2 01 00 00 (movzx esi, byte ptr [eax+0x1a2])
+    ".globl _wl_bp_stub_train\n"
+    "_wl_bp_stub_train:\n"
+    "  movzbl 0x1a2(%eax), %esi\n"
+    "  pushl %eax\n  pushl %ecx\n  pushl %edx\n"
+    "  pushl %ecx\n  pushl %ebx\n  call _wl_bp_filter_train\n  addl $8, %esp\n"
+    "  testl %eax, %eax\n"
+    "  popl %edx\n  popl %ecx\n  popl %eax\n"
+    "  jz 4f\n"
+    "  jmp *_wl_bp_train_cont\n"
+    "4:\n  jmp *_wl_bp_train_skip\n"
+    // Replaces 0x6bb703 (9 bytes): 0f b6 c0 89 85 8c fb ff ff (movzx eax, al; mov [ebp-0x474], eax)
+    ".globl _wl_bp_stub_research\n"
+    "_wl_bp_stub_research:\n"
+    "  movzbl %al, %eax\n"
+    "  movl %eax, -0x474(%ebp)\n"
+    "  pushl %eax\n  pushl %ecx\n  pushl %edx\n"
+    "  movl (%esi), %edx\n"
+    "  movl -0x414(%ebp), %ecx\n"
+    "  movzwl 4(%edx,%ecx,1), %edx\n"
+    "  pushl %edx\n  pushl %ebx\n  call _wl_bp_filter_research\n  addl $8, %esp\n"
+    "  testl %eax, %eax\n"
+    "  popl %edx\n  popl %ecx\n  popl %eax\n"
+    "  jz 5f\n"
+    "  jmp *_wl_bp_res_cont\n"
+    "5:\n  jmp *_wl_bp_res_skip\n");
 
 static int has_mod_buildings(void *screen) {
     void *game = *(void **)0xaf2c58;
@@ -121,10 +210,10 @@ static void __fastcall page_toggle(void *screen, void *edx) {
         g_mods_page = 0;
         mil_page(screen);
     } else if (mode == 4) {
-        if (!g_mods_page && has_mod_buildings(screen)) {   // military -> mod buildings
+        if (!g_mods_page && has_mod_buildings(screen)) { // military -> mod buildings
             g_mods_page = 1;
             mil_page(screen);
-        } else {                                       // military or mod page -> economy
+        } else {                                       // mod page (or no mod buildings) -> economy
             g_mods_page = 0;
             econ_page(screen);
         }
@@ -145,7 +234,11 @@ void wl_buildpage_open(void *screen) {
 
 #define WL_MODS_SLOT 7
 #define WL_MODS_CMD 200
+#define WL_BLDG_NEXTPAGE_CMD 201
+// Disjoint from WL_MODS_CMD (200), WL_BLDG_NEXTPAGE_CMD (201), and game commands (1..0xb7).
+#define WL_LUA_CMD 210
 #define WL_MODS_HELP 28490
+#define WL_NEXTPAGE_HELP 28491
 
 typedef void (__thiscall *AddButton_t)(void *screen, DWORD sheet, DWORD slot, DWORD icon, DWORD cmd, DWORD z,
                                         DWORD h0, DWORD h1, DWORD h2, DWORD h3, DWORD h4,
@@ -165,42 +258,219 @@ static void __fastcall add_repair_and_mods(void *screen, void *edx, DWORD sheet,
         1, WL_MODS_HELP, 0xad0380, 0, 0, (DWORD)-1, 0, 0, 0, 0, 0);
 }
 
-#define WL_LUA_CMD 201
-typedef void (__thiscall *Panel_t)(void *screen);
-static Panel_t o_panel;
+typedef void (__thiscall *BldgPanel_t)(void *screen);
+typedef void (__thiscall *FinalizeVisibility_t)(void *screen);
+static BldgPanel_t o_bldg_panel;
+static const DWORD ADDR_FINALIZE_VISIBILITY = 0x006bf840;
 
-static void __fastcall panel_hook(void *screen, void *edx) {
+static void set_button_visible(void *btn, int visible) {
+    if (!btn) return;
+    *(int *)((char *)btn + 0x720) = visible ? 1 : 0;
+    void **vtable = *(void ***)btn;
+    if (vtable && vtable[4]) {
+        ((void (__thiscall *)(void *, int))vtable[4])(btn, visible ? 1 : 0);
+    }
+}
+
+// [btn+0x724] greys the button in draw (0x7120b0); button vtable[7] (+0x1c = 0x479840, ret 4)
+// sets [btn+0xc9] and [btn+0x24] so click/hotkey handlers ignore disabled buttons.
+static void set_button_disabled(void *btn, int disabled) {
+    if (!btn) return;
+    *(int *)((char *)btn + 0x724) = disabled ? 1 : 0;
+    void **vtable = *(void ***)btn;
+    if (vtable && vtable[7]) {
+        ((void (__thiscall *)(void *, int))vtable[7])(btn, disabled ? 0 : 1);
+    }
+}
+
+// Action id stored on a command button (0x6c9200 at 0x6c92a6..0x6c92c0):
+// indexed by state *(short*)(btn + 0x54a) * 0x70 + 0x1a8.
+static int button_action(void *btn) {
+    if (!btn) return 0;
+    int st = *(short *)((char *)btn + 0x54a);
+    if (st < 0 || st > 8) st = 0;
+    return *(int *)((char *)btn + st * 0x70 + 0x1a8);
+}
+
+// Guard built-in building buttons added by 0x6bb100:
+// Gather Point = slot 4, action 0x33 (0x6bbd99); Ungarrison ("Unload") = slot 9, action 0x4e (0x6bbecc).
+static int is_protected_builtin(int slot, void *btn) {
+    if (!btn || *(int *)((char *)btn + 0x720) == 0) return 0;
+    int act = button_action(btn);
+    if (slot == 4 && act == 0x33) return 1;
+    if (slot == 9 && (act == 0x4e || act == 0x4d)) return 1;
+    return 0;
+}
+
+// Inspect pages that have at least one command for (civ, bldg).
+// Outputs lowest page (first_page), highest page (max_page), and count of distinct pages (num_pages).
+static int scan_bldg_pages(const WlBuildingCmd *bcmds, int nb, int civ, int bldg,
+                           int *out_first, int *out_max, int *out_num_pages) {
+    int count = 0, first_page = 0, max_page = 0;
+    for (int i = 0; i < nb; i++) {
+        if (bcmds[i].building == bldg && bcmds[i].civ == civ) {
+            int p = bcmds[i].page >= 1 ? bcmds[i].page : 1;
+            count++;
+            if (first_page == 0 || p < first_page) first_page = p;
+            if (p > max_page) max_page = p;
+        }
+    }
+    int num_pages = 0;
+    for (int p = first_page; p > 0 && p <= max_page; p++) {
+        for (int i = 0; i < nb; i++) {
+            if (bcmds[i].building == bldg && bcmds[i].civ == civ && bcmds[i].page == p) {
+                num_pages++;
+                break;
+            }
+        }
+    }
+    if (out_first) *out_first = first_page > 0 ? first_page : 1;
+    if (out_max) *out_max = max_page > 0 ? max_page : 1;
+    if (out_num_pages) *out_num_pages = num_pages;
+    return count;
+}
+
+static int page_has_commands(const WlBuildingCmd *bcmds, int nb, int civ, int bldg, int page) {
+    for (int i = 0; i < nb; i++) {
+        if (bcmds[i].building == bldg && bcmds[i].civ == civ && bcmds[i].page == page) return 1;
+    }
+    return 0;
+}
+
+static void __fastcall bldg_panel_hook(void *screen, void *edx) {
     (void)edx;
-    o_panel(screen);
-    int n;
-    const WlLuaButton *b = wl_lua_buttons(&n);
-    if (!n) return;
+
     BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
     void *game = *(void **)0xaf2c58;
     void *me = game ? ((LocalPlayer_t)0x540c90)(game) : NULL;
-    if (!unit || !me || *(void **)(unit + 0x10) != me || unit[0x4c] != 2) return;
-    BYTE *master = *(BYTE **)(unit + 0xc);
-    if (!master) return;
-    int id = *(short *)(master + 0x10);
+    int nb = 0;
+    const WlBuildingCmd *bcmds = wl_building_commands(&nb);
+
+    int id = -1, civ = -1, unit_id = -1;
+    int count = 0, first_page = 1, max_page = 1, num_pages = 0;
+    if (nb > 0 && unit && me && *(void **)(unit + 0x10) == me && unit[0x4c] == 2) {
+        BYTE *master = *(BYTE **)(unit + 0xc);
+        if (master && master[4] == 80) {
+            id = *(short *)(master + 0x10);
+            civ = get_player_civ(me);
+            unit_id = (int)*(DWORD *)(unit + 8);
+            count = scan_bldg_pages(bcmds, nb, civ, id, &first_page, &max_page, &num_pages);
+        }
+    }
+
+    if (count > 0) {
+        if (unit != g_bldg_last_unit || unit_id != g_bldg_last_unit_id) {
+            g_bldg_last_unit = unit;
+            g_bldg_last_unit_id = unit_id;
+            g_bldg_active_page = first_page;
+        } else if (!page_has_commands(bcmds, nb, civ, id, g_bldg_active_page)) {
+            g_bldg_active_page = first_page;
+        }
+        g_filter_active = 1;
+        g_filter_civ = civ;
+        g_filter_bldg = id;
+        g_filter_unit_id = unit_id;
+        wl_script_cond_begin_refresh(unit_id);
+    } else {
+        g_filter_active = 0;
+    }
+
+    o_bldg_panel(screen);
+
+    g_filter_active = 0;
+    if (count == 0) return;
+
+    void **buttons = (void **)((char *)screen + 0xb14);
     AddButton_t add = (AddButton_t)0x6c9200;
     DWORD sheet = *(DWORD *)((char *)screen + 0xab4);
-    for (int i = 0; i < n && i < 50; i++) {
-        if (b[i].building != id || b[i].button < 1 || b[i].button > 15) continue;
-        add(screen, sheet, (DWORD)(b[i].button - 1), (DWORD)b[i].icon, (DWORD)(WL_LUA_CMD + i), 0,
-            1, (DWORD)b[i].help, 0xad0380, 0, 0, (DWORD)-1, 0, 0, 0, 0, 0);
+    int need_finalize = 0;
+
+    // 0x6bb100 already filtered train/research commands at the source (0x6bb507/0x6bb703)
+    // and called 0x6bf840. Now add active-page Lua buttons, apply disable/hide conditions
+    // only to slots that were actually populated, and add Next Page when >1 page exists.
+    for (int i = 0; i < nb; i++) {
+        const WlBuildingCmd *bc = &bcmds[i];
+        if (bc->building != id || bc->civ != civ || bc->page != g_bldg_active_page) continue;
+        if (bc->button < 1 || bc->button > 14) continue;
+        int slot = bc->button - 1;
+
+        int is_avail = 1;
+        if (bc->cond_name[0]) {
+            is_avail = wl_script_eval_condition(bc->cond_name, unit_id);
+        }
+
+        if (strcmp(bc->type, "lua") == 0) {
+            if (!is_avail && strcmp(bc->cond_action, "hide") == 0) continue;
+            if (is_protected_builtin(slot, buttons[slot])) continue;
+            add(screen, sheet, (DWORD)slot, (DWORD)bc->icon, (DWORD)(WL_LUA_CMD + i), 0,
+                1, (DWORD)bc->help, 0xad0380, 0, 0, (DWORD)-1, 0, 0, 0, 0, 0);
+            need_finalize = 1;
+            if (!is_avail && strcmp(bc->cond_action, "disable") == 0 && buttons[slot]) {
+                set_button_disabled(buttons[slot], 1);
+            }
+        } else {
+            // Never force visibility on a slot 0x6bb100 did not populate ([btn+0x720] == 0).
+            if (!buttons[slot] || *(int *)((char *)buttons[slot] + 0x720) == 0) continue;
+            if (is_protected_builtin(slot, buttons[slot])) continue;
+            if (!is_avail) {
+                if (strcmp(bc->cond_action, "hide") == 0) {
+                    set_button_visible(buttons[slot], 0);
+                    need_finalize = 1;
+                } else if (strcmp(bc->cond_action, "disable") == 0) {
+                    set_button_disabled(buttons[slot], 1);
+                }
+            }
+        }
     }
+
+    if (num_pages > 1) {
+        add(screen, sheet, 14, 32, WL_BLDG_NEXTPAGE_CMD, 0,
+            1, WL_NEXTPAGE_HELP, 0xad0380, 0, 0, (DWORD)-1, 0, 0, 0, 0, 0);
+        need_finalize = 1;
+    }
+
+    if (need_finalize) {
+        ((FinalizeVisibility_t)ADDR_FINALIZE_VISIBILITY)(screen);
+    }
+    wl_script_cond_end_refresh();
 }
 
 static void __fastcall command_hook(void *screen, void *edx, int cmd, int a, int b) {
     (void)edx;
     if (cmd == WL_MODS_CMD) { wl_buildpage_open(screen); return; }
-    if (cmd >= WL_LUA_CMD && cmd < WL_LUA_CMD + 50) {
-        int n;
-        const WlLuaButton *lb = wl_lua_buttons(&n);
+    if (cmd == WL_BLDG_NEXTPAGE_CMD) {
         BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
-        if (cmd - WL_LUA_CMD < n && unit) {
+        void *game = *(void **)0xaf2c58;
+        void *me = game ? ((LocalPlayer_t)0x540c90)(game) : NULL;
+        if (unit && me) {
+            BYTE *master = *(BYTE **)(unit + 0xc);
+            if (master) {
+                int id = *(short *)(master + 0x10);
+                int civ = get_player_civ(me);
+                int nb = 0;
+                const WlBuildingCmd *bcmds = wl_building_commands(&nb);
+                int first_page = 1, max_page = 1, num_pages = 0;
+                if (scan_bldg_pages(bcmds, nb, civ, id, &first_page, &max_page, &num_pages) > 0) {
+                    int next_page = 0;
+                    for (int p = g_bldg_active_page + 1; p <= max_page; p++) {
+                        if (page_has_commands(bcmds, nb, civ, id, p)) { next_page = p; break; }
+                    }
+                    if (next_page == 0) next_page = first_page;
+                    g_bldg_active_page = next_page;
+                    bldg_panel_hook(screen, NULL);
+                }
+            }
+        }
+        return;
+    }
+    if (cmd >= WL_LUA_CMD && cmd < WL_LUA_CMD + WL_MAX_BLDG_CMDS) {
+        int nb = 0;
+        const WlBuildingCmd *bcmds = wl_building_commands(&nb);
+        int idx = cmd - WL_LUA_CMD;
+        BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
+        if (idx < nb && unit && strcmp(bcmds[idx].type, "lua") == 0) {
             wl_cmd_set_local_ctx(1);
-            wl_script_command(lb[cmd - WL_LUA_CMD].name, (int)*(DWORD *)(unit + 8));
+            wl_script_command(bcmds[idx].name, (int)*(DWORD *)(unit + 8));
             wl_cmd_set_local_ctx(0);
         }
         return;
@@ -222,30 +492,37 @@ static int patch_jmp(DWORD at, void *to, int len) {
 
 void wl_install_buildpage(void) {
     static const BYTE b_toggle[] = { 0x8b, 0x81, 0x88, 0x12, 0x00, 0x00, 0x83, 0xf8, 0x03 };
-    static const BYTE b_econ[] = { 0x80, 0xbb, 0x97, 0x00, 0x00, 0x00, 0x02, 0x74, 0x1a };
-    static const BYTE b_mil[] = { 0x80, 0xbb, 0x97, 0x00, 0x00, 0x00, 0x0a, 0x0f, 0x85, 0x17, 0x01, 0x00, 0x00 };
-    static const BYTE b_call[] = { 0xe8, 0x21, 0xaa, 0xff, 0xff };
+    static const BYTE b_econ[]   = { 0x80, 0xbb, 0x97, 0x00, 0x00, 0x00, 0x02, 0x74, 0x1a };
+    static const BYTE b_mil[]    = { 0x80, 0xbb, 0x97, 0x00, 0x00, 0x00, 0x0a, 0x0f, 0x85, 0x17, 0x01, 0x00, 0x00 };
+    static const BYTE b_call[]   = { 0xe8, 0x21, 0xaa, 0xff, 0xff };
     static const BYTE b_repair[] = { 0xe8, 0xdf, 0xec, 0xff, 0xff };
-    static const BYTE b_cmd[] = { 0x55, 0x8b, 0xec, 0x6a, 0xff };
-    static const BYTE b_panel[] = { 0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0xc6, 0xc1, 0x95, 0x00 };
+    static const BYTE b_cmd[]    = { 0x55, 0x8b, 0xec, 0x6a, 0xff };
+    static const BYTE b_bldg[]   = { 0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0x1a, 0xb3, 0x95, 0x00 };
+    static const BYTE b_train[]  = { 0x0f, 0xb6, 0xb0, 0xa2, 0x01, 0x00, 0x00 };
+    static const BYTE b_res[]    = { 0x0f, 0xb6, 0xc0, 0x89, 0x85, 0x8c, 0xfb, 0xff, 0xff };
+
     if (memcmp((void *)0x6bda60, b_toggle, sizeof b_toggle) || memcmp((void *)0x6ba9d5, b_econ, sizeof b_econ) ||
         memcmp((void *)0x6bad07, b_mil, sizeof b_mil) || memcmp((void *)0x6c020a, b_call, sizeof b_call) ||
         memcmp((void *)0x6ca51c, b_repair, sizeof b_repair) || memcmp((void *)0x6bfc40, b_cmd, sizeof b_cmd) ||
-        // 0x6c9dc0 may already start with formtab.c's JMP (formations tab): wl_hook chains to it
-        (memcmp((void *)0x6c9dc0, b_panel, sizeof b_panel) && *(BYTE *)0x6c9dc0 != 0xE9)) {
-        wl_log("buildpage: unexpected bytes, mod buildings page off (econ %d mil %d toggle %d call %d repair %d cmd %d panel %d)",
+        memcmp((void *)0x6bb100, b_bldg, sizeof b_bldg) || memcmp((void *)0x6bb507, b_train, sizeof b_train) ||
+        memcmp((void *)0x6bb703, b_res, sizeof b_res)) {
+        wl_log("buildpage: unexpected bytes, mod buildings page off (econ %d mil %d toggle %d call %d repair %d cmd %d bldg %d train %d res %d)",
                !memcmp((void *)0x6ba9d5, b_econ, sizeof b_econ), !memcmp((void *)0x6bad07, b_mil, sizeof b_mil),
                !memcmp((void *)0x6bda60, b_toggle, sizeof b_toggle), !memcmp((void *)0x6c020a, b_call, sizeof b_call),
                !memcmp((void *)0x6ca51c, b_repair, sizeof b_repair), !memcmp((void *)0x6bfc40, b_cmd, sizeof b_cmd),
-               !memcmp((void *)0x6c9dc0, b_panel, sizeof b_panel));
+               !memcmp((void *)0x6bb100, b_bldg, sizeof b_bldg), !memcmp((void *)0x6bb507, b_train, sizeof b_train),
+               !memcmp((void *)0x6bb703, b_res, sizeof b_res));
         return;
     }
     int ok = patch_jmp(0x6ba9d5, (void *)wl_bp_stub_econ, sizeof b_econ);
     ok = ok && patch_jmp(0x6bad07, (void *)wl_bp_stub_mil, sizeof b_mil);
+    ok = ok && patch_jmp(0x6bb507, (void *)wl_bp_stub_train, sizeof b_train);
+    ok = ok && patch_jmp(0x6bb703, (void *)wl_bp_stub_research, sizeof b_res);
     ok = ok && wl_hook(0x6bda60, page_toggle, 9) != NULL;
     ok = ok && wl_patch_call(0x6c020a, military_page, 5);
     ok = ok && wl_patch_call(0x6ca51c, add_repair_and_mods, 5);
     ok = ok && (o_command = (Command_t)wl_hook(0x6bfc40, command_hook, 5)) != NULL;
-    ok = ok && (o_panel = (Panel_t)wl_hook(0x6c9dc0, panel_hook, 5)) != NULL;
+    // Stolen 5 bytes at 0x6bb100: 55 8b ec 6a ff (push ebp; mov ebp,esp; push -1)
+    ok = ok && (o_bldg_panel = (BldgPanel_t)wl_hook(0x6bb100, bldg_panel_hook, 5)) != NULL;
     wl_log("buildpage: mod buildings page %s", ok ? "installed" : "FAILED");
 }

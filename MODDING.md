@@ -153,6 +153,7 @@ Both the C builder (`datbuild.c`) and reference builder (`build.py`) strictly va
 | `ai_names` | list of strings | No | Base civ's AI names | Player names used by the AI in the lobby when playing this civilization (up to 40 names). |
 | `sound` | string | No | Base civ selection sound | Relative path to an audio file inside the mod folder (e.g. `"select.mp3"`). Played when clicked in the lobby civ picker. |
 | `interface_slp` | string | No | Base civ interface art | Relative path to an SLP file inside the mod folder (e.g. `"game_b.slp"`) overriding the in-game bottom HUD frame. |
+| `history` | object | No | Base civ description fallback | Custom history entry for the in-game History screen. Keys: `title` (string), `text_file` (relative path to `.txt`), `text` (inline string), `image` (top-right illustration PNG), `side_image` (bottom-left illustration PNG). |
 | `enabled_techs` | list of ints | No | `[]` | Technology IDs to enable that were previously forbidden in the base civ (removes engine `type=102` bans). |
 | `disabled_techs` | list of ints | No | `[]` | Technology IDs to ban/hide in the tech tree (injects engine `type=102` bans). |
 | `enabled_units` | list of ints | No | `[]` | Unit IDs to enable (injects engine `type=2, a=unit, b=1`). |
@@ -191,6 +192,12 @@ Both the C builder (`datbuild.c`) and reference builder (`build.py`) strictly va
   "ai_names": ["Abbot Wololo", "Sister Ayoyo", "Brother Rogan", "Prior Halleluja", "Father Mumbles"],
   "sound": "select.mp3",
   "interface_slp": "game_b.slp",
+  "history": {
+    "title": "The Monklanians",
+    "text_file": "history/monklanians.txt",
+    "image": "history/monklanians.png",
+    "side_image": "history/monklanians_side.png"
+  },
   "enabled_techs": [316, 435],
   "disabled_techs": [209],
   "disabled_units": [283],
@@ -210,6 +217,35 @@ Both the C builder (`datbuild.c`) and reference builder (`build.py`) strictly va
   }
 }
 ```
+
+### In-Game History Screen (`history`)
+
+Wololoader integrates modded civilizations into the game's **History** screen (**Main Menu > History**).
+
+A toggle button (**Mod civs: Off** / **Mod civs: On**) appears at the top above the history listbox:
+- **Mod civs: Off**: Displays the vanilla 52 historical topics and civilizations with original artwork, narration sounds, and texts.
+- **Mod civs: On**: Populates the list with all active custom mod civilizations (IDs 35+). Selecting a mod civilization displays its custom title, formatted history text (with `<B>` bold heading support), top-right artwork, and bottom-left side illustration, while playing the civilization's selection sound (`"sound"` key).
+
+#### Defining Civ History in JSON
+
+In your civilization's JSON (`mods/<mod>/civs/<civ>.json`), add an optional `"history"` object:
+
+```json
+"history": {
+  "title": "The Monklanians",
+  "text_file": "history/monklanians.txt",
+  "image": "history/monklanians.png",
+  "side_image": "history/monklanians_side.png"
+}
+```
+
+- **`title`** *(string, optional)*: Header title shown above the history text and in the listbox. Defaults to civilization `name`.
+- **`text_file`** *(string, optional)*: Path relative to your mod directory to a UTF-8 text file containing the civilization's history article. Supports newline characters and formatting tags such as `<B>Title<B>`, which are parsed through the engine's rich text formatter.
+- **`text`** *(string, optional)*: Inline history text if `text_file` is not used.
+- **`image`** *(string, optional)*: Path relative to your mod directory to a PNG image (e.g. `history/monklanians.png`). Scaled and displayed in the main illustration panel above the article text (x=710, y=90, w=280, h=240).
+- **`side_image`** *(string, optional)*: Path relative to your mod directory to a PNG image (e.g. `history/monklanians_side.png`). Displayed in the bottom-left illustration panel below the topic listbox (x=184, y=514, w=280, h=206). If omitted, the bottom-left slot remains empty with vanilla pictures hidden so no stale image remains.
+- **Sound**: When selected, the civ's audio defined in `"sound"` (e.g. `"sound": "select.mp3"`) is played via the game's sound system. If omitted, no sound plays. Sound automatically stops when clicking Back, toggling Mod civs off, or selecting another topic.
+- **Fallback**: If no `"history"` object is provided, the civilization's `"description"` text is used, ensuring every mod civilization has an entry on the History screen.
 
 ---
 
@@ -1121,3 +1157,151 @@ The Scripting API above is built on these functions; they stay available.
 ## Custom taunts
 
 Put sound files in a `taunts/` folder of your mod, named like the game's own taunts: the number, a space, a name, `.mp3` (for example `taunts/43 wololo again.mp3`). Typing `43` in chat then plays it. The game ships taunts 1 to 42; chat accepts numbers up to 256. A file with the same number and name as a game taunt (for example `30 wololo.mp3`) replaces it. Taunts are sent as chat text, so they do not change the game data, but other players only hear the sound if they have the mod too. Mod taunts also show in the in-game taunt list (F11).
+
+## Dev Panel and console
+
+Wololoader includes an in-game **Dev Panel** and standalone **Lua console** as part of `mods/WololoaderBase` (can be disabled via `"dev_panel": false` in `WololoaderBase/mod.json`).
+
+- **Toggle**: click the **DEV** button (top-left) or press `Ctrl+Shift+D` for the Dev Panel. Press `Ctrl+Shift+C` or click the **Console** button in the Dev Panel to toggle the Lua console window (`Esc` closes it).
+- **Actions**: add/reset resources, change age, research economy/blacksmith techs, spawn 1–1000 units, clone/delete selected units, and kill/raze enemies. Actions use the multiplayer-safe command path (`gamecmd.c`).
+- **Lua console**: opens as a dark, slightly transparent panel docked on the right side of the screen (40% width, between the top resource bar and bottom command panel, adapting to resolution and window resizes) and automatically focuses the bottom input line without leaking typed keys to the game. Press `Enter` to run expressions or statements (auto-returns expressions; `= expr` is also supported). Use the mouse wheel, `PageUp`/`PageDown`, or `^`/`v` to scroll, `Up`/`Down` for command history, and `Clr` or `clear()` to clear. Built-in helpers: `help()` (prints the grouped `Game`, `Player`, `Unit`, `UI`, and `Events` API), shortcuts `me` (`Game.LocalPlayer`), `sel` (`Game.Selected()`), and `players` (`Game.Players()`), pretty-printing of tables (one level deep with keys) and `Player`/`Unit` objects, and `print(...)` to console output. Runs in a dedicated sandboxed environment with the same instruction/memory limits as mod scripts (no `io`, `os`, or bytecode loading).
+- **Multiplayer rule**: in single player the Dev Panel and console are always available. In multiplayer (`Game:IsMultiplayer()`), they are disabled unless cheats are enabled in the match settings (`Game:CheatsEnabled()`), enforced in both Lua and C.
+
+## Per-Civilization Victory Sound (`victory_sound`)
+
+A custom civilization JSON can specify an optional `"victory_sound"` identity key pointing to an `.mp3` or `.wav` file inside your mod folder (for example `"victory_sound": "sounds/victory.mp3"`). You can also set it in Scriptorium under the civilization editor's **Theme Audio** section.
+
+- When a match ends and the **local player** has won, Wololoader plays that civilization's `victory_sound` on the music channel instead of the game's default victory music (`won1.mp3` / `won2.mp3`).
+- If the local player lost, or if their civilization has no `victory_sound` (or the file is missing/unreadable), vanilla victory/defeat music plays as usual.
+
+---
+
+## Custom Units (`custom_units`)
+
+Any civilization JSON (including `"extend"` mods) can define an optional `"custom_units"` array to add brand-new trainable units. Each entry allocates a deterministic unit slot in the `1224..1400` `RESERVED` pool (right after `unique_unit` slots), assigns string IDs in `strings.txt`, and enables the unit **only** for that civilization at the chosen age.
+
+```json
+"custom_units": [
+  {
+    "id": "forest_tracker",
+    "name": "Forest Tracker",
+    "copy_from": 4,
+    "help": "Light woodland bowman with extra speed and sight.",
+    "cost": { "wood": 25, "gold": 40 },
+    "hit_points": 35,
+    "attack": 5,
+    "armor": { "melee": 0, "pierce": 1 },
+    "speed": 1.05,
+    "line_of_sight": 7,
+    "available_in_age": 1,
+    "icon": 15000,
+    "graphics": {
+      "standing": 15010,
+      "walking": 15011,
+      "attack": { "slp": 15012, "frames": 10 },
+      "dying": 15013
+    },
+    "trained_at": {
+      "building": 87,
+      "page": 1,
+      "button": 6
+    }
+  }
+]
+```
+
+### Supported Keys
+
+| Key | Required | Description |
+|---|---|---|
+| `id` | **Yes** | Short unique string key within this civilization (1–64 chars). |
+| `name` | **Yes** | Display name (also truncated to 30 ASCII chars for the internal dat name). |
+| `copy_from` | **Yes** | Template unit ID (must be a trainable unit, type `70`). |
+| `help` | No | Tooltip description (defaults to `name`). |
+| `cost` | No | Object with any 1–3 of `food`, `wood`, `stone`, `gold` (`0..32767`). Preserves population cost when using up to 2 resources. |
+| `hit_points` | No | Maximum HP (integer). |
+| `attack` | No | Base attack damage (integer `0..32767`, updates `displayed_attack` and primary melee/pierce attack). |
+| `armor` | No | Integer for melee armor, or `{"melee": n, "pierce": n}`. |
+| `pierce_armor` | No | Pierce armor (integer `0..32767`). |
+| `range` | No | Sets both `max_range` and `displayed_range`. |
+| `speed` | No | Movement speed in tiles/sec. |
+| `line_of_sight` | No | Fog-of-war vision radius. |
+| `train_time` | No | Training duration in seconds. |
+| `units` | No | Advanced field overrides using the same dat field names as top-level `units` (applied before convenience stat keys). |
+| `graphics` | No | Custom animation SLPs (`standing`, `standing2`, `walking`, `running`, `attack`, `dying`, `decay`) in `<mod>/resources/_common/drs/graphics/<slp>.slp`. |
+| `icon` | No | Vanilla unit icon frame index (`0..999` in `50730.slp`) or name/number of a 1-frame SLP in `<mod>/icons/units/<name>.slp` (merged into `50730.slp` starting at frame 249). |
+| `available_in_age` | No | Age when the unit unlocks: `0` Dark (default), `1` Feudal, `2` Castle, `3` Imperial. |
+| `trained_at` | No | `{ "building": <unit_id or "unique_building">, "page": n, "button": 1..14 }` — registers a train button in the building's command panel via `commands.txt`. |
+
+---
+
+## Quick-Testing a Civilization (`Test it` / `autostart.json`)
+
+Scriptorium includes a **Test it** button on each civilization row and in the civilization editor header to drop you straight into a single-player Random Map match with your civilization, skipping all menus.
+
+- **How it works**: Scriptorium saves any pending edits, enables the mod if it was disabled, writes `<game>/wololoader/autostart.json`, and launches AoE2 HD via Steam (`steam://rungameid/221380`) if it is not already running. If the game is already running in a match, return to the Main Menu — Wololoader polls `autostart.json` while the Main Menu is active (~0.5 s), deletes the file immediately, configures single-player `GameSettings`, and launches the match automatically.
+- **Match options popover** (caret button next to **Test it**): choose map (`Arabia`, `Arena`, `Black Forest`, `Islands`, etc.), map size (`tiny`..`giant`), AI count (`0..7`), AI civilization (`random`, `mirror`, or any vanilla civ), difficulty (`easiest`..`hardest`), starting resources (`standard`, `low`, `medium`, `high`), reveal map, and cheats enabled. Defaults are **Arabia, Tiny, 1 Easiest AI, Standard resources, cheats on**, remembered in `localStorage`.
+- **Manual use**: you can also write `<game>/wololoader/autostart.json` by hand:
+
+```json
+{
+  "civ": 35,
+  "map": "Arabia",
+  "size": "tiny",
+  "ai": 1,
+  "ai_civ": "random",
+  "difficulty": "easiest",
+  "resources": "standard",
+  "reveal_map": false,
+  "cheats": true
+}
+```
+
+*(Never runs in Vanilla Mode or in multiplayer.)*
+
+---
+
+## Hot Reload (Lua scripts)
+
+Wololoader automatically watches `<mod>/scripts/*.lua` (including subfolders) for every enabled mod while a game is running (checked about once per second with a 250 ms debounce so half-written saves are not loaded):
+
+- **Clean per-mod reset**: Only the changed mod is unloaded and re-run in a fresh sandbox with a cleared `require` cache. Everything that mod registered is removed first: event handlers (`Game.On*`, `wl.on`), `Game.CommandCondition`, timers (`Time.After`/`Every`), waiting coroutines and `UI.Ask` callbacks, UI elements (frames, labels, buttons, text boxes, hotkeys), and counters. Other mods are untouched.
+- **Mid-game `Game.OnStart`**: When a mod reloads while a match is already in progress, its `Game.OnStart` handlers run again right after `main.lua` succeeds so match-start timers and UI setup work without restarting the match.
+- **Errors**: On a syntax or runtime error, the mod stays unloaded, the full error is written to `wololoader.log`, and a short in-game notification (`Reload failed: <mod>: <error>`) is shown; on success, `Reloaded <mod>` is shown.
+- **Manual reload**: Run `reload("<mod>")` or `reload()` (all changed mods) in the Dev Console, or call `wl.reload("<mod>")` / `wl.reload()` from Lua.
+- **Multiplayer**: Both automatic and manual hot reloads are disabled in multiplayer unless cheats are enabled.
+
+---
+
+## In-Game Mod Hub
+
+You can browse, install, update, and uninstall community mods directly inside Age of Empires II HD without opening Scriptorium:
+
+1. From the Main Menu, open **Mods** and click **Mod Hub** in the top-right corner. (The Mod Hub button is hidden in the multiplayer lobby read-only view.)
+2. Browse the paged mod list (icon, name, version, author, and Installed/Update badge). Select any mod to view its description, size, tags, and dependencies.
+3. Click **Install** or **Update** to download and verify the archive (SHA-256, size, and safe ZIP checks run in a background thread with live progress in the status line; dependencies are installed first). Click **Uninstall** to move a Hub-installed mod to `wololoader/trash/`.
+4. Click **Refresh** to reload the remote index, or **Back** to return to the **Mods** screen (which rescans installed mods and hot-reloads changes when returning to the Main Menu).
+
+---
+
+## Main-Menu Mod Hot Reload (Level 2)
+
+Wololoader applies content-mod changes **without restarting the game** whenever you are at the Main Menu (outside any match, editor, or lobby):
+
+- **Automatic trigger**: Leaving the in-game **Mods** screen (or returning from **Mod Hub** and clicking **Back**) automatically detects enabled/disabled mods, Hub installs/updates/uninstalls, and external edits made in Scriptorium or directly on disk.
+- **Manual trigger**: Click **Reload Mods** in the top-right corner of the **Mods** screen, or run `reload_mods()` in the Dev Console / `wl.reload_mods()` from Lua (only permitted at the Main Menu when no match or lobby is active).
+- **What reloads live**:
+  - `.dat` data changes (units, techs, effects, bonuses, custom civilizations) — rebuilt into `wololoader/cache/empires2_x2_p1.dat`, with cached `GameDataSet` CRC32 invalidated so multiplayer lobby checks use the new `.dat`.
+  - Custom civilizations (added, removed, or modified) — reconciled in the game's civ registry (`DlcPackage`, `Civilization` registry, and unique-tech table); persistent Profile `GameSettings` slots referencing a disabled custom civ are reset to **Random**.
+  - Custom strings, descriptions, history entries, selection/victory sounds, interface art, merged icon sheets (`50721`, `50705..50708`, `50730`), RMS/AI/taunt directory listings, and asset overrides.
+  - DRS packages (`graphics`, `sounds`, `terrain`, and `interface` when brand-new filenames are added/removed).
+  - All Lua mod scripts (full runtime restart) and the multiplayer content checksum (`[WL]` lobby tag).
+- **What still requires a restart**:
+  - **Vanilla Mode** (on/off).
+  - **Wololoader Base** binary engine patches applied at startup (`popcap_1000`, `selection_250`, `borderless`, `formations_tab`). When any of these change, Wololoader reports `Restart required for: ...` on the Mods screen and Main Menu label.
+- **Error recovery**: If a mod fails validation during reload, Wololoader logs the error, clears the broken cache so the game stays playable with the original `.dat`, and shows the error on the Mods screen.
+
+
+
+
+

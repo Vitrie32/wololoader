@@ -47,7 +47,9 @@ typedef struct {
     HBITMAP image_bmp;               // cached bitmap, loaded on first draw
     int image_w, image_h;            // cached dimensions
     int maxlen, numeric;             // text boxes: max characters (1..255), digits only
+    int caret;                       // text boxes: cursor offset 0..strlen(text)
     char placeholder[64];            // text boxes: grey hint while empty
+    int mono;                        // 1 = monospace font (Consolas)
     RECT abs; int shown, z;          // from the last paint (z = draw order)
 } El;
 
@@ -55,6 +57,7 @@ static El g_el[MAX_EL];
 static int g_seq;
 static DWORD g_last_paint;
 static int g_scr_w = 1, g_scr_h = 1;
+static int g_last_scr_w, g_last_scr_h;
 static HWND g_hwnd;
 static WNDPROC g_old_proc;
 static int g_hover = -1, g_pressed = -1, g_z;
@@ -62,6 +65,8 @@ static int g_clicks[32], g_nclicks;
 static int g_hovers[64], g_nhovers;  // hover enter/leave event queue
 static int g_focus = -1;             // text box that gets the keyboard, or -1
 static int g_tev[64], g_ntev;        // text box events: +id changed, -id submitted (Enter)
+static int g_keys[64], g_nkeys;      // key events for focused text box: (id << 16) | vk
+static int g_scrolls[64], g_nscrolls;// wheel events: (id << 16) | (1=up, 2=down)
 
 #define MAX_IMAGES 64
 typedef struct { char path[MAX_PATH]; HBITMAP bmp; int w, h; } ImgCache;
@@ -96,6 +101,18 @@ int wl_ui_create(int type) {
 
 static El *get(int id) { return (id >= 1 && id <= MAX_EL && g_el[id - 1].used) ? &g_el[id - 1] : NULL; }
 
+static void scrub_queue_id(int *q, int *nq, int id, int mode) {
+    int w = 0;
+    for (int i = 0; i < *nq; i++) {
+        int v = q[i];
+        int match = (mode == 0) ? (v == id)
+                  : (mode == 1) ? (v == id || v == -id)
+                  : ((v >> 16) == id);
+        if (!match) q[w++] = v;
+    }
+    *nq = w;
+}
+
 void wl_ui_destroy(int id) {
     El *e = get(id);
     if (!e) return;
@@ -105,16 +122,32 @@ void wl_ui_destroy(int id) {
     if (g_hover == id - 1) g_hover = -1;
     if (g_pressed == id - 1) g_pressed = -1;
     if (g_focus == id - 1) g_focus = -1;
+    scrub_queue_id(g_clicks, &g_nclicks, id, 0);
+    scrub_queue_id(g_hovers, &g_nhovers, id, 1);
+    scrub_queue_id(g_tev, &g_ntev, id, 1);
+    scrub_queue_id(g_keys, &g_nkeys, id, 2);
+    scrub_queue_id(g_scrolls, &g_nscrolls, id, 2);
 }
 
 // key: Text, X, Y, W, H, Anchor, Visible, Color, TextColor, BorderColor, Alpha, TextSize, Bold,
-// Align, Parent, NoColor (no background), NoBorder, Hotkey, Image. Numbers in `v`, text in `s`.
-const char *wl_ui_get_text(int id) { El *e = get(id); return e ? e->text : NULL; }
+// Align, Parent, NoColor (no background), NoBorder, Hotkey, Image, Mono. Numbers in `v`, text in `s`.
+const char *wl_ui_get_text(int id) {
+    if (id == -1) {
+        static char scr_buf[32];
+        snprintf(scr_buf, sizeof scr_buf, "%dx%d", g_scr_w, g_scr_h);
+        return scr_buf;
+    }
+    El *e = get(id);
+    return e ? e->text : NULL;
+}
 
 int wl_ui_set(int id, const char *key, int v, const char *s) {
     El *e = get(id);
     if (!e || !key) return 0;
-    if (!strcmp(key, "Text")) { lstrcpynA(e->text, s ? s : "", sizeof e->text); }
+    if (!strcmp(key, "Text")) {
+        lstrcpynA(e->text, s ? s : "", sizeof e->text);
+        e->caret = (int)strlen(e->text);
+    }
     else if (!strcmp(key, "X")) e->x = v;
     else if (!strcmp(key, "Y")) e->y = v;
     else if (!strcmp(key, "W")) e->w = v < 0 ? 0 : v;
@@ -129,9 +162,15 @@ int wl_ui_set(int id, const char *key, int v, const char *s) {
     else if (!strcmp(key, "Alpha")) e->alpha = v < 0 ? 0 : v > 255 ? 255 : v;
     else if (!strcmp(key, "TextSize")) e->text_size = v < 6 ? 6 : v > 72 ? 72 : v;
     else if (!strcmp(key, "Bold")) e->bold = v != 0;
+    else if (!strcmp(key, "Mono")) e->mono = v != 0;
     else if (!strcmp(key, "Align")) e->align = (v >= 0 && v <= 2) ? v : 0;
     else if (!strcmp(key, "Hotkey")) e->hotkey = v;
-    else if (!strcmp(key, "MaxLength")) { e->maxlen = v < 1 ? 1 : v > 255 ? 255 : v; e->text[e->maxlen] = 0; }
+    else if (!strcmp(key, "MaxLength")) {
+        e->maxlen = v < 1 ? 1 : v > 255 ? 255 : v;
+        e->text[e->maxlen] = 0;
+        int len = (int)strlen(e->text);
+        if (e->caret > len) e->caret = len;
+    }
     else if (!strcmp(key, "Numeric")) e->numeric = v != 0;
     else if (!strcmp(key, "Placeholder")) lstrcpynA(e->placeholder, s ? s : "", sizeof e->placeholder);
     else if (!strcmp(key, "Focus")) { if (e->type == T_TEXTBOX) g_focus = v ? id - 1 : (g_focus == id - 1 ? -1 : g_focus); }
@@ -150,13 +189,16 @@ int wl_ui_set(int id, const char *key, int v, const char *s) {
 }
 
 // ---- drawing --------------------------------------------------------------------------
-static HFONT font(int size, int bold) {
-    static struct { int size, bold; HFONT f; } cache[16];
+static HFONT font(int size, int bold, int mono) {
+    static struct { int size, bold, mono; HFONT f; } cache[32];
     static int n;
-    for (int i = 0; i < n; i++) if (cache[i].size == size && cache[i].bold == bold) return cache[i].f;
+    for (int i = 0; i < n; i++)
+        if (cache[i].size == size && cache[i].bold == bold && cache[i].mono == mono) return cache[i].f;
     HFONT f = CreateFontA(-size, 0, 0, 0, bold ? FW_BOLD : FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
-                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, "Arial");
-    if (n < 16) { cache[n].size = size; cache[n].bold = bold; cache[n].f = f; n++; }
+                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                          mono ? (FIXED_PITCH | FF_MODERN) : DEFAULT_PITCH,
+                          mono ? "Consolas" : "Arial");
+    if (n < 32) { cache[n].size = size; cache[n].bold = bold; cache[n].mono = mono; cache[n].f = f; n++; }
     return f;
 }
 
@@ -360,25 +402,41 @@ static void draw_el(HDC dc, int i) {
         DeleteObject(b);
     }
 
-    // Text box: text (or placeholder), scrolled so the end stays visible, and a blinking caret
+    // Text box: text (or placeholder), scrolled so the caret stays visible, and a blinking caret
     if (e->type == T_TEXTBOX) {
-        HGDIOBJ old = SelectObject(dc, font(e->text_size, e->bold));
+        HGDIOBJ old = SelectObject(dc, font(e->text_size, e->bold, e->mono));
         SetBkMode(dc, TRANSPARENT);
         RECT t = { r.left + 5, r.top, r.right - 5, r.bottom };
-        const char *txt = e->text;
-        int len = (int)strlen(txt);
+        int len = (int)strlen(e->text);
+        int caret = e->caret;
+        if (caret < 0) caret = 0;
+        if (caret > len) caret = len;
+        int avail = t.right - t.left - 4;
+        if (avail < 1) avail = 1;
+        int start = 0;
+        SIZE csz = { 0, 0 };
+        GetTextExtentPoint32A(dc, e->text + start, caret - start, &csz);
+        while (start < caret && csz.cx > avail) {
+            start++;
+            GetTextExtentPoint32A(dc, e->text + start, caret - start, &csz);
+        }
+        const char *txt = e->text + start;
+        int vis_len = len - start;
         SIZE sz = { 0, 0 };
-        GetTextExtentPoint32A(dc, txt, len, &sz);
-        while (len > 0 && sz.cx > t.right - t.left - 4) { txt++; len--; GetTextExtentPoint32A(dc, txt, len, &sz); }
+        GetTextExtentPoint32A(dc, txt, vis_len, &sz);
+        while (vis_len > caret - start && sz.cx > avail) {
+            vis_len--;
+            GetTextExtentPoint32A(dc, txt, vis_len, &sz);
+        }
         if (!e->text[0] && g_focus != i && e->placeholder[0]) {
             SetTextColor(dc, RGB(130, 120, 100));
             DrawTextA(dc, e->placeholder, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
         } else {
             SetTextColor(dc, e->fg);
-            DrawTextA(dc, txt, len, &t, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+            DrawTextA(dc, txt, vis_len, &t, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
         }
         if (g_focus == i && (GetTickCount() / 500) % 2 == 0) {
-            int cx = t.left + sz.cx + 1, h = e->text_size + 2;
+            int cx = t.left + csz.cx + 1, h = e->text_size + 2;
             RECT c = { cx, (r.top + r.bottom - h) / 2, cx + 2, (r.top + r.bottom + h) / 2 };
             HBRUSH b = CreateSolidBrush(e->fg);
             FillRect(dc, &c, b);
@@ -389,7 +447,7 @@ static void draw_el(HDC dc, int i) {
     }
     // Draw text
     if (e->text[0]) {
-        HGDIOBJ old = SelectObject(dc, font(e->text_size, e->bold));
+        HGDIOBJ old = SelectObject(dc, font(e->text_size, e->bold, e->mono));
         SetBkMode(dc, TRANSPARENT);
         UINT fmt = (e->align == 1 ? DT_CENTER : e->align == 2 ? DT_RIGHT : DT_LEFT) | DT_NOPREFIX;
         fmt |= (e->type == T_LABEL) ? DT_WORDBREAK : (DT_SINGLELINE | DT_VCENTER);
@@ -523,25 +581,105 @@ static void update_hover(int new_hover) {
     g_hover = new_hover;
 }
 
+static int textbox_insert_char(El *e, int c) {
+    int len = (int)strlen(e->text);
+    if (e->caret < 0) e->caret = 0;
+    if (e->caret > len) e->caret = len;
+    if (c < 32 || len >= e->maxlen || len >= (int)sizeof e->text - 1) return 0;
+    if (e->numeric && !((c >= '0' && c <= '9') || (c == '-' && e->caret == 0 && e->text[0] != '-'))) return 0;
+    memmove(e->text + e->caret + 1, e->text + e->caret, (size_t)(len - e->caret + 1));
+    e->text[e->caret++] = (char)c;
+    return 1;
+}
+
+static int is_el_visible(int i) {
+    for (int q = i; q >= 0; q = g_el[q].parent) {
+        if (!g_el[q].used || !g_el[q].visible) return 0;
+    }
+    return 1;
+}
+
+static int match_hotkey(int key) {
+    for (int i = 0; i < MAX_EL; i++) {
+        El *e = &g_el[i];
+        if (!e->used || e->type != T_BUTTON || !is_el_visible(i)) continue;
+        if (e->hotkey == key) {
+            if (g_nclicks < 32) g_clicks[g_nclicks++] = i + 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int current_mods(void) {
+    int mods = 0;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= 0x100;
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= 0x200;
+    if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= 0x400;
+    return mods;
+}
+
 static LRESULT CALLBACK ui_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     int active = GetTickCount() - g_last_paint < 300;     // the game screen is on and painting
 
     // Focused text box: it takes the keyboard (the game gets no keys, so no hotkeys fire).
-    if (g_focus >= 0 && (!active || !g_el[g_focus].used || !g_el[g_focus].shown)) g_focus = -1;
+    if (g_focus >= 0 && (!active || !is_el_visible(g_focus))) g_focus = -1;
     if (g_focus >= 0 && (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)) {
         El *e = &g_el[g_focus];
-        if (msg == WM_CHAR) {
-            int c = (int)(unsigned char)wp, len = (int)strlen(e->text);
+        int len = (int)strlen(e->text);
+        if (e->caret < 0) e->caret = 0;
+        if (e->caret > len) e->caret = len;
+        if (msg == WM_KEYDOWN) {
+            if (!(lp & (1 << 30))) {
+                int mods = current_mods();
+                if (wp == VK_ESCAPE && mods == 0) {
+                    if (match_hotkey(VK_ESCAPE)) return 0;
+                    if (g_nkeys < 64) g_keys[g_nkeys++] = ((g_focus + 1) << 16) | VK_ESCAPE;
+                    return 0;
+                }
+                if ((mods & 0x500) && !(mods == 0x100 && wp == 'V') && match_hotkey((int)wp | mods))
+                    return 0;
+            }
+            if (wp == VK_LEFT) { if (e->caret > 0) e->caret--; }
+            else if (wp == VK_RIGHT) { if (e->caret < len) e->caret++; }
+            else if (wp == VK_HOME) { e->caret = 0; }
+            else if (wp == VK_END) { e->caret = len; }
+            else if (wp == VK_DELETE) {
+                if (e->caret < len) {
+                    memmove(e->text + e->caret, e->text + e->caret + 1, (size_t)(len - e->caret));
+                    if (g_ntev < 64) g_tev[g_ntev++] = g_focus + 1;
+                }
+            } else if (wp == 'V' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+                if (OpenClipboard(h)) {
+                    HANDLE clip = GetClipboardData(CF_TEXT);
+                    const char *s = clip ? (const char *)GlobalLock(clip) : NULL;
+                    if (s) {
+                        int added = 0;
+                        for (; *s; s++) {
+                            if ((unsigned char)*s >= 32 && textbox_insert_char(e, (unsigned char)*s)) added = 1;
+                        }
+                        GlobalUnlock(clip);
+                        if (added && g_ntev < 64) g_tev[g_ntev++] = g_focus + 1;
+                    }
+                    CloseClipboard();
+                }
+            } else if (wp == VK_UP || wp == VK_DOWN || wp == VK_PRIOR || wp == VK_NEXT || wp == VK_TAB) {
+                if (g_nkeys < 64) g_keys[g_nkeys++] = ((g_focus + 1) << 16) | (int)(wp & 0xffff);
+            }
+        } else if (msg == WM_CHAR) {
+            int c = (int)(unsigned char)wp;
             if (c == 8) {                                  // Backspace
-                if (len > 0) { e->text[len - 1] = 0; if (g_ntev < 64) g_tev[g_ntev++] = g_focus + 1; }
+                if (e->caret > 0) {
+                    memmove(e->text + e->caret - 1, e->text + e->caret, (size_t)(len - e->caret + 1));
+                    e->caret--;
+                    if (g_ntev < 64) g_tev[g_ntev++] = g_focus + 1;
+                }
             } else if (c == 13) {                          // Enter: submit, keep the text
                 if (g_ntev < 64) g_tev[g_ntev++] = -(g_focus + 1);
                 g_focus = -1;
             } else if (c == 27) {                          // Esc: just leave the box
                 g_focus = -1;
-            } else if (c >= 32 && len < e->maxlen && len < (int)sizeof e->text - 1 &&
-                       (!e->numeric || (c >= '0' && c <= '9') || (c == '-' && len == 0))) {
-                e->text[len] = (char)c; e->text[len + 1] = 0;
+            } else if (textbox_insert_char(e, c)) {
                 if (g_ntev < 64) g_tev[g_ntev++] = g_focus + 1;
             }
         }
@@ -552,23 +690,21 @@ static LRESULT CALLBACK ui_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     if (active && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)) {
         // Check for auto-repeat (lParam bit 30)
         if (!(lp & (1 << 30))) {
-            int vk = (int)wp;
-            int mods = 0;
-            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= 0x100;
-            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= 0x200;
-            if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= 0x400;
-            int key = vk | mods;
+            int key = (int)wp | current_mods();
+            if (match_hotkey(key)) return 0;  // swallow the key
+        }
+    }
 
-            // Find element with matching hotkey
-            for (int i = 0; i < MAX_EL; i++) {
-                El *e = &g_el[i];
-                if (!e->used || !e->shown || e->type != T_BUTTON) continue;
-                if (e->hotkey == key) {
-                    // Queue a click
-                    if (g_nclicks < 32) g_clicks[g_nclicks++] = i + 1;
-                    return 0;  // swallow the key
-                }
-            }
+    if (active && msg == WM_MOUSEWHEEL) {
+        POINT pt = { (short)(WORD)lp, (short)(WORD)(lp >> 16) };
+        ScreenToClient(h, &pt);
+        int x, y, blocking;
+        to_screen(h, MAKELPARAM(pt.x, pt.y), &x, &y);
+        int i = hit(x, y, &blocking);
+        if (blocking && i >= 0) {
+            int delta = (short)(WORD)(wp >> 16);
+            if (g_nscrolls < 64) g_scrolls[g_nscrolls++] = ((i + 1) << 16) | (delta > 0 ? 1 : 2);
+            return 0;
         }
     }
 
@@ -602,13 +738,18 @@ static LRESULT CALLBACK ui_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 
 // From the frame tick (luagame.c): deliver queued clicks and hover events to Lua.
 void wl_ui_frame(void) {
+    if (g_scr_w > 1 && g_scr_h > 1 && (g_scr_w != g_last_scr_w || g_scr_h != g_last_scr_h)) {
+        g_last_scr_w = g_scr_w;
+        g_last_scr_h = g_scr_h;
+        wl_script_event_int("ui_resize", (g_scr_w << 16) | (g_scr_h & 0xffff));
+    }
     int n = g_nclicks;
     if (n) {
         int ids[32];
         memcpy(ids, g_clicks, sizeof(int) * (size_t)n);
         g_nclicks = 0;
         wl_cmd_set_local_ctx(1);
-        for (int i = 0; i < n; i++) wl_script_event_int("ui_click", ids[i]);
+        for (int i = 0; i < n; i++) if (get(ids[i])) wl_script_event_int("ui_click", ids[i]);
         wl_cmd_set_local_ctx(0);
     }
 
@@ -618,8 +759,30 @@ void wl_ui_frame(void) {
         memcpy(ev, g_tev, sizeof(int) * (size_t)nt);
         g_ntev = 0;
         wl_cmd_set_local_ctx(1);
-        for (int i = 0; i < nt; i++)
-            wl_script_event_int(ev[i] > 0 ? "ui_text" : "ui_submit", ev[i] > 0 ? ev[i] : -ev[i]);
+        for (int i = 0; i < nt; i++) {
+            int id = ev[i] > 0 ? ev[i] : -ev[i];
+            if (get(id)) wl_script_event_int(ev[i] > 0 ? "ui_text" : "ui_submit", id);
+        }
+        wl_cmd_set_local_ctx(0);
+    }
+
+    int nk = g_nkeys;
+    if (nk) {
+        int keys[64];
+        memcpy(keys, g_keys, sizeof(int) * (size_t)nk);
+        g_nkeys = 0;
+        wl_cmd_set_local_ctx(1);
+        for (int i = 0; i < nk; i++) if (get(keys[i] >> 16)) wl_script_event_int("ui_key", keys[i]);
+        wl_cmd_set_local_ctx(0);
+    }
+
+    int ns = g_nscrolls;
+    if (ns) {
+        int scrolls[64];
+        memcpy(scrolls, g_scrolls, sizeof(int) * (size_t)ns);
+        g_nscrolls = 0;
+        wl_cmd_set_local_ctx(1);
+        for (int i = 0; i < ns; i++) if (get(scrolls[i] >> 16)) wl_script_event_int("ui_scroll", scrolls[i]);
         wl_cmd_set_local_ctx(0);
     }
 
@@ -630,10 +793,12 @@ void wl_ui_frame(void) {
         g_nhovers = 0;
         wl_cmd_set_local_ctx(1);
         for (int i = 0; i < nh; i++) {
+            int id = events[i] < 0 ? -events[i] : events[i];
+            if (!get(id)) continue;
             if (events[i] < 0) {
-                wl_script_event_int("ui_leave", -events[i]);
+                wl_script_event_int("ui_leave", id);
             } else {
-                wl_script_event_int("ui_enter", events[i]);
+                wl_script_event_int("ui_enter", id);
             }
         }
         wl_cmd_set_local_ctx(0);

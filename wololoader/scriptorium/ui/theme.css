@@ -241,3 +241,142 @@ body .mod-tile-icon.is-generated { background: none !important; border: 0 !impor
 .icon-picker-side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .icon-picker-hint { color: var(--text-3); font-size: 12px; line-height: 1.45; margin: 0; }
 .icon-picker-error { color: var(--danger); font-size: 12px; min-height: 1em; margin: 0; }
+
+/* ---------------------------------------------------------------- progressive disclosure */
+.sc-more-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.sc-more-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  min-width: 185px;
+  padding: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .55);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 60;
+}
+.sc-more-menu[hidden] { display: none !important; }
+
+.sc-more-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sc-more-item:hover:not(:disabled) { background: var(--surface-3); }
+.sc-more-item:disabled { color: var(--text-3); cursor: not-allowed; }
+.sc-more-item.danger { color: #f48c8c; }
+.sc-more-item.danger:hover:not(:disabled) { background: rgba(240, 106, 106, .14); color: #ffb3b3; }
+.sc-more-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+
+/* Collapsible sections (<details class="sc-section">) */
+details.sc-section {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+details.sc-section > summary.sc-section-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-lg);
+  transition: background .12s;
+}
+details.sc-section > summary.sc-section-summary::-webkit-details-marker { display: none; }
+details.sc-section > summary.sc-section-summary:hover { background: rgba(255, 255, 255, .025); }
+details.sc-section[open] > summary.sc-section-summary {
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.sc-chev {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--text-3);
+  transition: transform .14s ease;
+}
+details[open] > summary .sc-chev { transform: rotate(90deg); color: var(--accent); }
+.sc-section-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+.sc-section-meta {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-3);
+  font-weight: 500;
+}
+.sc-section-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Nested "Advanced" disclosure inside a section or modal */
+details.sc-advanced {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+details.sc-advanced > summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+  padding: 3px 6px 3px 2px;
+  border-radius: 5px;
+}
+details.sc-advanced > summary::-webkit-details-marker { display: none; }
+details.sc-advanced > summary:hover { color: var(--text); background: rgba(255, 255, 255, .04); }
+.sc-advanced-body {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Cleaner home cards (less visual noise) */
+body .mod-tile { min-height: 110px; padding: 14px 16px; gap: 8px; }
+body .mod-tile-meta { gap: 8px; color: var(--text-2); font-size: 12px; }
+body .home-toolbar { gap: 10px; padding: 12px 20px; }
+body .home-search { width: 240px; max-width: 34vw; }
+
+@media (max-width: 960px) {
+  body .home-toolbar { padding: 10px 14px; }
+  body .mods-grid { padding: 14px; gap: 10px; }
+  body .mod-header { padding: 10px 14px; }
+  body .sec-head { padding: 14px 18px; }
+  body .sec-body { padding: 16px 18px 36px; gap: 16px; }
+}

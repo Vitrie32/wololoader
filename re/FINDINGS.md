@@ -224,3 +224,177 @@ Implementation: `wololoader/src/popcap.c`.
 
 ## GameSetupScreen constructor (2026-11-17, from decompiled code + lobby.c)
 - Function `0x647430`: `__thiscall(void *this, void *parent)`, GameSetupScreen constructor. Signature from Ghidra: `undefined4 * __thiscall FUN_00647430(undefined4 *param_1, int param_2)` — returns first param (this pointer). From lobby.c comments: `ret 4`, prologue `55 8b ec 6a ff`. Vtable at `0x9d0d10`, event handler slot 49 at offset `0x48d430`. **PARTIALLY VERIFIED**: calling convention and return type confirmed from decompiled code; prologue bytes need objdump confirmation.
+
+## History screen (`HistoryScreen`) (2026-11-17, verified in disassembly)
+- **HistoryScreen constructor**: `0x6cc830` `__thiscall(void *self)` `ret 0`, returns `this` in `eax`.
+  - Prologue: `55 8b ec 6a ff` (5 bytes: `push ebp; mov ebp, esp; push -1`). File offset `0x2cbc30`. Verified in disassembly.
+  - Allocated at `0x6e9f2a` via `operator new(0x2bc)`.
+- **HistoryScreen vtable**: `0x9d5a94` (59 slots, derived from `ScreenPanel` / `Panel`).
+  - Slot 0 (+0x00): `0x6cd300` destructor (`__thiscall(void *self, byte flags)`, `ret 4`).
+  - Slot 49 (+0xc4): `0x6cd3b0` event handler `handle_event` (`__thiscall(void *self, void *panel, int code, int a, int b)`, `ret 0x10`).
+- **HistoryScreen layout / member offsets**:
+  - `[self + 0x27c]`: `Listbox*` (history topics list). Positioned at `(188, 31, 276, 460)`, ending at y=491.
+  - `[self + 0x280]`: `Scrollbar*` for topic listbox.
+  - `[self + 0x284]`: `TextPanel*` Title label. Positioned at `(438, 46, 552, 34)`.
+  - `[self + 0x288]`: `TextPanel*` Body text panel. Positioned at `(438, 349, 552, 340)`.
+  - `[self + 0x290]`: `PicturePanel*` 1 (Bottom-left illustration panel, `x=184, y=514, w=280, h=206`).
+  - `[self + 0x294]`: `PicturePanel*` 2 (Top-right illustration panel, `x=604, y=96, w=490, h=263`).
+  - `[self + 0x298]`: `PicturePanel*` 3 (Bottom-left illustration panel, `x=184, y=514, w=280, h=206`).
+  - `[self + 0x29c]`: `PicturePanel*` 4 (Top-right illustration panel, `x=604, y=96, w=490, h=263`).
+  - `[self + 0x2a0]`: `Button*` Close / Back button.
+  - `[self + 0x2a4]`: `int` Currently selected topic ID (0..51 for vanilla, 0..N for mod civs).
+  - `[self + 0x2a8]`: `void*` Active civilization narration sound object (or NULL).
+- **HistoryScreen::load_topic**: `0x6cd400` `__thiscall(void *self, int topic_id)` `ret 4`.
+  - Prologue: `55 8b ec 6a ff`.
+  - Reads vanilla topic title from string `20311 + topic_id`.
+  - If `topic_id <= 31`, plays civ narration audio via `0x59c990` and looks up sound string in `0xaae130`.
+  - Loads history text and sets body text via `0x4955c0` (which calls `vtable[54]` on `[self + 0x288]`).
+- **Sound playback & control**:
+  - `0xada234`: `SoundSystem*` global pointer.
+  - `0x46ba10`: `SoundSystem::play_sound` `__thiscall(ecx=SoundSystem*, out_handle, SoundRequest_24B, 1, 0)` `ret 0x24`. Prologue `55 8b ec 6a ff` (file offset `0x6ae10`). Prepares sound object in `*out_handle`. Callee cleans 36 bytes and destroys `SoundRequest.filename`.
+  - `0x46b010`: `SoundObject::play` `__thiscall(ecx=sound_obj)` `ret 0`. Prologue `56 57 8b f9` (file offset `0x6a410`). Starts playback.
+  - `0x46afb0`: `SoundObject::stop` `__thiscall(ecx=sound_obj)` `ret 0`. Prologue `56 8b f1 57` (file offset `0x6a3b0`). Stops playback immediately.
+  - `0x433210`: `std::string::assign` `__thiscall(ecx=str, const char *s)` `ret 4`. Prologue `55 8b ec 53 57` (file offset `0x32610`).
+  - Sound object refcount is at `[obj + 4]`. When decremented to 0, destructor at `vtable[0]` frees DirectSound buffers and memory.
+- **Markup parsing & rich formatted text**:
+  - `0x773f70`: `parse_markup` `__cdecl(void *out_struct, const char *raw_text, int 0, int 0)`. Caller cleans 16 bytes. Prologue `55 8b ec 6a ff` (file offset `0x373370`). Parses `<B>`, `<I>` tags, populating 24-byte `out_struct` (12-byte `std::string` stripped plain text + 12-byte `std::vector` of style spans).
+  - `0x4955c0`: `TextPanel::set_formatted_text` `__thiscall(ecx=panel, void *out_struct)` `ret 4`. Prologue `55 8b ec 6a ff` (file offset `0x949c0`). Applies parsed styles to `TextPanel` via `vtable[54]`.
+  - `0x474a80`: `std::vector::dtor` `__thiscall(ecx=out_struct+12)` `ret 0`. Prologue `55 8b ec 6a ff` (file offset `0x73e80`).
+  - `0x4339a0`: `std::string::dtor` `__thiscall(ecx=out_struct+0)` `ret 0`. Prologue `56 8b f1 8b 06` (file offset `0x32da0`).
+- **Listbox routines**:
+  - `0x495440`: `Listbox::clear_items` `__thiscall(void *listbox, int param)` `ret 4`. Clears all items in the listbox.
+  - `0x495eb0`: `Listbox::add_item` `__thiscall(void *listbox, const char *text, int id, 12_byte_struct)` `ret 0x14`. Adds an item with display text and integer user ID.
+  - `0x495350`: `Listbox::set_selected` `__thiscall(void *listbox, int index)` `ret 4`. Selects item at index.
+  - `0x4944f0`: `Listbox::get_selected_id` `__thiscall(void *listbox)` `ret 0`. Returns integer ID of selected item in `eax`.
+- **UI & Panel routines**:
+  - `0x48df30`: `ScreenPanel::add_button` `__thiscall` `ret 0x28`.
+  - `0x479ce0`: `Button::set_text` `__thiscall(void *btn, int slot, const char *text)` `ret 8`.
+  - `0x477450`: `Button::set_checked` `__thiscall(void *btn, char checked)` `ret 4`.
+  - `vtable[4]` (+0x10): `Panel::set_visible` `__thiscall(void *panel, int visible)` `ret 4`.
+  - `vtable[54]` (+0xd8): `TextPanel::set_text` `__thiscall(void *panel, const char *text, 0, 0, 0)` `ret 0x10`.
+  - `0x448370`: `StringLookup` `__thiscall(void *table, const char *key)` `ret 4`, table pointer at `*(void **)0xad13e0`. Used to look up vanilla topic titles (`20310` count, `20311..` titles).
+- **Artwork & Illustration Panels for Mod Civilizations**:
+  - Main top-right picture area: `x=710, y=90, w=280, h=240` (directly between Title at `y=46..80` and Body text at `y=349..689`). Specified by `"image"` in civ json `"history"` block.
+  - Bottom-left illustration area: `x=184, y=514, w=280, h=206` (matches vanilla PicturePanel 1/3 slot below the listbox). Specified by `"side_image"` in civ json `"history"` block. When omitted, all vanilla picture panels are hidden so no stale illustration remains.
+  - Loaded via `0x49f1f0` (`LoadPng`), scaled via `0x491190` (`ScaleRect`), instantiated with `0x47a5d0` (`DrawablePanel::ctor`) with parent = HistoryScreen.
+  - When Mod civs is active, vanilla `PicturePanel`s (`0x290..0x29c`) are hidden, and the selected mod civ's image panels are shown.
+Implementation: `wololoader/src/history.c`.
+
+## Building command pages (`buildpage.c`, verified in disassembly 2026-11-24)
+
+All addresses below were verified against `AoK HD.exe` 5.8 (`i686-w64-mingw32-objdump`) and `re/out/decompiled.c`.
+
+| Address / Offset | Role | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `0x6ba900` | `GameScreen` economy build page (`mode = 3`) | `__thiscall(screen)`, `ret` (`0x6bac24`), `void` | Prologue `55 8b ec 6a ff 68 bb b0 95 00`. |
+| `0x6ba9d5` | Economy build page `+0x97` filter | Inline JMP patch (9 B) | `80 bb 97 00 00 00 02 74 1a` (`cmpb $2, 0x97(%ebx); je 0x6ba9f8`). Targets: add `0x6ba9f8`, else `0x6ba9de`, skip `0x6bab10`. |
+| `0x6bac30` | `GameScreen` military build page (`mode = 4`) | `__thiscall(screen)`, `ret` (`0x6baf2f`), `void` | Prologue `55 8b ec 6a ff 68 bb b0 95 00`. |
+| `0x6bad07` | Military build page `+0x97` filter | Inline JMP patch (13 B) | `80 bb 97 00 00 00 0a 0f 85 17 01 00 00` (`cmpb $0xa, 0x97(%ebx); jne 0x6bae2b`). Targets: add `0x6bad14`, skip `0x6bae2b`. |
+| `0x6bda60` | Villager build-page toggle (`mode 3 <-> 4`) | `__thiscall(screen)`, `ret` (`0x6bda78`), `void` | 9 stolen bytes `8b 81 88 12 00 00 83 f8 03` (`mov 0x1288(%ecx),%eax; cmp $3,%eax`), no relative jumps. |
+| `0x6c020a` | `call 0x6bac30` in `0x6bfc40` (`case 0x73`, Build Military) | 5-byte `CALL` patch | `e8 21 aa ff ff`, `ecx = screen`. |
+| `0x6ca51c` | `call 0x6c9200` (villager Repair button in `0x6c9dc0`) | 5-byte `CALL` patch, `ret 0x40` | `e8 df ec ff ff`, followed by `jmp 0x6ca6b9` (return value ignored). |
+| `0x741a30` | `Player::get_buildable_units(list*, count*, loc)` | `__thiscall(player, list*, count*, int)`, `ret 0xc` (`0x741e9d`) | Prologue `55 8b ec 6a ff 68 b0 b5 96 00`. Entries are `0x38` bytes with unit id `int16` at `+4`. |
+| `0xaf2c58` / `0x540c90` | Global `Game*` / `Game::get_local_player()` | `__thiscall(game)`, `ret` (`0x540ca6`/`0x540cb0`), `Player*` | Prologue `8b 81 c8 00 00 00 8b 88 74 01`. Player fields: `[+0x10]` master count, `[+0x14]` `masters**`, `[+0x1ae4]` `Civilization*` (`+8` = `int civ_id`, verified at `0x6bbe09` and `0x6c5a99..0x6c5aa9`). |
+| `0x6c9200` | `GameScreen::setup_command_button` | `__thiscall(screen, 16 dwords)`, `ret 0x40` (`0x6c945f`), `short` slot | Prologue `55 8b ec 6a ff 68 18 be 95 00`. Sets `[btn+0x720] = 1`, calls `btn->vtable[7](btn, !disabled)` (`0x6c92a3`), stores `cmd` at `[btn + *(short*)(btn+0x54a)*0x70 + 0x1a8]` and `sub_id` at `+0x1ac` (`0x6c92a6..0x6c92d0`). |
+| `0xad0380` | Shared static empty-string descriptor in `.data` | `void*` (16 zero bytes) | Stored at `+0x8` of the 20-byte help struct in `0x6bb100` (`0x6bbea8`) and `0x6bf840` (`0x6bf8a4`). |
+| `0x6bfc40` | `GameScreen` command button click dispatcher | `__thiscall(screen, cmd, a, b)`, `ret 0xc` (`0x6c0aa4`) | 5 stolen bytes `55 8b ec 6a ff`. Jump table covers `cmd 1..0xb7`; `WL_MODS_CMD = 200`, `WL_BLDG_NEXTPAGE_CMD = 201`, `WL_LUA_CMD = 210..337` are free and disjoint. |
+| `0x6bb100` | `GameScreen` building command panel builder | `__thiscall(screen)`, `ret` (`0x6bc601`), `void` | 5 stolen bytes `55 8b ec 6a ff` (`55 8b ec 6a ff 68 1a b3 95 00`). Called by `0x6c9dc0` (`0x6ca030`), `0x6c6490` (mode 10), and `0x6bfc40` (`case 0x79`/`0xaa`). Calls `0x6c6040` at entry and `0x6bf840` at `0x6bc5e1`. |
+| `0x6bb507` | Train-unit loop filter inside `0x6bb100` | Inline JMP patch (7 B) | `0f b6 b0 a2 01 00 00` (`movzx esi, BYTE PTR [eax+0x1a2]`). At site: `ebx=screen`, `edi=player`, `eax=master`, `ecx=train_unit_id`, `edx=loop_idx` (must be preserved). Continue `0x6bb50e` (`cmp esi, 0xe6`), skip `0x6bb638` (`mov ecx,[ebp-0x414]; inc edx`). |
+| `0x6bb703` | Research loop filter inside `0x6bb100` | Inline JMP patch (9 B) | `0f b6 c0 89 85 8c fb ff ff` (`movzx eax, al; mov [ebp-0x474], eax`). At site: `ebx=screen`, `edi=player`, `esi=&screen+0xd64` (ptr to research array), `[ebp-0x414]=byte offset`, `WORD [*(esi)+[ebp-0x414]+4]=tech_id`, `al=button_id`. Continue `0x6bb70c` (`cmp eax, 0xe6`), skip `0x6bb87e` (`mov edx,[ebp-0x428]`). |
+| `0x6bf840` | `GameScreen` finalize command button visibility | `__thiscall(screen)`, `ret` (`0x6bf900`), `void` | Prologue `55 8b ec 6a ff 68 b0 b6 95 00`. Loops `screen+0xb14[0..14]`: hides `[btn+0x720]==0` via `vtable[4](0)` and clears state-0 action/tooltip (does NOT clear `[btn+0x140]`/`[btn+0x144]` icon sheet/frame). |
+| `0x484f20` | Button `vtable[4]` (`+0x10`): `Panel::set_visible` | `__thiscall(btn, int visible)`, `ret 4` (`0x484f38`/`0x484f43`) | Prologue `55 8b ec 8b 45 08 39 41 1c`. Updates `[btn+0x1c]`. |
+| `0x479840` | Button `vtable[7]` (`+0x1c`): `Button::set_enabled` | `__thiscall(btn, int enabled)`, `ret 4` (`0x479862`) | Prologue `55 8b ec 53 8a 5d 08 56 8b f1`. Sets `[btn+0xc9] = enabled` (checked by click/hotkey handlers) and `[btn+0x24] = enabled`; calls `0x4797e0` when disabling. `[btn+0x724]` only triggers visual greying in draw (`0x7120b0`). |
+| `0x6b9760` | `dat` `button_id` -> panel slot `0..13` | `__stdcall(byte)` / `__thiscall` ignoring `ecx`, `ret 4`, `short` | Prologue `55 8b ec 8a 4d 08 8d 41 ff 3c 0d`. Maps `1..14 -> 0..13`, `15..28 -> 0..13`, else `0`. |
+| Built-in building buttons | Gather Point & Ungarrison ("Unload") in `0x6bb100` | Added via `0x6c9200` | Gather Point: slot `4`, action `0x33` (`0x6bbd99..0x6bbda9`). Ungarrison: slot `9`, action `0x4e` (`0x6bbecc..0x6bbedc`). |
+| `0x6b4267..0x6b428d` | Building icon SLP sheet loading in `GameScreen::ctor` | `0x6b88f0` loads `0xc612` (`50706.slp`) | Game loads `resources\_common\drs\gamedata_x2\50706.slp` (55 frames `0..54`; `52`=Aqueduct, `53`=Feitoria, `54`=Barricade; vanilla frames use `properties=0x10`), NOT `interface\50706.slp` (52 frames). |
+Implementation: `wololoader/src/buildpage.c`, `wololoader/src/iconmerge.c`.
+
+## Multiplayer & Cheats Enabled settings (`luagame.c`, verified in disassembly 2026-11-24)
+
+| Address / Offset | Role | Evidence (verified bytes & details) |
+|---|---|---|
+| `0x5408c0` | `TRIBE_Game::get_settings(shared_ptr* out)` | `__thiscall(game, out)`, `ret 4` (`0x540930`), prologue `55 8b ec 6a ff`. Calls `0x583640` (`lea 0xd54(%ecx),%eax; ret`) on `[game+0x98]`, so `settings* = *(*(game + 0x98) + 0xd54)`. |
+| `settings + 0x408` | `isMultiPlayer` (`int`, `1` = MP) | Serializer `0x611cab` (`83 b8 08 04 00 00 01`, `cmp dword [eax+0x408], 1`), string `"&isMultiPlayer"` at `0x9ccc6c` (`push 0x9ccc6c` at `0x611cc3`). |
+| `settings + 0x40f` | `mCheatsEnabled` (`BYTE`, `!= 0` = cheats on) | Serializer `0x611d16` (`8d 81 0f 04 00 00`, `lea eax, [ecx+0x40f]`), string `"&mCheatsEnabled"` at `0x9ccc7c` (`push 0x9ccc7c` at `0x611d26`). Checked in cheat command executor `0x80a1b0` at `0x80a20b..0x80a22f` (`mov ecx,[0xaf2c58]; call 0x5408c0; mov eax,[eax]; mov al,[eax+0x40f]; test al,al; jne 0x80a244`). |
+| `0x5408a0` | `TRIBE_Game::is_developer_mode()` | `0f b6 81 c0 00 00 00 c3` (`movzx eax, byte [ecx+0xc0]; ret`). Checked as fallback at `0x80a231..0x80a242`. |
+
+## Per-civ victory sound (`victory.c`, verified in disassembly 2026-11-24)
+
+All addresses below were verified against `AoK HD.exe` 5.8 (`i686-w64-mingw32-objdump`) and `re/out/decompiled.c`.
+
+| Address / Offset | Role | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `0x6a2e00` | `AchievementsScreen::play_endgame_music` | `__thiscall(self)`, `ret` (`0x6a3010`), `void` | Prologue / stolen bytes (5 B): `55 8b ec 6a ff`. Called from `0x6a0581` inside `AchievementsScreen::tick` (`0x6a0530`, vtable `0x9d3ae4` slot 17 `+0x44`) when `[self+0x738]==0` and `[self+0x2c8]!=0`. Reads dataset `+0x74`/`+0x84` (`won1`/`won2`) or `+0x94` (`lost`), creates `SoundObject` via `0x46ba10(..., chan=0, flag=0)`, starts via `0x46b010`, sets `[self+0x728]=ss`, `[self+0x72c]=handle`, `[self+0x738]=1`. |
+| `0x6a3020` | `AchievementsScreen::stop_endgame_music` | `__thiscall(self)`, `ret` (`0x6a304c`), `void` | Releases ref-counted `[self+0x72c]` and zeroes `[self+0x72c]` and `[self+0x738]`; called at `0x69f6ae`, `0x6a06e6`, `0x6a2a46`. |
+| `Player + 0x35` | Local player victory flag (`BYTE`) | `1` = won | Verified in `0x6a2e00` at `0x6a2ec1`: `cmpb $0x1, 0x35(%eax)` (`eax` from `0x540c90` `Game::get_local_player()`). Also checked at `0x69f800` (crown icon) and `0x62efe0` (aftermath text `0x47e` vs `0x47f`). |
+| `0x46ba10` | `SoundSystem::play_sound` | `__thiscall(ss, &out_handle, req_24B, chan, flag)`, `ret 0x24` (`0x46bb92`), `void**` | Prologue `55 8b ec 6a ff`. `chan=0` is Music volume (`0x46ab60` `DAT_00ada218 + chan*8`). Destroys `req.filename` on return (`0x46bb7a`). `SoundRequest+4` = storage ID; `0` passes raw path unaltered (`0x828670` line 755037), and `0x46f1c0` selects MP3 (`0x46eb30`) vs WAV (`0x46ecc0`) by `.mp3` suffix. |
+| `0x46b010` | `SoundObject::play` | `__thiscall(obj)`, `ret` (`0x46b059`), `void` | Prologue `56 57 8b f9`. |
+| `0x433210` | `std::string::assign` | `__thiscall(str, const char*)`, `ret 4` (`0x43326a`), `void*` | Prologue `55 8b ec 53 57`. |
+Implementation: `wololoader/src/victory.c`, `wololoader/src/civs.c`.
+
+
+
+## Lobby mod compatibility check (`mpcheck.c`, verified in disassembly 2026-11-24)
+
+All addresses below were verified against `AoK HD.exe` 5.8 (`i686-w64-mingw32-objdump`) and `re/out/decompiled.c`.
+
+| Address / Offset | Role | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `0x588030` | `CommHandler::send_lobby_chat` | `__thiscall(comm, const char *text)`, `ret 4` (`0x588089`), `void` | Prologue `55 8b ec 83 ec 10`. Called at `0x657f35` (`mov 0xbd8(%ebx),%ecx; push %edi; call 0x588030`). Sets 9 recipient bytes to `1`, reads local slot via `0x5983c0` (`0x5836e0`), and in lobby (`0x583f10 == 0`) broadcasts packet `0x43` via `0x574920`. Caller must verify `0x5836e0` returns `1..8` first because `0x5983c0` indexes `0xaf1af8 + (pid-1)*0x28` unchecked. |
+| `0x5844a0` | `CommHandler::on_chat_packet` (packet `0x43`) | `__thiscall(comm, peer_wrapper, pkt)`, `ret 8` (`0x584643`), `void` | Prologue / stolen bytes (5 B): `55 8b ec 6a ff`. Registered at `0x579830` (`decompiled.c:296427`). Reads `pkt+0x08` (`sender_pid`), `pkt+0x0c+local_pid` (recipient byte), `pkt+0x15` (`host_only`), `pkt+0x18` (`const char *text`), calls `0x8037b0` at `0x58457c`. |
+| `0x5836e0` | `CommHandler::get_local_player_id` | `__thiscall(comm, int *out_pid)`, `ret 4` (`0x583700`/`0x583739`/`0x583745`), `int*` | Prologue `55 8b ec 53 56 57`. Matches `0x583750` (64-bit UID) against `settings+0xd0+slot*0x68`; writes `1..8` or `*(int*)0xaad300` (`-1`). |
+| `0x8037b0` | `ChatHistory::add_message` | `__thiscall(hist, sender, text, player, type, a5, a6)`, `ret 0x18` (`0x804033`), `int` | Prologue `55 8b ec 6a ff`. Singleton `*(void**)0xaeefb4`. `GameSetupScreen` registers listener on `[0xaeefb4]` (`0x648081..0x6480c4`) forwarding to `0x654ba0`. |
+| `0x656c60` | `GameSetupScreen::action` | `__thiscall(screen)`, `ret` (`0x656da7`), `void` | Prologue / stolen bytes (5 B): `55 8b ec 6a ff`. `GameSetupScreen` vtable `0x9d0d10` slot 17 (`+0x44`); calls `0x65fe40` every frame. |
+| `0x64a540` | `GameSetupScreen::~GameSetupScreen` | `__thiscall(screen, BYTE flags)`, `ret 4` (`0x64a563`), `void*` (`this`) | Prologue / stolen bytes (6 B): `55 8b ec 56 8b f1`. `GameSetupScreen` vtable `0x9d0d10` slot 0 (`+0x00`). |
+| `0x657da0` | `GameSetupScreen::submit_chat` | `__thiscall(screen)`, `ret` (`0x657f5a`), `void` | Prologue / stolen bytes (6 B): `55 8b ec 83 ec 14`. Reads edit box `[screen+0x650]` via `0x4874f0` (`__thiscall`, `ret`, prologue `56 8b f1 e8`) and clears via `0x4879d0` (`__thiscall`, `ret 4` at `0x4879fe`, prologue `55 8b ec 57 8b f9`) using `0x9ae6b0` (`""`). |
+| `CommHandler + 0xd0` / `+ 0xd54` | `role` (`5` = lobby active) / `GameSettings*` | `int` / `void*` | Verified in `0x583f10`, `0x584c70` (`0x584e26`), `0x588187`, and `0x583640`. |
+| `GameSettings + 0xb0 + slot*0x68` | `mPlayerSlots[0..7]` | struct (`0x68` B stride) | Verified in `0x598310`, `0x656192..0x656267`, `0x597dab`, `0x433210`, `0x58370b`: `+0x0c` 12-byte string `{char *ptr; size_t len; size_t cap}`, `+0x20` `uint64_t` UID, `+0x54` `int` status (`2`/`3` human per `0x598910`, `6` spectator per `0x597bb5`). |
+
+Implementation: `wololoader/src/mpcheck.c`, `wololoader/src/autobuild.c`, `wololoader/src/lobby.c`.
+
+## Autostart / Single-player quick launch (`autostart.c`, verified in disassembly 2026-11-24)
+
+All addresses below were verified against `AoK HD.exe` 5.8 (`i686-w64-mingw32-objdump`) and `re/out/decompiled.c`.
+
+| Address / Offset | Role | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `0x9d66a8` + `17*4` (`0x9d66ec`) | `MainMenuScreen` vtable slot 17 (`tick`) | `void __thiscall(screen)`, `ret` (tail `jmp 0x490890`, `ret` at `0x490a2b`) | `.rdata` at `0x9d66ec` = `b0 8b 6e 00` (`0x6e8bb0`). Prologue of `0x6e8bb0`: `56 8b f1 83 be 7c 02 00 00 02`. Replaced in-place via vtable slot patch. |
+| `0x43c0d0` | `ScreenManager::get_current` | `void* __thiscall(mgr)`, `ret` (`0x43c0d2`) | Bytes `8b 01 c3` (`mov (%ecx),%eax; ret`). Called by `0x48a8e0` (`0x48a8e7`) on `[0xada4b4]`. |
+| `0x6e36b0` | Single Player -> Standard Game handler | `void (void)`, `ret` (`0x6e37b8`) | Prologue `55 8b ec 6a ff 68 82 00 96 00`. Reached from submenu functor `0x9d6fbc` slot 2 (`0x6e45e0: add $4,%ecx; jmp 0x6e36b0`). Fetches profile SP `GameSettings*` via `[0xaf2b24]` -> `0x61f3c0`, calls `0x613810`, `0x57ec60`, allocates `GameSetupScreen` (`0xbe0`), constructs via `0x647430(DAT_00aeefb8)`, activates via `0x48a8e0`. |
+| `0xaf2b24` / `0x61f3c0` | Profile manager / `get_sp_GameSettings` | `void* __thiscall(profile)`, `ret` (`0x61f3e6`/`0x61f3eb`) | Prologue `56 8b f1 8b 4e 2c`. Deref chain in `0x6e36d9..0x6e36e9`: `p1=[0xaf2b24]`, `p2=[p1]`, `idx=[p2+0x10]`, `arr=[p2+0x14]`, `profile=arr[idx]`. |
+| `0x610c70` | `GameSettings::reset_to_defaults` | `void __thiscall(settings)`, `ret` (`0x610d5e`) | Prologue `56 8b f1 57 6a 0d`. Resets mode=0, map=13, resolved=-3, size=1, diff=`[0xaf28d0][4]`, players=2, res=0, pop=200, vis=0, ages=0, cheats=(isMP==0). |
+| `0x6133c0` | `GameSettings::set_game_mode` | `void __thiscall(settings, int mode)`, `ret 4` (`0x613472`) | Prologue `55 8b ec 6a ff 68 59 97 90 00`. Writes `[+0xac]=mode` and releases scenario ptr `[+0x430]` when non-scenario. |
+| `0x6134b0` | `GameSettings::set_num_players` | `void __thiscall(settings, int count)`, `ret 4` (`0x6135a0`) | Prologue `55 8b ec 6a ff 68 08 0c 94 00`. Writes `[+0x3f0]=count`, sets non-human slots `< count` to Computer (`+0x54=4`) with default AI script (`0x4a42d0` -> `0x615780`), closes slots `>= count` (`0x615800`). |
+| `0x6135b0` / `0x613650` | `set_resolved_map` / `set_chosen_map` | `void __thiscall(settings, int id)`, `ret 4` (`0x6135bd`/`0x61365d`) | Write `[+0x94]` (`mResolvedMapType`, `-3` = resolve at launch) and `[+0x98]` (`mUserChosenMapType`). Map IDs from `0x418de0..0x41a600` (`MAPTYPE_ARABIA=9`, `BLACKFOREST=12`, `COASTAL=13`, `ISLANDS=19`, `ARENA=29`, `NOMAD=33`, etc.). |
+| `0x613810` | `GameSettings::init_sp_setup` | `void __thiscall(settings)`, tail `jmp *0xc(%eax)` | Prologue `56 8b f1 6a fd`. Called by `0x6e3702` right before `0x57ec60`. |
+| `0x57ec60` | `CommHandler::enter_setup` | `void __thiscall(comm, void **settings, void **lobby, char flag)`, `ret 0xc` (`0x57efa9`) | Prologue `55 8b ec 6a ff 68 96 c0 92 00`. For SP (`[settings+0x408]==0`): sets `[comm+0xd0]=2`, stores refcounted `settings` at `[comm+0xd54]`, assigns local player to slot 0 (`0x615820`). |
+| `0x607490` | `CivChoice::setFromInt` | `void __thiscall(CivChoice*, int civ_id)`, `ret 4` (`0x6076a4`) | Prologue `55 8b ec 6a ff 68 d9 e7 93 00`. Called on `slot + 0x58` (verified at `0x6159b3: lea 0x58(%esi),%ecx; call 0x607490`). |
+| `0xaf28d0` | Difficulty object pointer array `[0..4]` | `void**` (refcounted objects, rc at `+4`) | Initialized in `0x608270` with string IDs `0x2bd0..0x2bd4`: `0=Hardest`, `1=Hard`, `2=Moderate`, `3=Standard`, `4=Easiest`. Swapped at `settings+0x8c` with refcount inc/dec (`0x6584f0`). |
+| `GameSettings` fields | `+0x8c`..`+0x40f` | verified in serializer `0x610d00..0x611e00` & dropdowns `0x64a670` | `+0x8c` `mrefDifficulty` (`Difficulty*`), `+0x90` `mMapSize` (`0=Tiny..6=LudiKRIS`, `0x7d4540`), `+0x94` `mResolvedMapType`, `+0x98` `mUserChosenMapType`, `+0x9c` `mVisibility` (`0=Normal, 1=Explored, 2=All Visible`, `0x64d890`), `+0xa0` `mResourceLevel` (`0=Standard, 1=Low, 2=Medium, 3=High`, `0x64cf40`), `+0xac` `mGameMode` (`0=RM`), `+0x3f0` `mNumPlayersExcludingGaia`, `+0x408` `isMultiPlayer`, `+0x40f` `mCheatsEnabled`. `PlayerSlot` (`+0xb0 + i*0x68`): `+0x00` team, `+0x4c` color, `+0x54` status (`1=Closed, 2=Human, 4=AI`), `+0x58` `CivChoice`. |
+| `0x655180` | `GameSetupScreen::start_clicked` | `BYTE __thiscall(screen)`, `ret` (`0x6551b5`/`0x6551f6`), `al=1` ok | Prologue `56 57 8b f9`. Calls `0x6554c0` validation (`0x656040`), plays civ jingle (`0x6599c0`), sets `[screen+0x8a4]=timeGetTime()` and `[screen+0xbd6]=1`. On the next frame `GameSetupScreen::action` (`0x656c60`) -> `0x6600d0` launches the SP match via `0x6571f0`. |
+
+Implementation: `wololoader/src/autostart.c`, `wololoader/scriptorium/api.c`, `wololoader/scriptorium/launcher.c`, `wololoader/scriptorium/ui/basic.js`.
+
+## Hot reload (`hotreload.c`, `civs.c`, `files.c`, verified in disassembly 2026-11-24)
+
+All addresses below were verified against `AoK HD.exe` 5.8 (`i686-w64-mingw32-objdump`) and `re/out/decompiled.c`.
+
+AoE2 HD 5.8 does not keep `empires2_x2_p1.dat` loaded at the Main Menu: `Game::create_and_init_world` (`0x62e5d0`) creates a fresh `World` (`[game + 0xc8]`) for every match, savegame, editor, campaign, or Tech Tree, and `Game::destroy_world` (`0x62e9f0`) frees it on return. The global `TShape` SLP cache (`0xada0f8`) is weak and evicts unit/icon SLPs once `GameScreen` and `World` are gone.
+
+| Address / Offset | Role | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `0x5d5890` | `GameDataSet::ctor` (`0xdc` B, vtable `0x9c9854`) | `__thiscall(this, 13 DWORDs)`, `ret 0x34` (`0x5d5a7c`), returns `this` (`0x5d5a6b: mov %esi,%eax`) | Prologue / stolen bytes (5 B): `55 8b ec 6a ff` (`55 8b ec 6a ff 68 67 6e 93 00`). Called twice at startup in `0x5d8ac0` (Original & Expansions); inserts into RB-tree `0xaf266c`. Hook records `GameDataSet*` pointers so hot reload can zero cached CRC32 at `+0x10`. |
+| `0x5d5f20` | `GameDataSet::getCrc` | `__thiscall(ds)`, `ret` (`0x5d6084`), `DWORD` | Prologue `55 8b ec 6a ff 68 50 70 93 00`. Verified at `0x5d5f4d`: `mov 0x10(%ebx),%eax; test %eax,%eax; jne 0x5d6069`. Zeroing `*(DWORD*)(ds + 0x10) = 0` forces fresh `.dat` CRC32 computation for MP lobby checks (`0x584a40`, `0x64f0e0`, `0x656040`). |
+| `0x5c9640` | `CivRegistry::register_civ` | `__cdecl(pkg, id, mp3, nameStr, bonusBase, t1, t2, playable)`, `ret` (`0x5c97c7`), `void` | Prologue `55 8b ec 6a ff 68 06 50 93 00`. Looks up `id` in `0xaf25ec` (`0x59c990`): if found, skips `Civilization::ctor` (`0x5c96af: jne 0x5c96fc`), else allocates `Civilization(0x3c)` via `0x8d47df` and calls `0x5c9330`. Always allocates `DlcPackageCivilization(0x24)` via `0x8d47df`, sets `+0x08=civ`, `+0x0c=pkg`, `+0x10=desc_sid`, and links to `civ+0x24` (`0x5ca090`) and `pkg+0x98` (`0x475300`). |
+| `0x5c9330` | `Civilization::ctor` (`0x3c` B, vtable `0x9c91e8`) | `__thiscall(civ, id, mp3, nameStr, bonusBase, t1, t2, playable)`, `ret 0x1c` (`0x5c9485`), returns `this` | Prologue `55 8b ec 6a ff 68 8b 4f 93 00`. Stores raw `mp3` pointer at `+0x0c`, `nameStr` at `+0x10`, `bonusBase` at `+0x14`, `t1` at `+0x18`, `t2` at `+0x1c`, `playable` byte at `+0x20`; pushes `t1` and `t2` onto `0xaf25e0..0xaf25e8` (`0x5c93f1..0x5c944b`, calling `0x479f30` on realloc) and inserts into `0xaf25ec` (`0x5c9ee0`). |
+| `0x5ca1a0` | `DlcPackage::remove_pkg_civ` | `__thiscall(pkg+0x98, DlcPackageCivilization*)`, `ret 4` (`0x5ca1fb`), `void` | Prologue `55 8b ec 53 56 8b 75 08 8b d9`. Uses `0x427930` (`node + 0x14`) to unlink from `pkg+0x98` intrusive list, decrements `node->rc` (`+4`), calls `node->vtable[0]()` at 0. |
+| `0x5ca140` | `Civilization::remove_pkg_civ` | `__thiscall(civ+0x24, DlcPackageCivilization*)`, `ret 4` (`0x5ca19b`), `void` | Prologue `55 8b ec 53 56 8b 75 08 8b d9`. Uses `0x56f350` (`node + 0x1c`) to unlink from `civ+0x24` intrusive list, decrements `node->rc` (`+4`), calls `node->vtable[0]()` at 0 (frees via `0x8d480f`). |
+| `0x427930` / `0x5d2ef0` | `DlcPackageCivilization` `pkg+0x98` link / next | `__cdecl(node) -> node+0x14` / `__stdcall(node) -> *(void**)(node+0x14)`, `ret 4` (`0x5d2f01`) | `0x427930`: `55 8b ec 8b 45 08 83 c0 14 5d c3`. `0x56f350`: same with `add $0x1c, %eax` (`civ+0x24` link). |
+| `0xaf25e0..0xaf25e8` / `0x479f30` | Unique-tech `std::vector<int>` / `insert_at` | `__thiscall(vec, int *pos, const int *val)`, `ret 8` (`0x47a0c0`), `void` | Prologue of `0x479f30`: `55 8b ec 6a ff 68 70 ff 90 00`. Truncating `*(int**)0xaf25e4` back to vanilla count and re-pushing active custom civs' `t1`/`t2` keeps `0x5ca0e0` accurate. |
+| `Profile + 0x4c..0x58` | Persistent `GameSettings*` slots (4 pointers) | Original SP (`+0x4c`), Original MP (`+0x50`), Expansions SP (`+0x54`), Expansions MP (`+0x58`) | Verified in `0x61f3c0` (`lea 0x4c(,%eax,8)`) and `0x61fc50` (`decompiled.c:428853..429000`). `ProfileManager` at `**(void***)0xaf2b24` holds `Profile**` vector `[+0x14]..[+0x18]`. Each `GameSettings` holds 8 `PlayerSlot`s at `+0xb0 + i*0x68` with `CivChoice` at `+0x58` (verified `0x6159b3`). |
+| `0xada190` | `ResourceManager` inline static object | `std::vector<{ str_obj*, pkg* }>` (8 B stride) at `[0xada190]..[0xada194]` | Verified in `0x62cef6` (`mov $0xada190,%ecx; call 0x462610`), `0x62cf81..0x62cfa8` (`sounds`, `interface`, `graphics`), and `0x62c930` (`decompiled.c:437695..437698` unloads `sounds`, `graphics`, `terrain`, `interface`). |
+| `0x432ab0` | `ResourcePackage` name string compare | `__thiscall(str_obj, const char *name)`, `ret 4` (`0x432ad8`), `BYTE` | Prologue `55 8b ec 8b 55 08 56 57`. Called by `0x462610` at `0x462658` with `ecx = *(void**)(begin + i*8)`. |
+| `0x462610` | `ResourceManager::unload_package` | `__thiscall(0xada190, const char *name)`, `ret 4` (`0x462681`/`0x462770`), `void` | Prologue `55 8b ec 6a ff 68 18 be 90 00`. Safe no-op if `name` is not loaded; `ResourcePackage::~ResourcePackage` (`0x462340`) nulls `ResourceFile+0x14` back-pointers. |
+| `0x4636f0` | `ResourceManager::load_package` | `__thiscall(0xada190, const char *name, int flag)`, `ret 8` (`0x463c6d`), `BYTE` | Prologue `55 8b ec 6a ff 68 ee c1 90 00`. Scans DRS folder via `0x823d60` (`FindFirstFileA` -> `files.c` hooks). Called with `flag=0` for `sounds`/`graphics`/`interface` in `0x62ce60`. |
+
+Implementation: `wololoader/src/hotreload.c`, `wololoader/src/hotreload_core.h`, `wololoader/src/civs.c`, `wololoader/src/files.c`, `wololoader/src/autobuild.c`, `wololoader/src/basemod.c`, `wololoader/src/iconmerge.c`, `wololoader/src/script.c`, `wololoader/src/ui_mods.c`, `wololoader/src/ui_hub.c`, `wololoader/src/menu.c`.

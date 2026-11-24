@@ -40,6 +40,50 @@ window.onerror = function(message, source, lineno, colno, error) {
   };
 
   // ==========================================================================
+  // UI Preferences (localStorage wrapped in try/catch) & Progressive Disclosure
+  // ==========================================================================
+  function getPref(key, fallback) {
+    try {
+      const raw = window.localStorage.getItem('scriptorium.' + key);
+      if (raw === null) return fallback;
+      return JSON.parse(raw);
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function setPref(key, value) {
+    try {
+      window.localStorage.setItem('scriptorium.' + key, JSON.stringify(value));
+    } catch (e) {
+      // ignore storage failures (private mode / quota)
+    }
+  }
+
+  function wireDisclosures(rootEl) {
+    if (!rootEl || !rootEl.querySelectorAll) return;
+    rootEl.querySelectorAll('details[data-pref-key]').forEach(el => {
+      const key = el.dataset.prefKey;
+      if (!key) return;
+      const saved = getPref('sec.' + key, null);
+      if (typeof saved === 'boolean') el.open = saved;
+      if (!el.dataset.prefBound) {
+        el.dataset.prefBound = '1';
+        el.addEventListener('toggle', () => setPref('sec.' + key, el.open));
+      }
+    });
+  }
+
+  function closeAllMoreMenus(exceptMenu) {
+    document.querySelectorAll('.sc-more-menu:not([hidden])').forEach(menu => {
+      if (menu === exceptMenu) return;
+      menu.hidden = true;
+      const toggle = menu.parentElement?.querySelector('[data-more-toggle]');
+      if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    });
+  }
+
+  // ==========================================================================
   // Utility & Security Functions
   // ==========================================================================
   function escapeHtml(str) {
@@ -281,6 +325,10 @@ window.onerror = function(message, source, lineno, colno, error) {
 
       const reqModal = params.get('modal');
       if (reqModal === 'new-mod') openNewModModal();
+      if (params.get('hub') === '1' && window.ModHub) {
+        showHome();
+        window.ModHub.open();
+      }
 
       // 5. Start ping heartbeat
       startPing();
@@ -305,23 +353,23 @@ window.onerror = function(message, source, lineno, colno, error) {
     const enabled = m.enabled !== false;
     const civCount = (m.civs || []).length;
     const changed = m.modified ? formatDate(m.modified) : '';
+    const tooltip = [m.folder, changed ? `Last changed ${changed}` : ''].filter(Boolean).join(' · ');
     return `
-      <div class="mod-tile" role="button" tabindex="0" data-folder="${escapeHtml(m.folder)}">
+      <div class="mod-tile" role="button" tabindex="0" data-folder="${escapeHtml(m.folder)}" title="${escapeHtml(tooltip)}">
         <div class="mod-tile-top">
           <div class="mod-tile-icon${m.has_icon ? '' : ' is-generated'}">${modIconHtml(m)}</div>
           <span class="mod-state ${enabled ? 'on' : 'off'}">${enabled ? 'Enabled' : 'Disabled'}</span>
         </div>
         <div class="mod-tile-name">${escapeHtml(m.name)}</div>
-        <div class="mod-tile-id">${escapeHtml(m.folder)}</div>
         <div class="mod-tile-meta">
           <span>v${escapeHtml(m.version || '0.1')}</span>
+          <span>&middot;</span>
           <span>${civCount} civ${civCount === 1 ? '' : 's'}</span>
         </div>
-        ${changed ? `<div class="mod-tile-changed">Last changed ${escapeHtml(changed)}</div>` : ''}
       </div>`;
   }
 
-  // Home screen: one card per mod, then the New mod card. Nothing else is on this page.
+  // Home screen: one card per mod, or an empty state prompting to create the first mod.
   // (The server leaves WololoaderBase out of /api/mods.)
   function renderModCards() {
     const grid = document.getElementById('mods-grid');
@@ -335,14 +383,27 @@ window.onerror = function(message, source, lineno, colno, error) {
     const countEl = document.getElementById('home-count');
     if (countEl) countEl.textContent = `${state.mods.length} installed`;
 
-    const note = filtered.length === 0 && state.mods.length > 0
-      ? '<p class="mods-grid-note">No mods match the search.</p>' : '';
-    grid.innerHTML = filtered.map(modCardHtml).join('') + note + `
-      <button type="button" class="mod-tile mod-tile-new" id="btn-new-mod">
-        <span class="mod-tile-plus">+</span>
-        <span class="mod-tile-name">New mod</span>
-        <span class="mod-tile-hint">Create an empty mod folder and open it</span>
-      </button>`;
+    if (state.mods.length === 0) {
+      grid.innerHTML = `
+        <div class="empty-card" style="grid-column: 1 / -1;">
+          <h3 class="empty-card-title">No mods yet</h3>
+          <p class="empty-card-text">Create your first mod to add custom civilizations, units, scripts or taunts.</p>
+          <div class="empty-card-actions">
+            <button type="button" class="btn btn-save btn-sm" id="btn-empty-new-mod">+ New mod</button>
+            <button type="button" class="btn btn-wood btn-sm" id="btn-empty-open-hub">Browse Mod Hub</button>
+          </div>
+        </div>`;
+      grid.querySelector('#btn-empty-new-mod')?.addEventListener('click', openNewModModal);
+      grid.querySelector('#btn-empty-open-hub')?.addEventListener('click', () => window.ModHub?.open());
+      return;
+    }
+
+    if (filtered.length === 0) {
+      grid.innerHTML = '<p class="mods-grid-note">No mods match your search.</p>';
+      return;
+    }
+
+    grid.innerHTML = filtered.map(modCardHtml).join('');
     hydrateModIcons(grid);
 
     grid.querySelectorAll('.mod-tile[data-folder]').forEach(el => {
@@ -352,7 +413,6 @@ window.onerror = function(message, source, lineno, colno, error) {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
-    grid.querySelector('#btn-new-mod')?.addEventListener('click', openNewModModal);
   }
 
   function showEditor() {
@@ -756,10 +816,12 @@ window.onerror = function(message, source, lineno, colno, error) {
             <label for="new-mod-name-input">Mod Name <span class="required">*</span></label>
             <input type="text" id="new-mod-name-input" class="form-input" placeholder="e.g. Roman Empire" autofocus>
           </div>
-          <div class="form-group mt-3">
-            <label>Icon <span class="text-muted">(optional)</span></label>
-            ${iconPickerHtml(previewFor(''))}
-          </div>
+          <details class="sc-advanced">
+            <summary>Custom icon (optional — a shield is generated by default)</summary>
+            <div class="sc-advanced-body">
+              ${iconPickerHtml(previewFor(''))}
+            </div>
+          </details>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary btn-sm" id="modal-btn-cancel">Cancel</button>
@@ -929,8 +991,34 @@ window.onerror = function(message, source, lineno, colno, error) {
   // Event Listeners Setup
   // ==========================================================================
   function setupEventListeners() {
-    // Editor top bar: back to the mod list, Sprites pane (the New mod card is bound in renderModCards)
+    // Editor top bar & Home primary CTA
     document.getElementById('btn-back-mods')?.addEventListener('click', goHome);
+    document.getElementById('btn-new-mod')?.addEventListener('click', openNewModModal);
+
+    // Dropdown "More" menus across the app
+    document.addEventListener('click', (e) => {
+      const toggle = e.target.closest('[data-more-toggle]');
+      if (toggle) {
+        e.preventDefault();
+        e.stopPropagation();
+        const wrap = toggle.closest('.sc-more-wrap');
+        const menu = wrap?.querySelector('.sc-more-menu');
+        if (!menu) return;
+        const willOpen = menu.hidden;
+        closeAllMoreMenus(menu);
+        menu.hidden = !willOpen;
+        toggle.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        return;
+      }
+      const item = e.target.closest('.sc-more-item');
+      if (item && !item.disabled && !item.hasAttribute('data-keep-open')) {
+        closeAllMoreMenus();
+        return;
+      }
+      if (!e.target.closest('.sc-more-wrap')) {
+        closeAllMoreMenus();
+      }
+    });
 
     const openModsDir = () => api('/api/open-folder', { method: 'POST', body: {} });
     document.getElementById('btn-open-mods-dir')?.addEventListener('click', openModsDir);
@@ -981,6 +1069,7 @@ window.onerror = function(message, source, lineno, colno, error) {
         saveAll();
       }
       if (e.key === 'Escape') {
+        closeAllMoreMenus();
         const modal = document.getElementById('modal-container');
         if (modal && modal.style.display === 'flex') {
           modal.style.display = 'none';
@@ -1004,8 +1093,10 @@ window.onerror = function(message, source, lineno, colno, error) {
   const refreshListeners = [];
   window.Scriptorium = {
     state, api, loadMod, saveMod, refreshModsList, showToast, showConfirm,
+    escapeHtml, generatedIconSvg,
     setDirty, checkDirty, showPane, goHome, showHome,
     setExtraDirty, onSave, onRevert, saveAll,
+    getPref, setPref, wireDisclosures,
     refresh: refreshEditor,
     onModLoaded(fn) { listeners.push(fn); },
     onRefresh(fn) { refreshListeners.push(fn); },

@@ -75,7 +75,6 @@
   font-size: 13px;
   font-weight: bold;
   color: #fff;
-  text-shadow: 1px 1px 0 #000;
   cursor: move;
   border-bottom: 1px solid rgba(0, 0, 0, 0.3);
 }
@@ -475,7 +474,6 @@
 .scgraph-node-header::before {         /* category dot */
   content: ""; position: absolute; left: 11px; top: 50%; width: 8px; height: 8px;
   margin-top: -4px; border-radius: 50%; background: var(--cat, #888);
-  box-shadow: 0 0 8px var(--cat, #888);
 }
 .scgraph-node-header::after {          /* category stripe */
   content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px;
@@ -497,12 +495,12 @@
 /* ports */
 .scgraph-port { width: 12px; height: 12px; transition: transform .12s, box-shadow .12s; }
 .scgraph-port.data { border-radius: 50%; border: 2.5px solid var(--pc, var(--t-any)); background: var(--g-bg); }
-.scgraph-port.data:hover { background: var(--pc, var(--t-any)); box-shadow: 0 0 10px var(--pc, var(--t-any)); }
+.scgraph-port.data:hover { background: var(--pc, var(--t-any)); }
 .scgraph-port.flow {
   width: 12px; height: 12px; border: 0; background: #f2f3f7;
   clip-path: polygon(0 0, 55% 0, 100% 50%, 55% 100%, 0 100%);
 }
-.scgraph-port.flow:hover { background: #fff; filter: drop-shadow(0 0 4px #fff); }
+.scgraph-port.flow:hover { background: #fff; }
 .scgraph-port-row.input > .scgraph-port:hover, .scgraph-port-row.output > .scgraph-port:hover { transform: translateY(-50%) scale(1.25); }
 .scgraph-port.type-number { --pc: var(--t-number); }
 .scgraph-port.type-text { --pc: var(--t-text); }
@@ -572,3 +570,21 @@ select.scgraph-inline-input { padding-right: 4px; }
 }
 .scgraph-lua-errors { border-top: 1px solid #5a2a2a; background: #1f1516; }
 .scgraph-lua-error { color: #ffb3b3; border-left: 3px solid #ff5a5a; }
+
+.scgraph-more-menu { left: 0; right: auto; }
+.scgraph-empty-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 12px 18px;
+  border: 1px dashed var(--g-line);
+  border-radius: 10px;
+  background: rgba(21, 22, 27, 0.85);
+  color: var(--g-muted);
+  font-size: 13px;
+  pointer-events: none;
+  text-align: center;
+}
+.scgraph-empty-hint[hidden] { display: none; }
+.scgraph-empty-hint strong { color: var(--g-text); }

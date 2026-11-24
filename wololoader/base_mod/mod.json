@@ -8,6 +8,7 @@
     "selection_250": true,
     "borderless": true,
     "formations_tab": true,
-    "monk_autoconvert": false
+    "monk_autoconvert": false,
+    "dev_panel": true
   }
 }

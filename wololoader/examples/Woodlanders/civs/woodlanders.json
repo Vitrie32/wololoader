@@ -28,5 +28,20 @@
   "units": {
     "83":  { "hit_points": 30 }, "293": { "hit_points": 30 },
     "123": { "hit_points": 30 }, "218": { "hit_points": 30 }
-  }
+  },
+  "custom_units": [
+    {
+      "id": "forest_tracker",
+      "name": "Forest Tracker",
+      "copy_from": 4,
+      "help": "Light woodland bowman with extra speed and line of sight.",
+      "cost": { "wood": 25, "gold": 40 },
+      "hit_points": 35,
+      "attack": 5,
+      "speed": 1.05,
+      "line_of_sight": 7,
+      "available_in_age": 1,
+      "trained_at": { "building": 87, "page": 1, "button": 6 }
+    }
+  ]
 }

@@ -1,9 +1,18 @@
 // In-game "Mods" screen, opened from the main menu's Steam Workshop button.
-// Minecraft-Forge-style layout: clickable mod list on the left with icons,
-// and detail pane on the right with full mod metadata and big icon.
+// Layout (v0.5): filter tabs + paged mod list on the left, a detail pane on the
+// right (header with icon, name, Enable/Disable; civ names, contents, source,
+// description; per-mod Open Folder / Edit in Scriptorium), one row of
+// screen-wide buttons at the bottom.
+//
+// The screen is drawn from static state (filter, page, selected mod). Changing
+// the filter or page rebuilds the whole screen (rebuild_screen), the same path
+// Reload Mods and the Mod Hub return already use, so only the current page's
+// icons are ever loaded.
 // Addresses: AoK HD.exe 5.8, see re/FINDINGS.md ("Mods screen v2").
 #include "wololoader.h"
+#include "hubcore.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define ADDR_MODMGR_HANDLER       0x6e9380  // __fastcall(MainMenuScreen*): opens ModManagerScreen
@@ -25,7 +34,6 @@
 #define ADDR_APPLY_STYLE          0x48d550
 #define ADDR_STYLE_PAIR           0xada500
 
-#define ADDR_BUTTON_SET_CHECKED   0x477450  // thiscall(btn, char checked), ret 4
 #define ADDR_BUTTON_SET_TEXT      0x479ce0  // thiscall(btn, int slot, const char *text), ret 8
 #define ADDR_LOAD_PNG             0x49f1f0  // thiscall(chain, &out, path), ret 8
 #define ADDR_LOADER_CHAIN         0xada9f4  // [ptr] ui::ImageFileDrawableLoader
@@ -36,15 +44,37 @@
 #define EV_LEFT_CLICK             3
 #define REF_W                     1366
 #define REF_H                     768
-#define MAX_ROWS                  9
+
 // Layout inside the parchment of the scr2p background (reference units).
-#define LIST_X 225
-#define LIST_W 340
-#define LIST_Y 85
-#define DET_X 610
-#define DET_W 530
-#define BOTTOM_Y 588
-#define DESC_CHARS 96
+// The parchment's usable area is about x 225..1140, y 15..600.
+#define LIST_X      225
+#define LIST_W      340
+#define TABS_Y      72
+#define TAB_W       108
+#define TAB_H       32
+#define ROWS_Y      114
+#define ROW_STEP    50
+#define ROW_H       44
+#define PAGE_SIZE   8
+#define PAGER_Y     (ROWS_Y + PAGE_SIZE * ROW_STEP + 4)   // 518
+#define STATUS_Y    560
+
+#define DET_X       610
+#define DET_W       530
+#define HEAD_Y      72      // detail icon top
+#define TEXT_X      (DET_X + 112)
+#define TEXT_W      (DET_W - 112)
+#define INFO_Y      196
+#define INFO_STEP   24
+#define DESC_Y      (INFO_Y + 4 * INFO_STEP + 12)  // 304
+#define ACTIONS_Y   518
+#define DESC_CHARS  96      // font 0xa is about 5 reference units per character
+#define INFO_CHARS  100
+
+#define BAR_Y       654     // bottom button row (below the parchment)
+#define BAR_H       40
+
+enum { FILTER_ALL, FILTER_ON, FILTER_OFF, FILTER_COUNT };
 
 typedef void *(__cdecl *New_t)(unsigned size);
 typedef void *(__thiscall *ScreenCtor_t)(void *self, const char *name);
@@ -61,7 +91,6 @@ typedef void (__thiscall *SetTextFlag_t)(void *scr, int flag);
 typedef void (__thiscall *ApplyStyle_t)(void *scr, void *panel);
 typedef int (__thiscall *Event_t)(void *self, void *panel, int code, int a, int b);
 
-typedef void (__thiscall *ButtonSetChecked_t)(void *btn, char checked);
 typedef void (__thiscall *ButtonSetText_t)(void *btn, int slot, const char *text);
 typedef void (__thiscall *TextPanelSetText_t)(void *panel, const char *text, int z0, int z1, int z2);
 typedef void (__thiscall *LoadPng_t)(void *chain, void **out, const char *path);
@@ -70,68 +99,58 @@ typedef void *(__thiscall *DrawablePanelCtor_t)(void *mem, void *parent, const i
 typedef void *(__thiscall *ScaleRect_t)(void *screen, int out[4], const int in[4]);
 
 static void *g_screen;
+static int g_screen_ro;              // g_screen was built as the read-only lobby view
 // [0] = RTTI CompleteObjectLocator (dynamic_cast reads vtable[-1]), then slots.
 static void *g_vtable_block[VT_SLOTS + 1];
 #define g_vtable (g_vtable_block + 1)
 static Event_t g_orig_event;
 
-static void *g_btn_toggle;
-static void *g_btn_vanilla;   // Vanilla Mode on/off (takes effect on restart)
-// Set while the read-only lobby view is open (see wl_mods_open_readonly).
-static void *g_return_screen;
-static void update_button_icons(int readonly);
+// ---- state that survives rebuilds ----
+static int g_filter = FILTER_ALL;
+static int g_page;
+static int g_selected_mod = -1;      // index into g_wl.mods
+static int g_mods_dirty;             // 1 when mods changed on this screen or in Mod Hub
+static void *g_return_screen;        // set while the read-only lobby view is open
+static char g_note[600];             // message line under the detail pane
 
-// Button text shows the state the NEXT start will use (the flag file).
+// ---- the current screen's panels ----
+static int g_view[WL_MAX_MODS];      // mod indices that pass the filter
+static int g_view_count;
+static int g_row_mod[PAGE_SIZE];     // mod index of each visible row, -1 = none
+static void *g_row_btns[PAGE_SIZE];
+static void *g_row_badge_on[PAGE_SIZE];
+static void *g_row_badge_off[PAGE_SIZE];
+static void *g_tab_btns[FILTER_COUNT];
+static void *g_btn_prev, *g_btn_next;
+
+static void *g_btn_toggle;           // detail header: Enable / Disable
+static void *g_icon_toggle_on, *g_icon_toggle_off;
+static void *g_btn_mod_folder;       // detail: this mod's folder
+static void *g_btn_mod_edit;         // detail: Scriptorium on this mod
+static void *g_icon_mod_folder, *g_icon_mod_edit;
+
+static void *g_btn_vanilla, *g_btn_creator, *g_btn_open, *g_btn_back, *g_btn_hub, *g_btn_reload;
+static void *g_icon_vanilla, *g_icon_creator, *g_icon_folder, *g_icon_back;
+
+static void *g_lbl_ver_author, *g_lbl_state, *g_lbl_status, *g_lbl_note;
+static void *g_lbl_info[4];
+
+// Static string buffers (the game keeps the pointers, they must outlive the call)
+static char g_row_texts[PAGE_SIZE][192];
+static char g_tab_texts[FILTER_COUNT][32];
+static char g_page_text[32];
+static char g_status_text[128];
+static char g_default_icon[MAX_PATH];
+static char g_d_name[256], g_d_ver_author[256], g_d_state[96];
+static char g_d_info[4][512];
+static char g_d_desc[1024];
+
+static void *create_screen(void);
+
 static const char *vanilla_text(void) {
+    // Shows the state the NEXT start will use (the flag file).
     return wl_vanilla_flag_exists() ? "Vanilla Mode: On" : "Vanilla Mode: Off";
 }
-static void *g_btn_open;
-static void *g_btn_creator;  // starts Scriptorium.exe (mod creator)
-static void *g_btn_back;
-
-// Icon panels drawn on top of the buttons (added after them, so they draw over
-// them). PNGs live in <game>\wololoader\ui, copied from art/ui by make install.
-static void *g_icon_toggle_on;   // check: the button enables a mod
-static void *g_icon_toggle_off;  // cross: the button disables a mod
-static void *g_icon_vanilla;     // crossed swords
-static void *g_icon_creator;     // quill
-static void *g_icon_folder;      // folder
-static void *g_icon_back;        // arrow
-// Enabled / disabled badge on each mod row's icon (green tick / grey dash).
-static void *g_row_badge_on[MAX_ROWS];
-static void *g_row_badge_off[MAX_ROWS];
-
-static void *g_lbl_bottom_status;
-static void *g_lbl_bottom_note;
-static char g_bottom_note[600];
-
-static int g_displayed_mods;
-static int g_selected_mod = -1;
-
-static void *g_row_btns[MAX_ROWS];
-static void *g_row_icons[MAX_ROWS];
-static void *g_detail_icons[MAX_ROWS];
-
-// Detail label panels
-static void *g_lbl_name;
-static void *g_lbl_ver_author;
-static void *g_lbl_status;
-static void *g_lbl_civs;
-static void *g_lbl_folder;
-static void *g_lbl_desc;
-
-// Static string buffers (must outlive the call)
-static char g_btn_texts[MAX_ROWS][192];
-static char g_more_text[64];
-static char g_bottom_status[128];
-static char g_default_icon[MAX_PATH];
-
-static char g_detail_name[256];
-static char g_detail_ver_author[256];
-static char g_detail_status[64];
-static char g_detail_civs[64];
-static char g_detail_folder[256];
-static char g_detail_desc[1024];
 
 static void *add_label(void *s, const char *text, int x, int y, int w, int h,
                        int font, int halign, int valign, int wrap) {
@@ -145,21 +164,18 @@ static void *add_label(void *s, const char *text, int x, int y, int w, int h,
     return label;
 }
 
+static void *add_button(void *s, const char *text, int x, int y, int w, int h) {
+    return ((AddButton_t)ADDR_ADD_BUTTON)(s, s, text, NULL, x, y, w, h, 0, 0, 0);
+}
+
 static void panel_set_text(void *panel, const char *text) {
     if (!panel) return;
-    void **vtbl = *(void ***)panel;
-    TextPanelSetText_t fn = (TextPanelSetText_t)vtbl[54];
+    TextPanelSetText_t fn = (TextPanelSetText_t)(*(void ***)panel)[54];
     fn(panel, text ? text : "", 0, 0, 0);
 }
 
-// SetChecked alone shows nothing on these buttons; also disable the selected
-// row (button vtable slot 61, thiscall(btn, char)) so it looks pressed/dim.
-typedef void (__thiscall *ButtonSetDisabled_t)(void *btn, char disabled);
-static void button_set_checked(void *btn, char checked) {
-    if (!btn) return;
-    ((ButtonSetChecked_t)ADDR_BUTTON_SET_CHECKED)(btn, checked);
-    void *set_disabled = (*(void ***)btn)[61];
-    if (set_disabled == (void *)0x479840) ((ButtonSetDisabled_t)set_disabled)(btn, checked);
+static void button_set_text(void *btn, const char *text) {
+    if (btn) ((ButtonSetText_t)ADDR_BUTTON_SET_TEXT)(btn, 0, text ? text : "");
 }
 
 static void panel_set_visible(void *panel, int visible) {
@@ -174,21 +190,13 @@ static void *load_png(const char *path) {
     return drawable;
 }
 
-static void drawable_set_fit(void *drawable) {
-    if (!drawable) return;
-    int mode3[3] = { 1, 1, 1 };
-    DrawableSetFit_t fn = (DrawableSetFit_t)(*(void ***)drawable)[3];
-    fn(drawable, mode3);
-}
-
-// Panel showing a loaded drawable stretched into (x,y,w,h) reference units.
+// Panel showing a loaded drawable in (x,y,w,h) reference units.
 static void *panel_from_drawable(void *s, void *d, int x, int y, int w, int h) {
-    drawable_set_fit(d);
-
+    int mode3[3] = { 1, 1, 1 };
+    ((DrawableSetFit_t)(*(void ***)d)[3])(d, mode3);
     int in_rect[4] = { x, y, w, h };
     int out_rect[4] = { 0, 0, 0, 0 };
     ((ScaleRect_t)ADDR_SCALE_RECT)(s, out_rect, in_rect);
-
     void *panel = ((New_t)ADDR_GAME_NEW)(DRAWABLE_PANEL_SIZE);
     if (!panel) return NULL;
     memset(panel, 0, DRAWABLE_PANEL_SIZE);
@@ -196,37 +204,27 @@ static void *panel_from_drawable(void *s, void *d, int x, int y, int w, int h) {
     return panel;
 }
 
-static void *create_image_panel(void *s, const char *path, int x, int y, int w, int h) {
-    if (!path || !path[0]) return NULL;
+// Mod icon, pre-scaled by wl_icon_scaled to exactly size x size (iconcache.c).
+static void *mod_icon(void *s, const WlMod *m, int x, int y, int size) {
+    const char *src = m->icon[0] ? m->icon : g_default_icon;
+    const char *path = wl_icon_scaled(src, m->icon[0] ? m->id : "default", size);
     void *d = load_png(path);
-    if (!d && g_default_icon[0] && strcmp(path, g_default_icon) != 0) {
-        d = load_png(g_default_icon);
-        path = g_default_icon;
-    }
-    if (!d) return NULL;
-    void *panel = panel_from_drawable(s, d, x, y, w, h);
-    wl_log("mods: icon %s -> %p", path, panel);
-    return panel;
+    if (!d && m->icon[0]) d = load_png(wl_icon_scaled(g_default_icon, "default", size));
+    return d ? panel_from_drawable(s, d, x, y, size, size) : NULL;
 }
 
-// Decoration PNG <game>\wololoader\ui\<name>_<w>.png, square, rendered by make
-// install at exactly w x w pixels. Stretching a bigger PNG into the rect did not
-// work here: the image was drawn at its natural size and clipped (seen in game
-// 2026-11-17). No fallback image: a missing file just means no icon.
-static void *ui_icon(void *s, const char *name, int x, int y, int w, int h) {
+// Decoration PNG <game>\wololoader\ui\<name>_<w>.png, rendered by make install at
+// exactly w x w pixels (sizes 28, 22, 20, 18). Stretching a bigger PNG did not
+// work: it was drawn at natural size and clipped (seen in game 2026-11-17).
+static void *ui_icon(void *s, const char *name, int x, int y, int w) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%s\\ui\\%s_%d.png", g_wl.root, name, w);
-    (void)h;
     void *d = load_png(path);
-    if (!d) {
-        wl_log("mods: icon %s not loaded", path);
-        return NULL;
-    }
-    return panel_from_drawable(s, d, x, y, w, h);
+    if (!d) { wl_log("mods: icon %s not loaded", path); return NULL; }
+    return panel_from_drawable(s, d, x, y, w, w);
 }
 
 // The label's wrap flag has no visible effect, so break lines ourselves.
-// Font 0xa is about 5 reference units per character.
 static void wrap_text(char *out, size_t cap, const char *in, int width) {
     size_t o = 0;
     int col = 0;
@@ -245,103 +243,231 @@ static void wrap_text(char *out, size_t cap, const char *in, int width) {
     out[o] = 0;
 }
 
-static void format_details(int idx) {
-    if (idx < 0 || idx >= g_wl.listed_count) {
-        snprintf(g_detail_name, sizeof g_detail_name, "No mods installed");
-        g_detail_ver_author[0] = 0;
-        g_detail_status[0] = 0;
-        g_detail_civs[0] = 0;
-        g_detail_folder[0] = 0;
-        snprintf(g_detail_desc, sizeof g_detail_desc, "Put mod folders into wololoader\\mods and restart the game.");
-    } else {
-        const WlMod *m = &g_wl.mods[idx];
-        snprintf(g_detail_name, sizeof g_detail_name, "%s", m->name);
-
-        const char *ver = m->version;
-        if ((ver[0] == 'v' || ver[0] == 'V') && ver[1] >= '0' && ver[1] <= '9') ver++;
-
-        if (ver[0] && m->author[0]) {
-            snprintf(g_detail_ver_author, sizeof g_detail_ver_author, "Version %s  -  by %s", ver, m->author);
-        } else if (ver[0]) {
-            snprintf(g_detail_ver_author, sizeof g_detail_ver_author, "Version %s", ver);
-        } else if (m->author[0]) {
-            snprintf(g_detail_ver_author, sizeof g_detail_ver_author, "by %s", m->author);
-        } else {
-            g_detail_ver_author[0] = 0;
-        }
-
-        snprintf(g_detail_status, sizeof g_detail_status, "Status: %s", m->enabled ? "Enabled" : "Disabled");
-        snprintf(g_detail_civs, sizeof g_detail_civs, "Civilizations: %d", m->civ_count);
-        snprintf(g_detail_folder, sizeof g_detail_folder, "Folder: wololoader\\mods\\%s", m->id);
-
-        if (m->description[0]) {
-            wrap_text(g_detail_desc, sizeof g_detail_desc, m->description, DESC_CHARS);
-        } else {
-            snprintf(g_detail_desc, sizeof g_detail_desc, "No description.");
-        }
-    }
+// Cuts s to max chars, ending in "..." when cut.
+static void clip(char *s, size_t max) {
+    if (strlen(s) > max && max > 3) strcpy(s + max - 3, "...");
 }
 
-static void format_row_text(int idx, char *out, size_t cap) {
+static int has_scriptorium(void) {
+    char exe[MAX_PATH];
+    snprintf(exe, MAX_PATH, "%s\\Scriptorium.exe", g_wl.root);
+    return GetFileAttributesA(exe) != INVALID_FILE_ATTRIBUTES;
+}
+
+static int enabled_count(void) {
+    int n = 0;
+    for (int i = 0; i < g_wl.listed_count; i++) if (g_wl.mods[i].enabled) n++;
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// Mod contents (read from disk for the selected mod only)
+
+// Files under dir, recursively; stops counting at 9999.
+static int count_files(const char *dir, int depth) {
+    if (depth > 12) return 0;
+    char pat[MAX_PATH];
+    snprintf(pat, sizeof pat, "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int n = 0;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            char sub[MAX_PATH];
+            snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName);
+            n += count_files(sub, depth + 1);
+        } else {
+            n++;
+        }
+    } while (n < 9999 && FindNextFileA(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+static int count_glob(const char *dir, const char *pattern) {
+    char pat[MAX_PATH];
+    snprintf(pat, sizeof pat, "%s\\%s", dir, pattern);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int n = 0;
+    do { if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) n++; } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+// "Woodlanders, Monklanians" from civs\*.json "name"; units = custom_units entries.
+static void read_civs(const WlMod *m, char *names, size_t cap, int *units) {
+    names[0] = 0;
+    *units = 0;
+    char pat[MAX_PATH];
+    snprintf(pat, sizeof pat, "%s\\civs\\*.json", m->dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        char path[MAX_PATH];
+        snprintf(path, sizeof path, "%s\\civs\\%s", m->dir, fd.cFileName);
+        size_t len = 0;
+        char *text = wl_read_file(path, &len);
+        if (!text) continue;
+        char err[128];
+        WlJsonVal *root = wl_json_parse(text, err, sizeof err);
+        free(text);
+        char base[MAX_PATH];
+        snprintf(base, sizeof base, "%s", fd.cFileName);
+        char *dot = strrchr(base, '.');
+        if (dot) *dot = 0;
+        const char *name = root ? wl_json_str(wl_json_get(root, "name"), base) : base;
+        size_t used = strlen(names);
+        snprintf(names + used, cap - used, "%s%s", used ? ", " : "", name);
+        if (root) {
+            *units += (int)wl_json_len(wl_json_get(root, "custom_units"));
+            wl_json_free(root);
+        }
+    } while (strlen(names) + 2 < cap && FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static void append_part(char *out, size_t cap, const char *part) {
+    size_t used = strlen(out);
+    snprintf(out + used, cap - used, "%s%s", used ? ", " : "", part);
+}
+
+static void format_details(int idx) {
+    for (int i = 0; i < 4; i++) g_d_info[i][0] = 0;
     if (idx < 0 || idx >= g_wl.listed_count) {
-        out[0] = 0;
+        snprintf(g_d_name, sizeof g_d_name, "%s", g_wl.listed_count ? "No mods in this list" : "No mods installed");
+        g_d_ver_author[0] = 0;
+        g_d_state[0] = 0;
+        snprintf(g_d_desc, sizeof g_d_desc, "%s",
+                 g_wl.listed_count ? "Pick another filter above the list."
+                                   : "Get mods from the Mod Hub, or put mod folders into wololoader\\mods.");
         return;
     }
     const WlMod *m = &g_wl.mods[idx];
-    const char *prefix = (idx == g_selected_mod) ? "> " : "  ";
-    if (m->enabled) {
-        snprintf(out, cap, "%s%s", prefix, m->name);
-    } else {
-        snprintf(out, cap, "%s%s (disabled)", prefix, m->name);
+    snprintf(g_d_name, sizeof g_d_name, "%s", m->name);
+    clip(g_d_name, 34);
+
+    const char *ver = m->version;
+    if ((ver[0] == 'v' || ver[0] == 'V') && ver[1] >= '0' && ver[1] <= '9') ver++;
+    if (ver[0] && m->author[0])
+        snprintf(g_d_ver_author, sizeof g_d_ver_author, "Version %s  -  by %s", ver, m->author);
+    else if (ver[0])
+        snprintf(g_d_ver_author, sizeof g_d_ver_author, "Version %s", ver);
+    else if (m->author[0])
+        snprintf(g_d_ver_author, sizeof g_d_ver_author, "by %s", m->author);
+    else
+        g_d_ver_author[0] = 0;
+
+    if (_stricmp(m->id, "WololoaderBase") == 0)
+        snprintf(g_d_state, sizeof g_d_state, "%s", m->enabled ? "On: core features and scripts" : "Off");
+    else
+        snprintf(g_d_state, sizeof g_d_state, "%s", m->enabled ? "On: loads in every game" : "Off: not loaded");
+
+    // Civilizations
+    char civs[400];
+    int units = 0;
+    read_civs(m, civs, sizeof civs, &units);
+    if (civs[0]) snprintf(g_d_info[0], sizeof g_d_info[0], "Civilizations: %s", civs);
+    else snprintf(g_d_info[0], sizeof g_d_info[0], "Civilizations: none");
+    clip(g_d_info[0], INFO_CHARS);
+
+    // Contents
+    char sub[MAX_PATH], part[64], contents[256] = "";
+    if (units) { snprintf(part, sizeof part, "%d custom unit%s", units, units == 1 ? "" : "s"); append_part(contents, sizeof contents, part); }
+    snprintf(sub, sizeof sub, "%s\\scripts", m->dir);
+    int scripts = count_glob(sub, "*.lua");
+    if (scripts) { snprintf(part, sizeof part, "%d Lua script%s", scripts, scripts == 1 ? "" : "s"); append_part(contents, sizeof contents, part); }
+    snprintf(sub, sizeof sub, "%s\\resources", m->dir);
+    int res = count_files(sub, 0);
+    if (res) { snprintf(part, sizeof part, "%d game file%s replaced", res, res == 1 ? "" : "s"); append_part(contents, sizeof contents, part); }
+    snprintf(sub, sizeof sub, "%s\\history", m->dir);
+    if (count_files(sub, 0)) append_part(contents, sizeof contents, "history pages");
+    snprintf(g_d_info[1], sizeof g_d_info[1], "Contents: %s", contents[0] ? contents : "settings only");
+    clip(g_d_info[1], INFO_CHARS);
+
+    // Source: Mod Hub (.hub.json in the mod folder) or a local folder
+    char mods_dir[MAX_PATH];
+    snprintf(mods_dir, sizeof mods_dir, "%s\\mods", g_wl.root);
+    HubLocalState st;
+    memset(&st, 0, sizeof st);
+    hub_inspect_local_mod(mods_dir, m->id, &st);
+    if (st.hub_managed)
+        snprintf(g_d_info[2], sizeof g_d_info[2], "Source: Mod Hub (updates and removal in Mod Hub)");
+    else
+        snprintf(g_d_info[2], sizeof g_d_info[2], "Source: local folder");
+
+    snprintf(g_d_info[3], sizeof g_d_info[3], "Folder: wololoader\\mods\\%s", m->id);
+    clip(g_d_info[3], INFO_CHARS);
+
+    if (m->description[0]) wrap_text(g_d_desc, sizeof g_d_desc, m->description, DESC_CHARS);
+    else snprintf(g_d_desc, sizeof g_d_desc, "No description.");
+}
+
+// ---------------------------------------------------------------------------
+// Text updates (in place, no rebuild)
+
+static void format_row_text(int mod_idx, char *out, size_t cap) {
+    if (mod_idx < 0) { out[0] = 0; return; }
+    const WlMod *m = &g_wl.mods[mod_idx];
+    char name[160];
+    snprintf(name, sizeof name, "%s", m->name);
+    clip(name, m->enabled ? 26 : 20);
+    snprintf(out, cap, "%s%s%s", mod_idx == g_selected_mod ? "> " : "", name, m->enabled ? "" : " (off)");
+}
+
+static void update_tabs(void) {
+    int on = enabled_count();
+    snprintf(g_tab_texts[FILTER_ALL], sizeof g_tab_texts[0], "%sAll %d", g_filter == FILTER_ALL ? "> " : "", g_wl.listed_count);
+    snprintf(g_tab_texts[FILTER_ON], sizeof g_tab_texts[0], "%sOn %d", g_filter == FILTER_ON ? "> " : "", on);
+    snprintf(g_tab_texts[FILTER_OFF], sizeof g_tab_texts[0], "%sOff %d", g_filter == FILTER_OFF ? "> " : "", g_wl.listed_count - on);
+    for (int f = 0; f < FILTER_COUNT; f++) button_set_text(g_tab_btns[f], g_tab_texts[f]);
+    snprintf(g_status_text, sizeof g_status_text, "Wololoader v%s  -  %d of %d mods on",
+             WOLOLOADER_VERSION, on, g_wl.listed_count);
+    panel_set_text(g_lbl_status, g_status_text);
+}
+
+static void update_rows(void) {
+    for (int r = 0; r < PAGE_SIZE; r++) {
+        int mi = g_row_mod[r];
+        if (mi < 0) continue;
+        format_row_text(mi, g_row_texts[r], sizeof g_row_texts[r]);
+        button_set_text(g_row_btns[r], g_row_texts[r]);
+        panel_set_visible(g_row_badge_on[r], g_wl.mods[mi].enabled);
+        panel_set_visible(g_row_badge_off[r], !g_wl.mods[mi].enabled);
     }
 }
 
-static void update_row_button(int idx) {
-    if (idx < 0 || idx >= g_displayed_mods || !g_row_btns[idx]) return;
-    format_row_text(idx, g_btn_texts[idx], sizeof g_btn_texts[idx]);
-    ((ButtonSetText_t)ADDR_BUTTON_SET_TEXT)(g_row_btns[idx], 0, g_btn_texts[idx]);
-}
-
-static void update_toggle_button(void) {
-    if (!g_btn_toggle) return;
-    const char *text = "Disable Mod";
-    if (g_selected_mod >= 0 && g_selected_mod < g_wl.listed_count) {
-        text = g_wl.mods[g_selected_mod].enabled ? "Disable Mod" : "Enable Mod";
-    }
-    ((ButtonSetText_t)ADDR_BUTTON_SET_TEXT)(g_btn_toggle, 0, text);
-    update_button_icons(g_return_screen != NULL);
-}
-
-// Shows the icon of each button that is shown; the toggle icon follows its text.
-// readonly: the lobby view hides every change button, so their icons go too.
-static void update_button_icons(int readonly) {
+// Visibility of the buttons and their icons. readonly: lobby view, nothing that
+// changes mods is shown.
+static void update_buttons(void) {
+    int ro = g_return_screen != NULL;
     int has_sel = g_selected_mod >= 0 && g_selected_mod < g_wl.listed_count;
-    int says_disable = !has_sel || g_wl.mods[g_selected_mod].enabled;  // button text "Disable Mod"
-    int ro = readonly ? 1 : 0;
-    panel_set_visible(g_icon_toggle_on,  !ro && g_btn_toggle && !says_disable);
-    panel_set_visible(g_icon_toggle_off, !ro && g_btn_toggle && says_disable);
-    panel_set_visible(g_icon_vanilla, !ro && g_btn_vanilla);
-    panel_set_visible(g_icon_creator, !ro && g_btn_creator);
-    panel_set_visible(g_icon_folder,  !ro && g_btn_open);
-    // Back stays in both views.
+    int on = has_sel && g_wl.mods[g_selected_mod].enabled;
+    button_set_text(g_btn_toggle, on ? "Disable" : "Enable");
+    panel_set_visible(g_btn_toggle, !ro && has_sel);
+    panel_set_visible(g_icon_toggle_off, !ro && has_sel && on);    // cross: the button turns it off
+    panel_set_visible(g_icon_toggle_on, !ro && has_sel && !on);    // check: the button turns it on
+    panel_set_visible(g_btn_mod_folder, !ro && has_sel);
+    panel_set_visible(g_icon_mod_folder, !ro && has_sel);
+    panel_set_visible(g_btn_mod_edit, !ro && has_sel);
+    panel_set_visible(g_icon_mod_edit, !ro && has_sel);
+    void *change[] = { g_btn_vanilla, g_icon_vanilla, g_btn_creator, g_icon_creator,
+                       g_btn_open, g_icon_folder, g_btn_hub, g_btn_reload };
+    for (size_t i = 0; i < sizeof change / sizeof change[0]; i++) panel_set_visible(change[i], !ro);
+    panel_set_text(g_lbl_state, has_sel ? g_d_state : "");
 }
 
-static void update_row_badge(int idx) {
-    if (idx < 0 || idx >= g_displayed_mods) return;
-    int on = g_wl.mods[idx].enabled ? 1 : 0;
-    panel_set_visible(g_row_badge_on[idx], on);
-    panel_set_visible(g_row_badge_off[idx], !on);
+static void set_note(const char *text) {
+    snprintf(g_note, sizeof g_note, "%s", text ? text : "");
+    panel_set_text(g_lbl_note, g_note);
 }
 
-static void update_details(int idx) {
-    format_details(idx);
-    panel_set_text(g_lbl_name, g_detail_name);
-    panel_set_text(g_lbl_ver_author, g_detail_ver_author);
-    panel_set_text(g_lbl_status, g_detail_status);
-    panel_set_text(g_lbl_civs, g_detail_civs);
-    panel_set_text(g_lbl_folder, g_detail_folder);
-    panel_set_text(g_lbl_desc, g_detail_desc);
-}
+// ---------------------------------------------------------------------------
+// Screen lifetime
 
 // Delete a screen safely from inside its own click handler: the game's ModManager
 // "Close" path (0x6f181b..0x6f1868) builds a std::function on the stack ({vtbl
@@ -362,134 +488,189 @@ static void defer_delete_screen(void *screen) {
     if (impl) ((FnDestroy_t)(*(void ***)impl)[4])(impl, impl != (void *)f);
 }
 
-// Read-only view for the multiplayer lobby ("Active Mods" button, lobby.c): the
-// buttons that change mods are hidden, Back returns to the lobby screen.
-static void set_readonly(int on) {
-    void *btns[] = { g_btn_toggle, g_btn_vanilla, g_btn_creator, g_btn_open };
-    for (size_t i = 0; i < sizeof btns / sizeof btns[0]; i++)
-        if (btns[i]) panel_set_visible(btns[i], !on);
-    if (!on) g_return_screen = NULL;
-    update_button_icons(on);
+static void show_screen(void) {
+    ((SetCurrent_t)ADDR_SET_CURRENT)(*(void **)ADDR_SCREEN_MGR, g_screen);
+}
+
+// Builds a fresh screen from the current state and shows it; the old one is
+// deleted through the game's deferred queue (we may be inside its click handler).
+static void rebuild_screen(void) {
+    void *old = g_screen;
+    g_screen = create_screen();
+    if (g_screen) show_screen();
+    if (old) defer_delete_screen(old);
+}
+
+int wl_mods_is_readonly_open(void) {
+    return g_return_screen != NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Clicks
+
+static void toggle_selected(void) {
+    if (g_selected_mod < 0 || g_selected_mod >= g_wl.listed_count) return;
+    WlMod *m = &g_wl.mods[g_selected_mod];
+    BOOL new_state = !m->enabled;
+    if (!wl_set_mod_enabled(m->dir, new_state)) {
+        wl_log("mods: failed to update mod.json for '%s'", m->id);
+        set_note("Could not save the change (mod.json is not writable).");
+        return;
+    }
+    m->enabled = new_state;
+    g_mods_dirty = 1;
+    g_wl.mod_count = enabled_count();
+    wl_log("mods: mod '%s' %s", m->id, new_state ? "enabled" : "disabled");
+
+    // The row stays where it is until the filter or page changes, so the
+    // player can switch it back right away.
+    format_details(g_selected_mod);
+    update_rows();
+    update_tabs();
+    update_buttons();
+    if (g_wl_vanilla)
+        set_note("Saved. Restart required (Vanilla Mode is on).");
+    else if (_stricmp(m->id, "WololoaderBase") == 0)
+        set_note("Saved. Binary patches need a restart; Back reloads the scripts.");
+    else
+        set_note("Saved. Press Back or Reload Mods to apply, no restart needed.");
 }
 
 static int __fastcall on_event(void *self, void *edx, void *panel, int code, int a, int b) {
     (void)edx;
-    if (code == EV_LEFT_CLICK && panel) {
-        if (panel == g_btn_vanilla) {
-            BOOL on = !wl_vanilla_flag_exists();
-            if (wl_vanilla_set(on)) {
-                ((ButtonSetText_t)ADDR_BUTTON_SET_TEXT)(g_btn_vanilla, 0, vanilla_text());
-                snprintf(g_bottom_note, sizeof g_bottom_note, "%s",
-                         on ? "Vanilla Mode on: restart the game. Mods and patches stay off (online play)."
-                            : "Vanilla Mode off: restart the game to load your mods again.");
-                panel_set_text(g_lbl_bottom_note, g_bottom_note);
-                wl_log("Vanilla Mode set to %s (next start)", on ? "on" : "off");
-            }
-            return 1;
-        }
-        if (panel == g_btn_toggle) {
-            if (g_selected_mod >= 0 && g_selected_mod < g_wl.listed_count) {
-                WlMod *m = &g_wl.mods[g_selected_mod];
-                BOOL new_state = !m->enabled;
-                if (wl_set_mod_enabled(m->dir, new_state)) {
-                    m->enabled = new_state;
-                    int count = 0;
-                    for (int j = 0; j < g_wl.listed_count; j++) {
-                        if (g_wl.mods[j].enabled) count++;
-                    }
-                    g_wl.mod_count = count;
+    if (code != EV_LEFT_CLICK || !panel) return g_orig_event(self, panel, code, a, b);
+    int ro = g_return_screen != NULL;
 
-                    update_toggle_button();
-                    update_row_button(g_selected_mod);
-                    update_row_badge(g_selected_mod);
-                    update_details(g_selected_mod);
+    if (panel == g_btn_back) {
+        if (ro) {                                   // opened read-only from the lobby
+            void *back = g_return_screen;
+            g_return_screen = NULL;
+            ((SetCurrent_t)ADDR_SET_CURRENT)(*(void **)ADDR_SCREEN_MGR, back);
+            // Remove the Mods screen from the screen list: left below the lobby, it was
+            // shown again when the lobby closed (Cancel/Back, seen in game 2026-11-15).
+            defer_delete_screen(g_screen);
+            g_screen = NULL;
+            return 1;
+        }
+        int reload = g_mods_dirty || wl_hotreload_mods_changed();
+        if (reload) {
+            char msg[512] = "";
+            wl_hotreload_run(0, msg, sizeof msg);
+            g_mods_dirty = 0;
+        }
+        // Rebuilt on the next open so counts and new mods show the current state.
+        void *old = g_screen;
+        g_screen = NULL;
+        g_note[0] = 0;
+        ((SetCurrentByName_t)ADDR_SET_CURRENT_BY_NAME)(*(void **)ADDR_SCREEN_MGR, "Main Menu");
+        if (old) defer_delete_screen(old);
+        return 1;
+    }
 
-                    snprintf(g_bottom_status, sizeof g_bottom_status,
-                             "Wololoader v%s  -  %d of %d mods enabled",
-                             WOLOLOADER_VERSION, g_wl.mod_count, g_wl.listed_count);
-                    panel_set_text(g_lbl_bottom_status, g_bottom_status);
-
-                    snprintf(g_bottom_note, sizeof g_bottom_note,
-                             "Mod status saved. Restart the game to apply changes.");
-                    panel_set_text(g_lbl_bottom_note, g_bottom_note);
-
-                    wl_log("mods: mod '%s' %s", m->id, new_state ? "enabled" : "disabled");
-                } else {
-                    wl_log("mods: failed to update mod.json for '%s'", m->id);
-                }
-            }
+    for (int f = 0; f < FILTER_COUNT; f++) {
+        if (panel == g_tab_btns[f]) {
+            if (g_filter != f) { g_filter = f; g_page = 0; g_selected_mod = -1; rebuild_screen(); }
             return 1;
-        }
-        if (panel == g_btn_creator) {
-            snprintf(g_bottom_note, sizeof g_bottom_note, "%s",
-                     wl_launch_scriptorium() ? "Scriptorium opened. Restart the game after saving mods."
-                                             : "Scriptorium.exe not found in the wololoader folder.");
-            panel_set_text(g_lbl_bottom_note, g_bottom_note);
-            return 1;
-        }
-        if (panel == g_btn_open) {
-            char dir[MAX_PATH];
-            snprintf(dir, MAX_PATH, "%s\\mods", g_wl.root);
-            wl_open_folder(dir);
-            return 1;
-        }
-        if (panel == g_btn_back) {
-            if (g_return_screen) {                      // opened read-only from the lobby
-                void *back = g_return_screen;
-                set_readonly(0);
-                ((SetCurrent_t)ADDR_SET_CURRENT)(*(void **)ADDR_SCREEN_MGR, back);
-                // Remove the Mods screen from the screen list: left below the lobby, it was
-                // shown again when the lobby closed (Cancel/Back, seen in game 2026-11-15).
-                // It is rebuilt on the next open.
-                defer_delete_screen(g_screen);
-                g_screen = NULL;
-            } else {
-                ((SetCurrentByName_t)ADDR_SET_CURRENT_BY_NAME)(*(void **)ADDR_SCREEN_MGR, "Main Menu");
-            }
-            return 1;
-        }
-        // Read-only (lobby): the change buttons are hidden; ignore them anyway.
-        if (g_return_screen && (panel == g_btn_toggle || panel == g_btn_vanilla ||
-                                panel == g_btn_creator || panel == g_btn_open))
-            return 1;
-        for (int i = 0; i < g_displayed_mods; i++) {
-            if (panel == g_row_btns[i]) {
-                if (g_selected_mod != i) {
-                    int prev = g_selected_mod;
-                    g_selected_mod = i;
-                    if (prev >= 0 && prev < g_displayed_mods) {
-                        button_set_checked(g_row_btns[prev], 0);
-                        update_row_button(prev);
-                        if (g_detail_icons[prev]) {
-                            panel_set_visible(g_detail_icons[prev], 0);
-                        }
-                    }
-                    button_set_checked(g_row_btns[i], 1);
-                    update_row_button(i);
-                    if (g_detail_icons[i]) {
-                        panel_set_visible(g_detail_icons[i], 1);
-                    }
-                    update_details(i);
-                    update_toggle_button();
-                } else {
-                    button_set_checked(g_row_btns[i], 1);
-                }
-                return 1;
-            }
         }
     }
+    if (panel == g_btn_prev || panel == g_btn_next) {
+        int pages = g_view_count > 0 ? (g_view_count + PAGE_SIZE - 1) / PAGE_SIZE : 1;
+        int np = g_page + (panel == g_btn_next ? 1 : -1);
+        if (np >= 0 && np < pages) { g_page = np; g_selected_mod = -1; rebuild_screen(); }
+        return 1;
+    }
+    for (int r = 0; r < PAGE_SIZE; r++) {
+        if (panel == g_row_btns[r] && g_row_mod[r] >= 0) {
+            if (g_selected_mod != g_row_mod[r]) {
+                g_selected_mod = g_row_mod[r];
+                rebuild_screen();          // swaps the big icon and every detail line
+            }
+            return 1;
+        }
+    }
+
+    if (ro) return 1;   // the change buttons are hidden in the lobby view; ignore them anyway
+
+    if (panel == g_btn_toggle) { toggle_selected(); return 1; }
+    if (panel == g_btn_mod_folder && g_selected_mod >= 0) {
+        wl_open_folder(g_wl.mods[g_selected_mod].dir);
+        return 1;
+    }
+    if (panel == g_btn_mod_edit && g_selected_mod >= 0) {
+        char args[96];
+        snprintf(args, sizeof args, "--mod %s", g_wl.mods[g_selected_mod].id);
+        set_note(wl_launch_scriptorium_args(args)
+                     ? "Scriptorium opened on this mod. Press Reload Mods after saving."
+                     : "Scriptorium.exe not found in the wololoader folder.");
+        return 1;
+    }
+    if (panel == g_btn_vanilla) {
+        BOOL on = !wl_vanilla_flag_exists();
+        if (wl_vanilla_set(on)) {
+            g_mods_dirty = 1;
+            button_set_text(g_btn_vanilla, vanilla_text());
+            set_note(on ? "Vanilla Mode on next start: no mods, no patches (for online games)."
+                        : "Vanilla Mode off: mods load again on next start.");
+            wl_log("Vanilla Mode set to %s (next start)", on ? "on" : "off");
+        }
+        return 1;
+    }
+    if (panel == g_btn_reload) {
+        char msg[512] = "";
+        wl_hotreload_run(1, msg, sizeof msg);
+        g_mods_dirty = 0;
+        snprintf(g_note, sizeof g_note, "%s", msg);
+        rebuild_screen();
+        return 1;
+    }
+    if (panel == g_btn_hub) { wl_hub_open(g_screen, 0); return 1; }
+    if (panel == g_btn_creator) {
+        set_note(wl_launch_scriptorium() ? "Scriptorium opened. Press Reload Mods after saving."
+                                         : "Scriptorium.exe not found in the wololoader folder.");
+        return 1;
+    }
+    if (panel == g_btn_open) {
+        char dir[MAX_PATH];
+        snprintf(dir, MAX_PATH, "%s\\mods", g_wl.root);
+        wl_open_folder(dir);
+        return 1;
+    }
     return g_orig_event(self, panel, code, a, b);
+}
+
+// ---------------------------------------------------------------------------
+// Building the screen
+
+// Fills g_view from the filter and makes page / selection valid.
+static void build_view(void) {
+    g_view_count = 0;
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        int on = g_wl.mods[i].enabled ? 1 : 0;
+        if (g_filter == FILTER_ALL || (g_filter == FILTER_ON) == on) g_view[g_view_count++] = i;
+    }
+    int pages = g_view_count > 0 ? (g_view_count + PAGE_SIZE - 1) / PAGE_SIZE : 1;
+    if (g_page >= pages) g_page = pages - 1;
+    if (g_page < 0) g_page = 0;
+    // A selection must be on the shown page; else the page's first mod.
+    int start = g_page * PAGE_SIZE, end = start + PAGE_SIZE;
+    if (end > g_view_count) end = g_view_count;
+    int found = 0;
+    for (int v = start; v < end; v++) if (g_view[v] == g_selected_mod) found = 1;
+    if (!found) {
+        // It may sit on another page of this filter (e.g. after Reload Mods): go there.
+        for (int v = 0; v < g_view_count && !found; v++)
+            if (g_view[v] == g_selected_mod) { g_page = v / PAGE_SIZE; found = 1; }
+    }
+    if (!found) g_selected_mod = start < end ? g_view[start] : -1;
 }
 
 static void *create_screen(void) {
     wl_log("mods: create");
     wl_civs_ensure();  // so a build error can be shown
     void *s = ((New_t)ADDR_GAME_NEW)(SCREENPANEL_SIZE);
-    wl_log("mods: new -> %p", s);
     if (!s) return NULL;
     memset(s, 0, SCREENPANEL_SIZE);
     ((ScreenCtor_t)ADDR_SCREEN_CTOR)(s, "Wololoader Mods");
-    wl_log("mods: ctor ok");
 
     memcpy(g_vtable_block, (void *)(SCREENPANEL_VTBL - 4), sizeof g_vtable_block);
     g_orig_event = (Event_t)g_vtable[VT_EVENT];
@@ -497,166 +678,153 @@ static void *create_screen(void) {
     *(void **)s = g_vtable;
 
     ((SetBg_t)ADDR_SET_BACKGROUND)(s, "scr2p", 0xc3a4, 0);
-    wl_log("mods: background ok");
     int ref[2] = { REF_W, REF_H };
     ((SetRef_t)ADDR_SET_REF_SIZE)(s, ref);
-    wl_log("mods: ref size ok");
 
     snprintf(g_default_icon, sizeof g_default_icon,
-             "%s\\resources\\_common\\textures\\ui\\tech-tree-icon.png",
-             g_wl.game_dir);
+             "%s\\resources\\_common\\textures\\ui\\tech-tree-icon.png", g_wl.game_dir);
 
-    // Title "Mods" centred at (0,15,1366,40), font 1.
-    add_label(s, "Mods", 0, 15, REF_W, 40, 1, 1, 1, 0);
-    wl_log("mods: title ok");
+    build_view();
+    int ro = g_return_screen != NULL;
+    g_screen_ro = ro;
+    int creator = has_scriptorium();
 
-    int count = g_wl.listed_count < MAX_ROWS ? g_wl.listed_count : MAX_ROWS;
-    g_displayed_mods = count;
-    g_selected_mod = count > 0 ? 0 : -1;
+    add_label(s, ro ? "Mods (this game)" : "Mods", 0, 15, REF_W, 40, 1, 1, 1, 0);
+    g_btn_reload = add_button(s, "Reload Mods", 820, 22, 160, 40);
+    g_btn_hub    = add_button(s, "Mod Hub", 990, 22, 150, 40);
 
-    // Left list: up to 9 rows. Row i at y = LIST_Y + i*52:
-    // icon 40x40 at x=LIST_X; button at x=LIST_X+48, w=LIST_W-48, h=44
-    AddButton_t button = (AddButton_t)ADDR_ADD_BUTTON;
-    for (int i = 0; i < count; i++) {
-        const WlMod *m = &g_wl.mods[i];
-        int y = LIST_Y + i * 52;
-        const char *icon_path = m->icon[0] ? m->icon : g_default_icon;
-        const char *icon_id = m->icon[0] ? m->id : "default";
+    // ---- left: filter tabs, rows, pager, status ----
+    for (int f = 0; f < FILTER_COUNT; f++)
+        g_tab_btns[f] = add_button(s, "", LIST_X + f * (TAB_W + 8), TABS_Y, TAB_W, TAB_H);
 
-        g_row_icons[i] = create_image_panel(s, wl_icon_scaled(icon_path, icon_id, 40), LIST_X, y + 2, 40, 40);
-
-        format_row_text(i, g_btn_texts[i], sizeof g_btn_texts[i]);
-        g_row_btns[i] = button(s, s, g_btn_texts[i], NULL, LIST_X + 48, y, LIST_W - 48, 44, 0, 0, 0);
-
-        // Enabled badge: green tick / grey dash on the icon's lower right corner.
-        g_row_badge_on[i]  = ui_icon(s, "badge_on", LIST_X + 24, y + 26, 18, 18);
-        g_row_badge_off[i] = ui_icon(s, "badge_off", LIST_X + 24, y + 26, 18, 18);
-
-
-        // Detail icon 96x96 at (DET_X,LIST_Y) - create one per listed mod
-        g_detail_icons[i] = create_image_panel(s, wl_icon_scaled(icon_path, icon_id, 96), DET_X, LIST_Y, 96, 96);
-        if (g_detail_icons[i]) {
-            panel_set_visible(g_detail_icons[i], i == 0 ? 1 : 0);
-        }
-        update_row_badge(i);
+    for (int r = 0; r < PAGE_SIZE; r++) {
+        int v = g_page * PAGE_SIZE + r;
+        g_row_mod[r] = v < g_view_count ? g_view[v] : -1;
+        g_row_btns[r] = g_row_badge_on[r] = g_row_badge_off[r] = NULL;
+        if (g_row_mod[r] < 0) continue;
+        int y = ROWS_Y + r * ROW_STEP;
+        mod_icon(s, &g_wl.mods[g_row_mod[r]], LIST_X, y + 2, 40);
+        g_row_texts[r][0] = 0;
+        g_row_btns[r] = add_button(s, g_row_texts[r], LIST_X + 48, y, LIST_W - 48, ROW_H);
+        // Enabled badge on the icon's lower right corner (drawn over the icon).
+        g_row_badge_on[r]  = ui_icon(s, "badge_on", LIST_X + 24, y + 26, 18);
+        g_row_badge_off[r] = ui_icon(s, "badge_off", LIST_X + 24, y + 26, 18);
+    }
+    if (g_view_count == 0) {
+        add_label(s, g_filter == FILTER_OFF ? "Every mod is on." :
+                     g_filter == FILTER_ON ? "No mod is on." : "No mods installed.",
+                  LIST_X, ROWS_Y + 10, LIST_W, 30, 0xa, 1, 1, 0);
     }
 
-    if (g_wl.listed_count > MAX_ROWS) {
-        snprintf(g_more_text, sizeof g_more_text, "... and %d more", g_wl.listed_count - MAX_ROWS);
-        add_label(s, g_more_text, LIST_X + 48, LIST_Y + MAX_ROWS * 52, LIST_W - 48, 24, 0xa, 0, 1, 0);
+    int pages = g_view_count > 0 ? (g_view_count + PAGE_SIZE - 1) / PAGE_SIZE : 1;
+    g_btn_prev = g_btn_next = NULL;
+    if (pages > 1) {
+        g_btn_prev = add_button(s, "< Prev", LIST_X, PAGER_Y, 90, 34);
+        snprintf(g_page_text, sizeof g_page_text, "Page %d / %d", g_page + 1, pages);
+        add_label(s, g_page_text, LIST_X + 95, PAGER_Y, LIST_W - 190, 34, 0xa, 1, 1, 0);
+        g_btn_next = add_button(s, "Next >", LIST_X + LIST_W - 90, PAGER_Y, 90, 34);
+    }
+    g_lbl_status = add_label(s, "", LIST_X, STATUS_Y, LIST_W, 24, 0xa, 0, 1, 0);
+
+    // ---- right: detail pane ----
+    format_details(g_selected_mod);
+    if (g_selected_mod >= 0) mod_icon(s, &g_wl.mods[g_selected_mod], DET_X, HEAD_Y, 96);
+    int head_x = g_selected_mod >= 0 ? TEXT_X : DET_X;
+    int head_w = g_selected_mod >= 0 ? TEXT_W : DET_W;
+    add_label(s, g_d_name, head_x, HEAD_Y, head_w, 40, 1, 0, 0, 0);
+    g_lbl_ver_author = add_label(s, g_d_ver_author, TEXT_X, HEAD_Y + 42, TEXT_W, 24, 0xa, 0, 0, 0);
+    g_btn_toggle = add_button(s, "Disable", TEXT_X, HEAD_Y + 72, 150, 38);
+    g_icon_toggle_on  = ui_icon(s, "check", TEXT_X + 10, HEAD_Y + 80, 22);
+    g_icon_toggle_off = ui_icon(s, "cross", TEXT_X + 10, HEAD_Y + 80, 22);
+    g_lbl_state = add_label(s, "", TEXT_X + 162, HEAD_Y + 72, TEXT_W - 162, 38, 0xa, 0, 1, 0);
+
+    for (int i = 0; i < 4; i++)
+        g_lbl_info[i] = add_label(s, g_d_info[i], DET_X, INFO_Y + i * INFO_STEP, DET_W, 24, 0xa, 0, 0, 0);
+    add_label(s, g_d_desc, DET_X, DESC_Y, DET_W, ACTIONS_Y - DESC_Y - 8, 0xa, 0, 0, 0);
+
+    g_btn_mod_folder = add_button(s, "Open Folder", DET_X, ACTIONS_Y, 180, 36);
+    g_icon_mod_folder = ui_icon(s, "folder", DET_X + 10, ACTIONS_Y + 7, 22);
+    g_btn_mod_edit = g_icon_mod_edit = NULL;
+    if (creator) {
+        g_btn_mod_edit = add_button(s, "Edit in Scriptorium", DET_X + 190, ACTIONS_Y, 230, 36);
+        g_icon_mod_edit = ui_icon(s, "quill", DET_X + 200, ACTIONS_Y + 7, 22);
     }
 
-    // Right details pane:
-    if (count > 0) {
-        format_details(0);
-        button_set_checked(g_row_btns[0], 1);
-    } else {
-        format_details(-1);
-    }
-
-    // Name label font 1, left/top, at (DET_X+112, LIST_Y+4, DET_W-112, 40)
-    g_lbl_name = add_label(s, g_detail_name, DET_X + 112, LIST_Y + 4, DET_W - 112, 40, 1, 0, 0, 0);
-
-    // "Version X  -  by Author" font 0xa at (DET_X+112, LIST_Y+50, DET_W-112, 26)
-    g_lbl_ver_author = add_label(s, g_detail_ver_author, DET_X + 112, LIST_Y + 50, DET_W - 112, 26, 0xa, 0, 0, 0);
-
-    // font-0xa left-aligned lines at x=DET_X, w=DET_W, h=26:
-    // y=197 "Status: Enabled|Disabled"
-    g_lbl_status = add_label(s, g_detail_status, DET_X, LIST_Y + 112, DET_W, 26, 0xa, 0, 0, 0);
-    // y=225 "Civilizations: N"
-    g_lbl_civs = add_label(s, g_detail_civs, DET_X, LIST_Y + 140, DET_W, 26, 0xa, 0, 0, 0);
-    // y=253 "Folder: wololoader\mods\<id>"
-    g_lbl_folder = add_label(s, g_detail_folder, DET_X, LIST_Y + 168, DET_W, 26, 0xa, 0, 0, 0);
-
-    // description label at (DET_X, LIST_Y+216, DET_W, 280) font 0xa, left, top, wrap on
-    g_lbl_desc = add_label(s, g_detail_desc, DET_X, LIST_Y + 216, DET_W, 280, 0xa, 0, 0, 0);
-
-    // Bottom:
-    // "Wololoader v<ver>  -  <enabled> of <listed> mods enabled" left at (LIST_X, BOTTOM_Y, LIST_W, 24) font 0xa
-    snprintf(g_bottom_status, sizeof g_bottom_status,
-             "Wololoader v%s  -  %d of %d mods enabled",
-             WOLOLOADER_VERSION, g_wl.mod_count, g_wl.listed_count);
-    g_lbl_bottom_status = add_label(s, g_bottom_status, LIST_X, BOTTOM_Y, LIST_W, 24, 0xa, 0, 1, 0);
-
-    // "Restart the game after adding or changing mods." at (DET_X, BOTTOM_Y, DET_W, 24) left font 0xa
-    // Mod changes are rebuilt automatically at start; a failed build is shown here.
+    // Note line: build error, last reload result or the last action's message.
+    const char *last_hr = wl_hotreload_last_message();
     if (g_wl_build_error[0])
-        snprintf(g_bottom_note, sizeof g_bottom_note, "Build error: %s", g_wl_build_error);
-    else
-        snprintf(g_bottom_note, sizeof g_bottom_note, "Changes to mods apply after restarting the game.");
-    g_lbl_bottom_note = add_label(s, g_bottom_note, DET_X, BOTTOM_Y, DET_W, 24, 0xa, 0, 1, 0);
+        snprintf(g_note, sizeof g_note, "Build error: %s", g_wl_build_error);
+    else if (!g_note[0] && last_hr && last_hr[0])
+        snprintf(g_note, sizeof g_note, "%s", last_hr);
+    clip(g_note, INFO_CHARS);
+    g_lbl_note = add_label(s, g_note, DET_X, STATUS_Y, DET_W, 24, 0xa, 0, 1, 0);
 
-    wl_log("mods: labels ok");
-
-    // Bottom row, spanning LIST_X=225 .. 1140 (DET_X+DET_W). Hierarchy:
-    // Toggle is the main action (tall, first); Vanilla / Creator / Folder are
-    // medium with their own icon; Back is a small button at the right end.
-    // Each icon is created after its button, so it draws on top of it.
-    const char *toggle_text = (count > 0 && !g_wl.mods[0].enabled) ? "Enable Mod" : "Disable Mod";
-    // Mod Creator only when <root>\Scriptorium.exe is there (release installers leave it out for now);
-    // without it Mods Folder takes its place in the row.
-    char sc_exe[MAX_PATH];
-    snprintf(sc_exe, MAX_PATH, "%s\\Scriptorium.exe", g_wl.root);
-    int has_creator = GetFileAttributesA(sc_exe) != INVALID_FILE_ATTRIBUTES;
-
-    g_btn_toggle  = button(s, s, toggle_text, NULL, 225, 650, 230, 48, 0, 0, 0);
-    g_btn_vanilla = button(s, s, vanilla_text(), NULL, 465, 656, 215, 40, 0, 0, 0);
-    int folder_x = 690;
-    if (has_creator) {
-        g_btn_creator = button(s, s, "Mod Creator", NULL, 690, 656, 160, 40, 0, 0, 0);
-        folder_x = 860;
-    } else {
-        g_btn_creator = NULL;
+    // ---- bottom bar: same height and baseline for every button ----
+    int x = LIST_X;
+    g_btn_vanilla = add_button(s, vanilla_text(), x, BAR_Y, 220, BAR_H);
+    g_icon_vanilla = ui_icon(s, "swords", x + 10, BAR_Y + 9, 22);
+    x += 230;
+    g_btn_creator = g_icon_creator = NULL;
+    if (creator) {
+        g_btn_creator = add_button(s, "Mod Creator", x, BAR_Y, 190, BAR_H);
+        g_icon_creator = ui_icon(s, "quill", x + 10, BAR_Y + 9, 22);
+        x += 200;
     }
-    g_btn_open = button(s, s, "Mods Folder", NULL, folder_x, 656, 170, 40, 0, 0, 0);
-    g_btn_back = button(s, s, "Back", NULL, 1040, 659, 100, 34, 0, 0, 0);
+    g_btn_open = add_button(s, "Mods Folder", x, BAR_Y, 190, BAR_H);
+    g_icon_folder = ui_icon(s, "folder", x + 10, BAR_Y + 9, 22);
+    g_btn_back = add_button(s, "Back", 1140 - 130, BAR_Y, 130, BAR_H);
+    g_icon_back = ui_icon(s, "back", 1140 - 120, BAR_Y + 10, 20);
+    (void)g_icon_back;
 
-    g_icon_toggle_on  = ui_icon(s, "check", 237, 660, 28, 28);
-    g_icon_toggle_off = ui_icon(s, "cross", 237, 660, 28, 28);
-    g_icon_vanilla    = ui_icon(s, "swords", 473, 665, 22, 22);
-    g_icon_creator    = ui_icon(s, "quill", 698, 665, 22, 22);
-    g_icon_folder     = ui_icon(s, "folder", folder_x + 8, 665, 22, 22);
-    g_icon_back       = ui_icon(s, "back", 1048, 666, 20, 20);
-    update_button_icons(0);
-    wl_log("Mods screen %p (toggle %p, open %p, back %p)", s, g_btn_toggle, g_btn_open, g_btn_back);
-
+    update_tabs();
+    update_rows();
+    update_buttons();
+    wl_log("mods: screen %p (filter %d, page %d, %d shown, selected %d)",
+           s, g_filter, g_page, g_view_count, g_selected_mod);
     return s;
 }
 
 // Replaces the main menu's Steam Workshop handler. Never calls the original.
 static void __fastcall hook_modmgr_button(void *main_menu) {
     (void)main_menu;
-    wl_log("mods: main menu button");
+    if (g_screen && g_screen_ro) { rebuild_screen(); return; }   // left over from the lobby view
     if (!g_screen) g_screen = create_screen();
-    wl_log("mods: screen %p", g_screen);
-    if (g_screen) {
-        if (g_selected_mod >= 0 && g_selected_mod < g_displayed_mods) {
-            button_set_checked(g_row_btns[g_selected_mod], 1);
-            update_row_button(g_selected_mod);
-            update_toggle_button();
-        }
-        ((SetCurrent_t)ADDR_SET_CURRENT)(*(void **)ADDR_SCREEN_MGR, g_screen);
-    }
-    wl_log("mods: shown");
+    if (g_screen) show_screen();
 }
 
 // Game start while the read-only view is open (lobby countdown): forget the
-// lobby screen (it is being replaced by the game) and restore the normal buttons.
+// lobby screen (it is being replaced by the game). The screen itself may still be
+// current here, so it is not deleted; the next open from the main menu rebuilds it
+// (g_screen_ro).
 void wl_mods_readonly_reset(void) {
-    if (g_return_screen) { set_readonly(0); wl_log("mods: read-only view reset (game started)"); }
+    if (!g_return_screen) return;
+    g_return_screen = NULL;
+    wl_log("mods: read-only view reset (game started)");
 }
 
+// Read-only view for the multiplayer lobby ("Active Mods" button, lobby.c).
 void wl_mods_open_readonly(void *return_screen) {
-    if (!g_screen) g_screen = create_screen();
-    if (!g_screen) return;
     g_return_screen = return_screen;
-    set_readonly(1);
-    if (g_selected_mod >= 0 && g_selected_mod < g_displayed_mods) {
-        button_set_checked(g_row_btns[g_selected_mod], 1);
-        update_row_button(g_selected_mod);
+    g_filter = FILTER_ON;   // the lobby cares about what is loaded
+    g_page = 0;
+    g_note[0] = 0;
+    rebuild_screen();
+    if (!g_screen) g_return_screen = NULL;
+    else wl_log("mods: shown read-only (return to %p)", return_screen);
+}
+
+void wl_mods_return_from_hub(int mods_changed) {
+    if (mods_changed) {
+        g_mods_dirty = 1;
+        wl_scan_mods();
+        snprintf(g_note, sizeof g_note, "Mod Hub changes saved. Press Back or Reload Mods to apply.");
+        rebuild_screen();
+        wl_log("mods: returned from Mod Hub (rescanned: %d mods)", g_wl.listed_count);
+    } else if (g_screen) {
+        show_screen();
+    } else {
+        rebuild_screen();
     }
-    ((SetCurrent_t)ADDR_SET_CURRENT)(*(void **)ADDR_SCREEN_MGR, g_screen);
-    wl_log("mods: shown read-only (return to %p)", return_screen);
 }
 
 void wl_install_mods_screen(void) {

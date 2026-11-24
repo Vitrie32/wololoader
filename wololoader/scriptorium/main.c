@@ -554,10 +554,24 @@ int main(int argc, char **argv) {
     int  port = 0;
     int  no_window = 0;
     int  selftest = 0;
+    int  open_hub = 0;   // --hub: open the Mod Hub view (in-game Mods screen button)
+    char open_mod[64] = "";   // --mod <id>: open that mod's editor (in-game "Edit in Scriptorium")
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--selftest") == 0) {
             selftest = 1;
+        } else if (strcmp(argv[i], "--hub") == 0) {
+            open_hub = 1;
+        } else if (strcmp(argv[i], "--mod") == 0 && i + 1 < argc) {
+            // Only plain folder names go into the URL (letters, digits, '_', '-', '.').
+            const char *id = argv[++i];
+            size_t n = strlen(id), ok = n > 0 && n < sizeof(open_mod);
+            for (size_t k = 0; ok && k < n; k++) {
+                char c = id[k];
+                ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                     c == '_' || c == '-' || c == '.';
+            }
+            if (ok) snprintf(open_mod, sizeof(open_mod), "%s", id);
         } else if (strcmp(argv[i], "--no-window") == 0) {
             no_window = 1;
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -616,8 +630,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char url[256];
-    snprintf(url, sizeof(url), "http://127.0.0.1:%d/#token=%s", server.port, server.token);
+    char url[384];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d/#token=%s%s%s%s", server.port, server.token,
+             open_hub ? "&hub=1" : "",    // app.js reads hub=1 and mod=<id> from the hash
+             open_mod[0] ? "&mod=" : "", open_mod);
 
     printf("Scriptorium v2 running at %s\n", url);
     printf("Token: %s\n", server.token);

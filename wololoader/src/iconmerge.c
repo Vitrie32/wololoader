@@ -1,9 +1,16 @@
 // Extra icons: mods ship single-frame SLPs in <mod>\icons\<sheet>\<name>.slp (sheet = the game's
 // interface SLP id, e.g. 50721 = command buttons; "buildings" = all four building icon sheets
-// 50705..50708, one per culture). At start the frames are appended to a copy of the game's sheet
-// in <root>\cache\icons\<sheet>.slp and the game is redirected there (wl_add_redirect). New
-// frames get the numbers after the original ones, in mod order (Wololoader Base first) and
-// file-name order inside a mod: wl_icon_index(sheet, name) returns it (-1 = not found).
+// 50705..50708). At start the frames are appended to a copy of the game's sheet in
+// <root>\cache\icons\<sheet>.slp and the game is redirected there (wl_add_redirect).
+//
+// Base sheet lookup checks resources\_common\drs\gamedata_x2\<sheet>.slp first (HD 5.8 loads
+// gamedata_x2\50706.slp with 55 frames 0..54, including Aqueduct/Feitoria/Barricade) and falls
+// back to resources\_common\drs\interface\<sheet>.slp (e.g. 50721.slp, 70 frames).
+//
+// New frames get deterministic indices after the base sheet's frames, in sorted mod-id order
+// (strcmp) and sorted file-name order (strcmp) inside each mod — matching build.py and datbuild.c
+// so custom building icon indices agree between the builders and the merged SLP sheet.
+// wl_icon_index(sheet, name) returns the index (-1 = not found).
 //
 // The original frames are not decoded (interface sheets use extended commands): only their
 // offsets move. SLP 2.0N: 32-byte header (version, frame count at +4, comment), 32-byte frame
@@ -16,7 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_ICONS 64
+#define MAX_ICONS 256
+#define MAX_COLLECT 64
 static struct { char sheet[12]; char name[64]; int index; } g_icons[MAX_ICONS];
 static int g_nicons;
 
@@ -57,9 +65,15 @@ typedef struct { char name[64]; unsigned char *data; long len; } Frame;
 
 static void merge_sheet(const char *sheet, Frame *fr, int n) {
     char src[MAX_PATH], dst[MAX_PATH];
-    snprintf(src, sizeof src, "%s\\resources\\_common\\drs\\interface\\%s.slp", g_wl.game_dir, sheet);
-    long olen;
+    long olen = 0;
+    // Prefer gamedata_x2 (HD 5.8 building icons 50705..50708 have 55 frames there),
+    // falling back to interface (50721.slp).
+    snprintf(src, sizeof src, "%s\\resources\\_common\\drs\\gamedata_x2\\%s.slp", g_wl.game_dir, sheet);
     unsigned char *orig = read_all(src, &olen);
+    if (!orig) {
+        snprintf(src, sizeof src, "%s\\resources\\_common\\drs\\interface\\%s.slp", g_wl.game_dir, sheet);
+        orig = read_all(src, &olen);
+    }
     if (!orig || memcmp(orig, "2.0N", 4) != 0) { wl_log("icons: cannot read %s", src); free(orig); return; }
     int count = *(int *)(orig + 4);
     long add = 32L * n, data_len = olen - 32 - 32L * count;
@@ -82,6 +96,7 @@ static void merge_sheet(const char *sheet, Frame *fr, int n) {
         long delta = pos - 64;                            // its data started at 64 in its file
         unsigned int cmd = U32(info) + (unsigned int)delta;
         int h = *(int *)(info + 20);
+        if (h < 0 || h > 4096 || cmd + 4u * (unsigned)h > (unsigned long)total) { ok = 0; break; }
         U32(info) = cmd; U32(info + 4) += (unsigned int)delta;
         for (int y = 0; y < h; y++) U32(out + cmd + 4 * y) += (unsigned int)delta;
         pos += fr[i].len - 64;
@@ -104,17 +119,28 @@ static void merge_sheet(const char *sheet, Frame *fr, int n) {
     char fname[32];
     snprintf(fname, sizeof fname, "%s.slp", sheet);
     wl_add_redirect(fname, dst);
-    wl_log("icons: %s.slp + %d icon(s), first new index %d", sheet, n, count);
+    wl_log("icons: %s.slp (%d base) + %d icon(s), first new index %d", sheet, count, n, count);
 }
 
-static int frame_cmp(const void *a, const void *b) { return _stricmp(((const Frame *)a)->name, ((const Frame *)b)->name); }
+static int frame_cmp(const void *a, const void *b) { return strcmp(((const Frame *)a)->name, ((const Frame *)b)->name); }
+static int mod_ptr_cmp(const void *a, const void *b) {
+    const WlMod *ma = *(const WlMod *const *)a, *mb = *(const WlMod *const *)b;
+    return strcmp(ma->id, mb->id);
+}
 
-// Collects <mod>\icons\<folder>\*.slp of every enabled mod, in mod order.
+// Collects <mod>\icons\<folder>\*.slp of every enabled mod in deterministic sorted mod-id
+// and filename order (matching tools/build.py and src/datbuild.c).
 static int collect(const char *folder, Frame *fr, int max) {
+    const WlMod *sorted_mods[WL_MAX_MODS];
+    int nmods = 0;
+    for (int m = 0; m < g_wl.listed_count && nmods < WL_MAX_MODS; m++) {
+        if (g_wl.mods[m].enabled) sorted_mods[nmods++] = &g_wl.mods[m];
+    }
+    if (nmods > 1) qsort(sorted_mods, (size_t)nmods, sizeof *sorted_mods, mod_ptr_cmp);
+
     int n = 0;
-    for (int m = 0; m < g_wl.listed_count && n < max; m++) {
-        const WlMod *mod = &g_wl.mods[m];
-        if (!mod->enabled) continue;
+    for (int m = 0; m < nmods && n < max; m++) {
+        const WlMod *mod = sorted_mods[m];
         char pat[MAX_PATH];
         snprintf(pat, sizeof pat, "%s\\icons\\%s\\*.slp", mod->dir, folder);
         WIN32_FIND_DATAA fd;
@@ -127,29 +153,36 @@ static int collect(const char *folder, Frame *fr, int max) {
             snprintf(path, sizeof path, "%s\\icons\\%s\\%s", mod->dir, folder, fd.cFileName);
             long len;
             unsigned char *d = read_all(path, &len);
-            if (!d || memcmp(d, "2.0N", 4) != 0 || *(int *)(d + 4) != 1 || U32(d + 32) < 64) {
-                wl_log("icons: %s is not a 1-frame SLP, skipped", path); free(d); continue;
+            int fh = (d && len >= 64) ? *(int *)(d + 32 + 20) : -1;
+            if (!d || memcmp(d, "2.0N", 4) != 0 || *(int *)(d + 4) != 1 ||
+                U32(d + 32) < 64 || U32(d + 36) < 64 || fh <= 0 || fh > 4096 ||
+                U32(d + 32) + 4u * (unsigned)fh > (unsigned long)len) {
+                wl_log("icons: %s is not a valid 1-frame SLP, skipped", path); free(d); continue;
             }
             lstrcpynA(fr[n].name, fd.cFileName, sizeof fr[n].name);
             char *dot = strrchr(fr[n].name, '.'); if (dot) *dot = 0;
             fr[n].data = d; fr[n].len = len; n++;
         } while (FindNextFileA(h, &fd));
         FindClose(h);
-        qsort(fr + first, (size_t)(n - first), sizeof *fr, frame_cmp);
+        if (n - first > 1) qsort(fr + first, (size_t)(n - first), sizeof *fr, frame_cmp);
     }
     return n;
 }
 
 void wl_icons_build(void) {
-    static Frame fr[32];
+    g_nicons = 0;
+    static Frame fr[MAX_COLLECT];
     static const char *const sheets[] = { "50721" };
     static const char *const bldg[] = { "50705", "50706", "50707", "50708" };
     for (size_t s = 0; s < sizeof sheets / sizeof *sheets; s++) {
-        int n = collect(sheets[s], fr, 32);
+        int n = collect(sheets[s], fr, MAX_COLLECT);
         if (n) merge_sheet(sheets[s], fr, n);
         for (int i = 0; i < n; i++) free(fr[i].data);
     }
-    int n = collect("buildings", fr, 32);
+    int n = collect("buildings", fr, MAX_COLLECT);
     if (n) for (size_t s = 0; s < 4; s++) merge_sheet(bldg[s], fr, n);
+    for (int i = 0; i < n; i++) free(fr[i].data);
+    n = collect("units", fr, MAX_COLLECT);
+    if (n) merge_sheet("50730", fr, n);
     for (int i = 0; i < n; i++) free(fr[i].data);
 }

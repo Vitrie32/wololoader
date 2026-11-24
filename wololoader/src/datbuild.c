@@ -789,17 +789,33 @@ typedef struct {
 #define WL_PAGE_MODS 2       // "mods": economy kind; buildpage.c moves slots 1300..1400 to the mod page
 #define WL_UB_TEMPLATE_TECH 570
 #define WL_CMD_SID_BASE 31210  // strings of building commands: triples (name, create/research, rich help)
+#define WL_BLDG_ICON_BASE 55   // AoE2 HD 5.8 gamedata_x2/50706.slp frame count (0..54); matches iconmerge.c
+#define WL_UNIT_ICON_BASE 249  // AoE2 HD 5.8 gamedata_x2/50730.slp frame count (0..248); matches iconmerge.c
 
-// Builder extension state: tracks slots/strings/lua across all civs (mirroring ext dict in build.py)
+typedef struct {
+    char mod[256];
+    char stem[64];
+    int index;
+} WlBldgIcon;
+
+// Builder extension state: tracks slots/strings/lua/icons across all civs (mirroring ext dict in build.py)
 typedef struct {
     size_t slots;   // unit slots used (buildings + train commands)
     size_t sids;    // string ID triples allocated
     struct { int id; char *text; } *strings;
     size_t strings_count;
     size_t strings_cap;
-    char **lua;     // lua command lines for commands.txt
+    char **lua;     // command lines for commands.txt
     size_t lua_count;
     size_t lua_cap;
+    WlBldgIcon *bldg_icons;
+    size_t bldg_icons_count;
+    size_t bldg_icons_cap;
+    WlBldgIcon *unit_icons;
+    size_t unit_icons_count;
+    size_t unit_icons_cap;
+    size_t cu_k;
+    size_t cu_total;
 } WlBuildExt;
 
 static void wl_ext_init(WlBuildExt *ext) {
@@ -811,6 +827,14 @@ static void wl_ext_init(WlBuildExt *ext) {
     ext->lua = NULL;
     ext->lua_count = 0;
     ext->lua_cap = 0;
+    ext->bldg_icons = NULL;
+    ext->bldg_icons_count = 0;
+    ext->bldg_icons_cap = 0;
+    ext->unit_icons = NULL;
+    ext->unit_icons_count = 0;
+    ext->unit_icons_cap = 0;
+    ext->cu_k = 0;
+    ext->cu_total = 0;
 }
 
 static void wl_ext_free(WlBuildExt *ext) {
@@ -822,6 +846,156 @@ static void wl_ext_free(WlBuildExt *ext) {
         free(ext->lua[i]);
     }
     free(ext->lua);
+    free(ext->bldg_icons);
+    free(ext->unit_icons);
+}
+
+static int wl_strcasecmp(const char *a, const char *b) {
+    while (*a && *b) {
+        int ca = tolower((unsigned char)*a++);
+        int cb = tolower((unsigned char)*b++);
+        if (ca != cb) return ca - cb;
+    }
+    return tolower((unsigned char)*a) - tolower((unsigned char)*b);
+}
+
+static int wl_is_valid_1frame_slp(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 64 || len >= 16 * 1024 * 1024) { fclose(f); return 0; }
+    unsigned char hdr[64];
+    size_t nr = fread(hdr, 1, sizeof(hdr), f);
+    fclose(f);
+    if (nr != sizeof(hdr) || memcmp(hdr, "2.0N", 4) != 0) return 0;
+    int32_t fc = (int32_t)((uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) | ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24));
+    uint32_t cmd = (uint32_t)hdr[32] | ((uint32_t)hdr[33] << 8) | ((uint32_t)hdr[34] << 16) | ((uint32_t)hdr[35] << 24);
+    uint32_t outl = (uint32_t)hdr[36] | ((uint32_t)hdr[37] << 8) | ((uint32_t)hdr[38] << 16) | ((uint32_t)hdr[39] << 24);
+    int32_t h = (int32_t)((uint32_t)hdr[52] | ((uint32_t)hdr[53] << 8) | ((uint32_t)hdr[54] << 16) | ((uint32_t)hdr[55] << 24));
+    return fc == 1 && cmd >= 64 && outl >= 64 && h > 0 && h <= 4096 && (unsigned long)cmd + 4ul * (unsigned long)h <= (unsigned long)len;
+}
+
+typedef struct { char stem[64]; char path[2048]; } WlSlpStem;
+static int wl_cmp_slp_stem(const void *a, const void *b) {
+    return strcmp(((const WlSlpStem *)a)->stem, ((const WlSlpStem *)b)->stem);
+}
+
+static int wl_find_icons(const char *mods_dir, const char *folder, int base_idx,
+                         WlBldgIcon **p_icons, size_t *p_count, size_t *p_cap,
+                         char *err, size_t errcap) {
+    if (!wl_is_dir(mods_dir)) return 0;
+    char **mod_names = NULL;
+    size_t mod_count = 0;
+    if (wl_list_dir(mods_dir, &mod_names, &mod_count) != 0) return 0;
+
+    int idx = base_idx;
+    for (size_t m = 0; m < mod_count; m++) {
+        const char *mod = mod_names[m];
+        char mdir[2048];
+        snprintf(mdir, sizeof(mdir), "%.1000s/%.256s", mods_dir, mod);
+        if (!wl_is_dir(mdir)) continue;
+
+        char meta_path[2048];
+        snprintf(meta_path, sizeof(meta_path), "%.1500s/mod.json", mdir);
+        if (wl_is_file(meta_path)) {
+            size_t meta_len = 0;
+            char *meta_bytes = wl_read_file(meta_path, &meta_len);
+            if (meta_bytes) {
+                char tmp_err[256];
+                WlJsonVal *meta_json = wl_json_parse(meta_bytes, tmp_err, sizeof(tmp_err));
+                free(meta_bytes);
+                if (meta_json) {
+                    const WlJsonVal *en = wl_json_get(meta_json, "enabled");
+                    int disabled = (en && en->type == WL_JSON_BOOL && en->u.bool_val == 0);
+                    wl_json_free(meta_json);
+                    if (disabled) continue;
+                }
+            }
+        }
+
+        char idir[2048];
+        snprintf(idir, sizeof(idir), "%.1500s/icons/%.64s", mdir, folder);
+        if (!wl_is_dir(idir)) continue;
+
+        char **fnames = NULL;
+        size_t fcount = 0;
+        if (wl_list_dir(idir, &fnames, &fcount) != 0) continue;
+
+        WlSlpStem *stems = fcount ? malloc(fcount * sizeof(WlSlpStem)) : NULL;
+        size_t scount = 0;
+        if (stems) {
+            for (size_t i = 0; i < fcount; i++) {
+                const char *fn = fnames[i];
+                size_t fl = strlen(fn);
+                if (fl >= 5 && fn[fl - 4] == '.' &&
+                    tolower((unsigned char)fn[fl - 3]) == 's' &&
+                    tolower((unsigned char)fn[fl - 2]) == 'l' &&
+                    tolower((unsigned char)fn[fl - 1]) == 'p') {
+                    char p[2048];
+                    snprintf(p, sizeof(p), "%.1500s/%.256s", idir, fn);
+                    if (!wl_is_file(p)) continue;
+                    size_t sl = fl - 4;
+                    if (sl >= sizeof(stems[scount].stem)) sl = sizeof(stems[scount].stem) - 1;
+                    memcpy(stems[scount].stem, fn, sl);
+                    stems[scount].stem[sl] = '\0';
+                    snprintf(stems[scount].path, sizeof(stems[scount].path), "%s", p);
+                    scount++;
+                }
+            }
+            if (scount > 1) qsort(stems, scount, sizeof(WlSlpStem), wl_cmp_slp_stem);
+            for (size_t i = 0; i < scount; i++) {
+                if (!wl_is_valid_1frame_slp(stems[i].path)) continue;
+                if (*p_count >= *p_cap) {
+                    size_t ncap = *p_cap ? *p_cap * 2 : 16;
+                    WlBldgIcon *tmp = realloc(*p_icons, ncap * sizeof(WlBldgIcon));
+                    if (!tmp) {
+                        free(stems);
+                        wl_free_dir_list(fnames, fcount);
+                        wl_free_dir_list(mod_names, mod_count);
+                        snprintf(err, errcap, "out of memory");
+                        return -1;
+                    }
+                    *p_icons = tmp;
+                    *p_cap = ncap;
+                }
+                WlBldgIcon *bi = &(*p_icons)[(*p_count)++];
+                snprintf(bi->mod, sizeof(bi->mod), "%s", mod);
+                snprintf(bi->stem, sizeof(bi->stem), "%s", stems[i].stem);
+                bi->index = idx++;
+            }
+            free(stems);
+        }
+        wl_free_dir_list(fnames, fcount);
+    }
+    wl_free_dir_list(mod_names, mod_count);
+    return 0;
+}
+
+static int wl_find_icon_stem(const WlBldgIcon *icons, size_t count, const char *where, const char *stem) {
+    char mod[256] = "";
+    const char *slash = strchr(where, '/');
+    size_t ml = slash ? (size_t)(slash - where) : strlen(where);
+    if (ml >= sizeof(mod)) ml = sizeof(mod) - 1;
+    memcpy(mod, where, ml);
+    mod[ml] = '\0';
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(icons[i].mod, mod) == 0 && wl_strcasecmp(icons[i].stem, stem) == 0)
+            return icons[i].index;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (wl_strcasecmp(icons[i].stem, stem) == 0)
+            return icons[i].index;
+    }
+    return -1;
+}
+
+static int wl_resolve_building_icon(const WlBuildExt *ext, const char *where, int icon) {
+    if (icon < 1000) return icon;
+    char stem[32];
+    snprintf(stem, sizeof(stem), "%d", icon);
+    return wl_find_icon_stem(ext->bldg_icons, ext->bldg_icons_count, where, stem);
 }
 
 static int wl_ext_add_string(WlBuildExt *ext, int id, const char *text, char *err, size_t errcap) {
@@ -1635,6 +1809,7 @@ static int wl_check_known_keys(const WlJsonVal *obj, const char *const *known, s
     size_t n = 0;
     for (size_t i = 0; i < obj->u.obj.count; i++) {
         const char *k = obj->u.obj.members[i].key;
+        if (k[0] == '_') continue; // Skip UI/transient keys
         int ok = 0;
         for (size_t j = 0; j < nknown; j++) if (strcmp(k, known[j]) == 0) { ok = 1; break; }
         if (!ok && n < 16) extra[n++] = (char *)k;
@@ -1869,6 +2044,7 @@ static int wl_apply_graphics(const WlGfxCtx *g, uint8_t *unit, const WlJsonVal *
 // Unit layout (datfile.py): type@0, name_length@1, id@3, ..., name@150+5*damage_graphics+6, then id2, id3.
 static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civs, int B, int button, const WlJsonVal *t,
                         WlDatEffect *avail_eff, size_t uu_total, WlBuildExt *ext,
+                        int *out_slot, int *out_icon, int *out_help, const char **out_name,
                         const char *w, char *err, size_t errcap) {
     const WlJsonVal *obj = NULL;
     long long src;
@@ -1898,7 +2074,7 @@ static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civ
     }
     int slot = 1400 - (int)ext->slots;
     ext->slots++;
-    if (slot < 1300 || slot <= 1225 + 2 * (int)uu_total) {
+    if (slot < 1300 || slot <= 1225 + 2 * (int)uu_total + (int)ext->cu_total) {
         snprintf(err, errcap, "%s: no free unit slot left (1300..1400)", w);
         return -1;
     }
@@ -1914,6 +2090,10 @@ static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civ
             snprintf(err, errcap, "%s: train name and help must be strings", w);
             return -1;
         }
+        if (strchr(name_v->u.str, '\t') || strchr(name_v->u.str, '\n') || strchr(name_v->u.str, '\r')) {
+            snprintf(err, errcap, "%s: train name must not contain tab or newline", w);
+            return -1;
+        }
         nm = name_v->u.str;
         hp = help_v ? help_v->u.str : nm;
     }
@@ -1921,6 +2101,7 @@ static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civ
     // Copy the source unit, renamed when a name is given (the name block changes length).
     size_t len = wl_calc_unit_len(civ->data, civ->unit_offsets[src]);
     const uint8_t *s = civ->data + civ->unit_offsets[src];
+    int src_icon = (int)(int16_t)(s[47] | (s[48] << 8));
     size_t s1 = 150 + (size_t)s[149] * 5 + 6;            // start of the internal name
     size_t old_nl = (size_t)(uint16_t)(s[1] | (s[2] << 8));
     int sid = 0;
@@ -1976,7 +2157,12 @@ static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civ
     free(u);
     if (rc) return -1;
     WlDatEffectCmd ec = { .type = 2, .a = (int16_t)slot, .b = 1, .c = -1, .d = 0.0f };
-    return wl_effect_add_cmd(avail_eff, &ec, err, errcap);
+    if (wl_effect_add_cmd(avail_eff, &ec, err, errcap) != 0) return -1;
+    if (out_slot) *out_slot = slot;
+    if (out_icon) *out_icon = src_icon;
+    if (out_help) *out_help = sid ? sid + 2 : 0;
+    if (out_name) *out_name = name_v ? nm : "";
+    return 0;
 }
 
 // One "research" command: a new tech (copy of research copy_from, default 22) at building B with its
@@ -1989,12 +2175,18 @@ static int wl_cmd_research(int cid, int B, int button, int age, size_t k, const 
                            const uint8_t *orig, const WlOrigResearch *orig_researches, size_t orig_res_cnt,
                            WlDatResearch **p_res, size_t *p_res_cnt, size_t *p_res_cap,
                            size_t ef_cnt, WlDatEffect **p_effs, size_t *p_effs_cnt, size_t *p_effs_cap,
-                           WlBuildExt *ext, const char *w, char *err, size_t errcap) {
+                           WlBuildExt *ext,
+                           int *out_res_idx, int *out_icon, int *out_help, const char **out_name,
+                           const char *w, char *err, size_t errcap) {
     static const int age_techs[4] = { WL_AGE_TECH_DARK, WL_AGE_TECH_FEUDAL, WL_AGE_TECH_CASTLE, WL_AGE_TECH_IMPERIAL };
     const WlJsonVal *rname = r->type == WL_JSON_OBJECT ? wl_json_get(r, "name") : NULL;
     const WlJsonVal *rhelp = rname ? wl_json_get(r, "help") : NULL;
     if (!rname || rname->type != WL_JSON_STRING || (rhelp && rhelp->type != WL_JSON_STRING)) {
         snprintf(err, errcap, "%s: research must be an object with a name (string)", w);
+        return -1;
+    }
+    if (strchr(rname->u.str, '\t') || strchr(rname->u.str, '\n') || strchr(rname->u.str, '\r')) {
+        snprintf(err, errcap, "%s: research name must not contain tab or newline", w);
         return -1;
     }
     static const char *const known[] = { "copy_from", "name", "help", "cost", "time", "effects", "age", "icon" };
@@ -2118,11 +2310,30 @@ static int wl_cmd_research(int cid, int B, int button, int age, size_t k, const 
     tech.name = malloc(tech.name_length);
     if (!tech.name) { snprintf(err, errcap, "out of memory"); return -1; }
     memcpy(tech.name, tn, tech.name_length);
+    int tech_icon = (int)(int16_t)(tech.header[45] | (tech.header[46] << 8));
     if (wl_push_research(p_res, p_res_cnt, p_res_cap, &tech, err, errcap) != 0) {
         free(tech.name);
         return -1;
     }
+    if (out_res_idx) *out_res_idx = (int)(orig_res_cnt + *p_res_cnt - 1);
+    if (out_icon) *out_icon = tech_icon;
+    if (out_help) *out_help = sid + 2;
+    if (out_name) *out_name = nm;
     return 0;
+}
+
+static int wl_ext_add_cmd_line(WlBuildExt *ext, int cid, int B, int page, int button,
+                               const char *kind, int target_id, int icon, int help,
+                               const char *name, const char *cond_act, const char *cond_name,
+                               char *err, size_t errcap) {
+    size_t cap = strlen(kind) + strlen(name) + strlen(cond_act) + strlen(cond_name) + 128;
+    char *line = malloc(cap);
+    if (!line) { snprintf(err, errcap, "out of memory"); return -1; }
+    snprintf(line, cap, "%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%s\t%s\t%s",
+             cid, B, page, button, kind, target_id, icon, help, name, cond_act, cond_name);
+    int rc = wl_ext_add_lua(ext, line, err, errcap);
+    free(line);
+    return rc;
 }
 
 // unique_building "commands" (mirrors add_building_commands in build.py):
@@ -2155,25 +2366,69 @@ static int wl_add_building_commands(const WlGfxCtx *gctx, WlDatCiv *civ, const W
             snprintf(err, errcap, "%s: needs exactly one of 'train', 'research', 'lua'", w);
             return -1;
         }
-        const char *known[5] = { "button", tv ? "train" : rv ? "research" : "lua", "text", "help", "icon" };
-        if (wl_check_known_keys(c, known, lv ? 5 : 2, w, "", err, errcap) != 0) return -1;
+        const char *known[7] = { "button", "page", "condition", tv ? "train" : rv ? "research" : "lua", "text", "help", "icon" };
+        if (wl_check_known_keys(c, known, lv ? 7 : 4, w, "", err, errcap) != 0) return -1;
         const WlJsonVal *bv = wl_json_get(c, "button");
-        if (!wl_json_is_int(bv) || bv->u.num.ival < 1 || bv->u.num.ival > 15) {
-            snprintf(err, errcap, "%s: button must be 1..15", w);
+        if (!wl_json_is_int(bv) || bv->u.num.ival < 1 || bv->u.num.ival > 14) {
+            snprintf(err, errcap, "%s: button must be 1..14 (button 15 is reserved for Next Page)", w);
             return -1;
         }
         int button = (int)bv->u.num.ival;
 
+        const WlJsonVal *pv = wl_json_get(c, "page");
+        int page = (pv && wl_json_is_int(pv) && pv->u.num.ival >= 1) ? (int)pv->u.num.ival : 1;
+
+        const WlJsonVal *cond_v = wl_json_get(c, "condition");
+        const char *cond_act = "disable", *cond_name = "";
+        if (cond_v && cond_v->type != WL_JSON_NULL) {
+            if (cond_v->type != WL_JSON_OBJECT) {
+                snprintf(err, errcap, "%s: condition must be an object", w);
+                return -1;
+            }
+            static const char *const known_c[] = { "action", "name" };
+            if (wl_check_known_keys(cond_v, known_c, 2, w, "condition ", err, errcap) != 0) return -1;
+            const WlJsonVal *av = wl_json_get(cond_v, "action");
+            const WlJsonVal *nv = wl_json_get(cond_v, "name");
+            if (av) {
+                if (av->type != WL_JSON_STRING ||
+                    (strcmp(av->u.str, "disable") != 0 && strcmp(av->u.str, "hide") != 0)) {
+                    snprintf(err, errcap, "%s: condition action must be 'disable' or 'hide'", w);
+                    return -1;
+                }
+                cond_act = av->u.str;
+            }
+            if (nv) {
+                if (nv->type != WL_JSON_STRING ||
+                    strchr(nv->u.str, '\t') || strchr(nv->u.str, '\n') || strchr(nv->u.str, '\r')) {
+                    snprintf(err, errcap, "%s: condition name must be a string without tab or newline", w);
+                    return -1;
+                }
+                cond_name = nv->u.str;
+            }
+        }
+
         if (tv) {
-            if (wl_cmd_train(gctx, civ, civs, B, button, tv, &(*p_effs)[avail_idx], uu_total, ext, w, err, errcap) != 0)
+            int tr_slot = 0, tr_icon = 0, tr_help = 0;
+            const char *tr_name = "";
+            if (wl_cmd_train(gctx, civ, civs, B, button, tv, &(*p_effs)[avail_idx], uu_total, ext,
+                             &tr_slot, &tr_icon, &tr_help, &tr_name, w, err, errcap) != 0)
+                return -1;
+            if (wl_ext_add_cmd_line(ext, cid, B, page, button, "train", tr_slot, tr_icon, tr_help,
+                                    tr_name, cond_act, cond_name, err, errcap) != 0)
                 return -1;
         } else if (rv) {
+            int res_idx = 0, res_icon = 0, res_help = 0;
+            const char *res_name = "";
             if (wl_cmd_research(cid, B, button, age, k, rv, orig, orig_researches, orig_res_cnt,
                                 p_res, p_res_cnt, p_res_cap, ef_cnt, p_effs, p_effs_cnt, p_effs_cap,
-                                ext, w, err, errcap) != 0)
+                                ext, &res_idx, &res_icon, &res_help, &res_name, w, err, errcap) != 0)
+                return -1;
+            if (wl_ext_add_cmd_line(ext, cid, B, page, button, "research", res_idx, res_icon, res_help,
+                                    res_name, cond_act, cond_name, err, errcap) != 0)
                 return -1;
         } else {  // lua button: nothing in the dat; the DLL adds it to the building's panel
-            if (lv->type != WL_JSON_STRING || !lv->u.str[0] || strchr(lv->u.str, '\t') || strchr(lv->u.str, '\n')) {
+            if (lv->type != WL_JSON_STRING || !lv->u.str[0] ||
+                strchr(lv->u.str, '\t') || strchr(lv->u.str, '\n') || strchr(lv->u.str, '\r')) {
                 snprintf(err, errcap, "%s: lua must be a handler name", w);
                 return -1;
             }
@@ -2192,15 +2447,15 @@ static int wl_add_building_commands(const WlGfxCtx *gctx, WlDatCiv *civ, const W
             const char *text = xv ? xv->u.str : name, *hp = hv ? hv->u.str : "";
             int sid = wl_new_sids(ext, err, errcap);
             if (sid < 0) return -1;
-            size_t tl = strlen(text), hl = strlen(hp), nl = strlen(name);
-            char *t2 = malloc(tl + hl + 16), *line = malloc(nl + 80);
-            if (!t2 || !line) { free(t2); free(line); snprintf(err, errcap, "out of memory"); return -1; }
-            sprintf(t2, "<b>%s<b> \n%s", text, hp);
-            sprintf(line, "%d\t%d\t%d\t%s\t%d\t%d", cid, B, button, name, icon, sid + 2);
+            size_t tl = strlen(text), hl = strlen(hp);
+            char *t2 = malloc(tl + hl + 16);
+            if (!t2) { snprintf(err, errcap, "out of memory"); return -1; }
+            snprintf(t2, tl + hl + 16, "<b>%s<b> \n%s", text, hp);
             int rc = wl_ext_add_string(ext, sid, text, err, errcap) || wl_ext_add_string(ext, sid + 1, text, err, errcap) ||
-                     wl_ext_add_string(ext, sid + 2, t2, err, errcap) || wl_ext_add_lua(ext, line, err, errcap);
+                     wl_ext_add_string(ext, sid + 2, t2, err, errcap) ||
+                     wl_ext_add_cmd_line(ext, cid, B, page, button, "lua", 0, icon, sid + 2,
+                                         name, cond_act, cond_name, err, errcap);
             free(t2);
-            free(line);
             if (rc) return -1;
         }
     }
@@ -2261,11 +2516,12 @@ static int wl_add_unique_building(
     }
 
     // Known keys validation
-    const char *known_ub[] = { "age", "button", "commands", "copy_from", "help", "name", "page", "slp", "units" };
+    const char *known_ub[] = { "age", "building_type", "button", "commands", "copy_from", "help", "icon", "name", "page", "slp", "units" };
     char *extra_ub[16];
     size_t extra_ub_cnt = 0;
     for (size_t i = 0; i < ub->u.obj.count; i++) {
         const char *k = ub->u.obj.members[i].key;
+        if (k[0] == '_') continue; // Skip UI/transient keys
         int ok = 0;
         for (size_t j = 0; j < sizeof(known_ub)/sizeof(*known_ub); j++) {
             if (strcmp(k, known_ub[j]) == 0) { ok = 1; break; }
@@ -2323,7 +2579,7 @@ static int wl_add_unique_building(
     int sid_base = game_civ ? (ext_sid - 10) : (28500 + (cid - 35) * 20);
 
     int B = 1400 - (int)ub_k;
-    if (B < 1300 || B <= 1225 + 2 * (int)uu_total) {   // buildpage.c treats 1300..1400 as mod buildings
+    if (B < 1300 || B <= 1225 + 2 * (int)uu_total + (int)ext->cu_total) {   // buildpage.c treats 1300..1400 as mod buildings
         snprintf(err, errcap, "%s: unique building slot %d collides with unique unit slots", where, B);
         return -1;
     }
@@ -2476,6 +2732,22 @@ static int wl_add_unique_building(
     rep_B[s4_B + 76] = 118; rep_B[s4_B + 77] = 0;  // train_location_id = 118
     rep_B[s4_B + 78] = (uint8_t)button;            // button_id
     rep_B[85] = (uint8_t)command_attr;             // command_attribute: slice 0, offset 85 (field table)
+
+    // Handle "icon" for custom button/portrait icon
+    const WlJsonVal *icon_val = wl_json_get(ub, "icon");
+    if (icon_val) {
+        if (icon_val->type != WL_JSON_NUMBER || icon_val->u.num.is_float || icon_val->u.num.ival < 0 || icon_val->u.num.ival > 65535) {
+            snprintf(err, errcap, "%s: unique_building icon must be an integer (0..65535)", where);
+            free(rep_B);
+            return -1;
+        }
+        int resolved = wl_resolve_building_icon(ext, where, (int)icon_val->u.num.ival);
+        if (resolved >= 0) {
+            int16_t icon = (int16_t)resolved;
+            rep_B[47] = (uint8_t)(icon & 0xFF);
+            rep_B[48] = (uint8_t)((icon >> 8) & 0xFF);
+        }
+    }
 
     // Handle "slp" for custom graphic
     const WlJsonVal *slp_val = wl_json_get(ub, "slp");
@@ -2714,6 +2986,634 @@ static int wl_add_unique_building(
 }
 
 // ==========================================================================
+// Custom Units Support
+// ==========================================================================
+
+static int wl_resolve_unit_icon(const WlBuildExt *ext, const char *where, const WlJsonVal *icon_val,
+                                int *out_icon, char *err, size_t errcap) {
+    char stem[128];
+    if (wl_json_is_int(icon_val)) {
+        long long v = icon_val->u.num.ival;
+        if (v < 0 || v > 65535) {
+            snprintf(err, errcap, "%s: icon must be an integer (0..65535)", where);
+            return -1;
+        }
+        if (v < 1000) {
+            *out_icon = (int)v;
+            return 0;
+        }
+        snprintf(stem, sizeof(stem), "%lld", v);
+    } else if (icon_val->type == WL_JSON_STRING && icon_val->u.str) {
+        const char *s = icon_val->u.str;
+        size_t sl = strlen(s);
+        if (sl >= 4 && wl_strcasecmp(s + sl - 4, ".slp") == 0) sl -= 4;
+        if (sl == 0 || sl >= sizeof(stem) || strchr(s, '/') || strchr(s, '\\') ||
+            strstr(s, "..") || strchr(s, '\t') || strchr(s, '\n') || strchr(s, '\r')) {
+            snprintf(err, errcap, "%s: invalid icon name '%s'", where, s);
+            return -1;
+        }
+        memcpy(stem, s, sl);
+        stem[sl] = '\0';
+    } else {
+        snprintf(err, errcap, "%s: icon must be an integer (0..65535) or an icon name in icons/units/", where);
+        return -1;
+    }
+    int resolved = wl_find_icon_stem(ext->unit_icons, ext->unit_icons_count, where, stem);
+    if (resolved < 0) {
+        char rep[160];
+        wl_json_format_repr(icon_val, rep, sizeof(rep));
+        snprintf(err, errcap, "%s: icon %s not found in icons/units/", where, rep);
+        return -1;
+    }
+    *out_icon = resolved;
+    return 0;
+}
+
+// Locates type-70 attack/armour/slice-4 offsets within a unit buffer.
+static void wl_cu_offsets(const uint8_t *u, size_t *out_patk, size_t *out_s3, size_t *out_s4) {
+    int16_t nl = (int16_t)(u[1] | (u[2] << 8));
+    uint8_t dmg = u[149];
+    size_t s2 = 150 + (size_t)dmg * 5 + 6 + (size_t)nl;
+    size_t p_atk = s2 + 67; // 4 + 4 + 37 + 20 + 2
+    uint16_t atk_cnt = (uint16_t)(u[p_atk] | (u[p_atk + 1] << 8));
+    size_t s3 = p_atk + 2 + (size_t)atk_cnt * 4;
+    uint16_t arm_cnt = (uint16_t)(u[s3] | (u[s3 + 1] << 8));
+    size_t s4 = s3 + 2 + (size_t)arm_cnt * 4;
+    *out_patk = p_atk;
+    *out_s3 = s3;
+    *out_s4 = s4;
+}
+
+static int wl_cu_set_cost(uint8_t *u, const WlJsonVal *cost, const char *w, char *err, size_t errcap) {
+    if (cost->type != WL_JSON_OBJECT) {
+        snprintf(err, errcap, "%s: cost must be an object with food/wood/stone/gold", w);
+        return -1;
+    }
+    static const char *const res_names[4] = { "food", "wood", "stone", "gold" };
+    if (wl_check_known_keys(cost, res_names, 4, w, "cost resource(s) ", err, errcap) != 0) {
+        // Format Python-identical message: unknown cost resource(s) [...]
+        char *extra[8];
+        size_t ec = 0;
+        for (size_t i = 0; i < cost->u.obj.count; i++) {
+            const char *k = cost->u.obj.members[i].key;
+            int ok = 0;
+            for (int r = 0; r < 4; r++) if (strcmp(k, res_names[r]) == 0) { ok = 1; break; }
+            if (!ok && ec < 8) extra[ec++] = (char *)k;
+        }
+        if (ec > 1) qsort(extra, ec, sizeof(char *), wl_cmp_str);
+        char buf[256];
+        size_t pos = snprintf(buf, sizeof(buf), "[");
+        for (size_t i = 0; i < ec && pos < sizeof(buf); i++)
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "%s'%s'", i ? ", " : "", extra[i]);
+        if (pos < sizeof(buf)) snprintf(buf + pos, sizeof(buf) - pos, "]");
+        snprintf(err, errcap, "%s: unknown cost resource(s) %s", w, buf);
+        return -1;
+    }
+    int items[4][2], n = 0;
+    for (int ri = 0; ri < 4; ri++) {
+        const WlJsonVal *cv = wl_json_get(cost, res_names[ri]);
+        if (!cv) continue;
+        if (!wl_json_is_int(cv) || cv->u.num.ival < 0 || cv->u.num.ival > 32767) {
+            snprintf(err, errcap, "%s: cost %s must be a whole number 0..32767", w, res_names[ri]);
+            return -1;
+        }
+        if (cv->u.num.ival > 0) {
+            items[n][0] = ri;
+            items[n][1] = (int)cv->u.num.ival;
+            n++;
+        }
+    }
+    if (n > 3) {
+        snprintf(err, errcap, "%s: cost has more than 3 resources", w);
+        return -1;
+    }
+    size_t p_atk, s3, s4;
+    wl_cu_offsets(u, &p_atk, &s3, &s4);
+    uint8_t *rc_base = u + s4 + 56;
+    int has_pop = 0;
+    uint8_t pop_bytes[6];
+    for (int i = 0; i < 3; i++) {
+        uint8_t *rc = rc_base + i * 6;
+        int16_t rt = (int16_t)(rc[0] | (rc[1] << 8));
+        int16_t re = (int16_t)(rc[4] | (rc[5] << 8));
+        if (rt == 4 && re == 0) {
+            memcpy(pop_bytes, rc, 6);
+            has_pop = 1;
+            break;
+        }
+    }
+    if (n <= 2 && has_pop) {
+        for (int i = 0; i < 2; i++) {
+            uint8_t *rc = rc_base + i * 6;
+            wl_put16(rc, i < n ? items[i][0] : -1);
+            wl_put16(rc + 2, i < n ? items[i][1] : 0);
+            wl_put16(rc + 4, i < n ? 1 : 0);
+        }
+        memcpy(rc_base + 12, pop_bytes, 6);
+    } else {
+        for (int i = 0; i < 3; i++) {
+            uint8_t *rc = rc_base + i * 6;
+            wl_put16(rc, i < n ? items[i][0] : -1);
+            wl_put16(rc + 2, i < n ? items[i][1] : 0);
+            wl_put16(rc + 4, i < n ? 1 : 0);
+        }
+    }
+    return 0;
+}
+
+static int wl_cu_set_attack(uint8_t **pu, size_t *plen, int atk, char *err, size_t errcap) {
+    uint8_t *u = *pu;
+    size_t len = *plen;
+    size_t p_atk, s3, s4;
+    wl_cu_offsets(u, &p_atk, &s3, &s4);
+    wl_put16(u + s4 + 46, atk); // displayed_attack
+    int16_t proj_id = (int16_t)(u[s4 + 14] | (u[s4 + 15] << 8));
+    uint16_t atk_cnt = (uint16_t)(u[p_atk] | (u[p_atk + 1] << 8));
+    int has_c3 = 0, has_c4 = 0;
+    for (uint16_t i = 0; i < atk_cnt; i++) {
+        int16_t cls = (int16_t)(u[p_atk + 2 + i * 4] | (u[p_atk + 2 + i * 4 + 1] << 8));
+        if (cls == 3) has_c3 = 1;
+        if (cls == 4) has_c4 = 1;
+    }
+    int target_cls = (has_c3 && (proj_id >= 0 || !has_c4)) ? 3 : (has_c4 ? 4 : (proj_id >= 0 ? 3 : 4));
+    for (uint16_t i = 0; i < atk_cnt; i++) {
+        uint8_t *ent = u + p_atk + 2 + i * 4;
+        int16_t cls = (int16_t)(ent[0] | (ent[1] << 8));
+        if (cls == target_cls) {
+            wl_put16(ent + 2, atk);
+            return 0;
+        }
+    }
+    size_t ins_off = p_atk + 2 + (size_t)atk_cnt * 4;
+    uint8_t *nu = malloc(len + 4);
+    if (!nu) { snprintf(err, errcap, "out of memory"); return -1; }
+    memcpy(nu, u, ins_off);
+    wl_put16(nu + ins_off, target_cls);
+    wl_put16(nu + ins_off + 2, atk);
+    memcpy(nu + ins_off + 4, u + ins_off, len - ins_off);
+    wl_put16(nu + p_atk, (int)(atk_cnt + 1));
+    free(u);
+    *pu = nu;
+    *plen = len + 4;
+    return 0;
+}
+
+static int wl_cu_set_armor(uint8_t **pu, size_t *plen, int cls_id, int val, char *err, size_t errcap) {
+    uint8_t *u = *pu;
+    size_t len = *plen;
+    size_t p_atk, s3, s4;
+    wl_cu_offsets(u, &p_atk, &s3, &s4);
+    if (cls_id == 4) wl_put16(u + s4 + 44, val);       // displayed_melee_armour
+    else if (cls_id == 3) wl_put16(u + s4 + 119, val); // displayed_pierce_armour
+    uint16_t arm_cnt = (uint16_t)(u[s3] | (u[s3 + 1] << 8));
+    for (uint16_t i = 0; i < arm_cnt; i++) {
+        uint8_t *ent = u + s3 + 2 + i * 4;
+        int16_t cls = (int16_t)(ent[0] | (ent[1] << 8));
+        if (cls == cls_id) {
+            wl_put16(ent + 2, val);
+            return 0;
+        }
+    }
+    size_t ins_off = s3 + 2 + (size_t)arm_cnt * 4;
+    uint8_t *nu = malloc(len + 4);
+    if (!nu) { snprintf(err, errcap, "out of memory"); return -1; }
+    memcpy(nu, u, ins_off);
+    wl_put16(nu + ins_off, cls_id);
+    wl_put16(nu + ins_off + 2, val);
+    memcpy(nu + ins_off + 4, u + ins_off, len - ins_off);
+    wl_put16(nu + s3, (int)(arm_cnt + 1));
+    free(u);
+    *pu = nu;
+    *plen = len + 4;
+    return 0;
+}
+
+static int wl_add_custom_units(
+    WlDatCiv *civ,
+    const WlDatCiv *civs,
+    int cid,
+    const WlJsonVal *cu_list,
+    const WlJsonVal *ub_val,
+    int ub_slot,
+    const char *where,
+    size_t uu_total,
+    const unsigned char *orig,
+    const WlGfxCtx *gctx,
+    size_t ef_cnt,
+    WlDatEffect **p_custom_effects,
+    size_t *p_custom_effects_cnt,
+    size_t *p_custom_effects_cap,
+    const WlOrigResearch *orig_researches,
+    size_t orig_res_cnt,
+    WlDatResearch **p_custom_researches,
+    size_t *p_custom_researches_cnt,
+    size_t *p_custom_researches_cap,
+    WlBuildExt *ext,
+    char *err,
+    size_t errcap
+) {
+    if (cu_list->type != WL_JSON_ARRAY) {
+        snprintf(err, errcap, "%s: custom_units must be a list", where);
+        return -1;
+    }
+    static const int age_techs[4] = { WL_AGE_TECH_DARK, WL_AGE_TECH_FEUDAL, WL_AGE_TECH_CASTLE, WL_AGE_TECH_IMPERIAL };
+    static const char *const known_cu[] = {
+        "id", "name", "copy_from", "help", "cost", "train_time", "hit_points",
+        "attack", "armor", "pierce_armor", "range", "speed", "line_of_sight",
+        "units", "graphics", "icon", "available_in_age", "trained_at"
+    };
+    const char **seen_ids = cu_list->u.arr.count ? calloc(cu_list->u.arr.count, sizeof(char *)) : NULL;
+    size_t seen_cnt = 0;
+
+    for (size_t k = 0; k < cu_list->u.arr.count; k++) {
+        const WlJsonVal *cu = cu_list->u.arr.items[k];
+        char w[1024];
+        snprintf(w, sizeof(w), "%.900s custom_units[%zu]", where, k);
+        if (!cu || cu->type != WL_JSON_OBJECT) {
+            snprintf(err, errcap, "%s: must be an object", w);
+            free(seen_ids);
+            return -1;
+        }
+        const char *req_keys[] = { "id", "name", "copy_from" };
+        for (int ri = 0; ri < 3; ri++) {
+            if (!wl_json_get(cu, req_keys[ri])) {
+                snprintf(err, errcap, "%s: missing required key '%s'", w, req_keys[ri]);
+                free(seen_ids);
+                return -1;
+            }
+        }
+        if (wl_check_known_keys(cu, known_cu, sizeof(known_cu) / sizeof(*known_cu), w, "", err, errcap) != 0) {
+            free(seen_ids);
+            return -1;
+        }
+
+        const WlJsonVal *id_v = wl_json_get(cu, "id");
+        if (id_v->type != WL_JSON_STRING || !id_v->u.str || !id_v->u.str[0] || strlen(id_v->u.str) > 64 ||
+            strchr(id_v->u.str, '\t') || strchr(id_v->u.str, '\n') || strchr(id_v->u.str, '\r')) {
+            snprintf(err, errcap, "%s: id must be a non-empty string (max 64 chars)", w);
+            free(seen_ids);
+            return -1;
+        }
+        for (size_t si = 0; si < seen_cnt; si++) {
+            if (strcmp(seen_ids[si], id_v->u.str) == 0) {
+                snprintf(err, errcap, "%s: duplicate custom unit id '%s'", w, id_v->u.str);
+                free(seen_ids);
+                return -1;
+            }
+        }
+        seen_ids[seen_cnt++] = id_v->u.str;
+
+        const WlJsonVal *nm_v = wl_json_get(cu, "name");
+        if (nm_v->type != WL_JSON_STRING || !nm_v->u.str || !nm_v->u.str[0] ||
+            strchr(nm_v->u.str, '\t') || strchr(nm_v->u.str, '\n') || strchr(nm_v->u.str, '\r')) {
+            snprintf(err, errcap, "%s: name must be a non-empty string without tab or newline", w);
+            free(seen_ids);
+            return -1;
+        }
+        const char *nm = nm_v->u.str;
+        const WlJsonVal *hp_v = wl_json_get(cu, "help");
+        const char *hp = nm;
+        if (hp_v && hp_v->type != WL_JSON_NULL) {
+            if (hp_v->type != WL_JSON_STRING || !hp_v->u.str) {
+                snprintf(err, errcap, "%s: help must be a string", w);
+                free(seen_ids);
+                return -1;
+            }
+            if (hp_v->u.str[0]) hp = hp_v->u.str;
+        }
+
+        const WlJsonVal *cf_v = wl_json_get(cu, "copy_from");
+        if (!wl_json_is_int(cf_v) || cf_v->u.num.ival < 0 ||
+            (size_t)cf_v->u.num.ival >= civ->unit_count || civ->unit_offsets[cf_v->u.num.ival] == 0) {
+            char rep[128];
+            wl_json_format_repr(cf_v, rep, sizeof(rep));
+            snprintf(err, errcap, "%s: copy_from unit %s does not exist", w, rep);
+            free(seen_ids);
+            return -1;
+        }
+        long long copy_from = cf_v->u.num.ival;
+        if (civ->data[civ->unit_offsets[copy_from]] != 70) {
+            snprintf(err, errcap, "%s: copy_from unit %lld must be a trainable unit (type 70)", w, copy_from);
+            free(seen_ids);
+            return -1;
+        }
+
+        int slot = 1224 + 2 * (int)uu_total + (int)ext->cu_k;
+        ext->cu_k++;
+        if (slot > 1400) {
+            snprintf(err, errcap, "%s: custom unit slot %d exceeds 1400", w, slot);
+            free(seen_ids);
+            return -1;
+        }
+        if (slot > 1400 - (int)ext->slots) {
+            snprintf(err, errcap, "%s: custom unit slot %d collides with unique building slots", w, slot);
+            free(seen_ids);
+            return -1;
+        }
+        if (wl_check_reserved(civs, slot, w, err, errcap) != 0) {
+            free(seen_ids);
+            return -1;
+        }
+
+        char un[32];
+        size_t un_len = 0;
+        if (wl_make_unit_name(nm, w, un, &un_len, err, errcap) != 0) {
+            free(seen_ids);
+            return -1;
+        }
+
+        int sid = wl_new_sids(ext, err, errcap);
+        if (sid < 0) { free(seen_ids); return -1; }
+        {
+            size_t cl = strlen(nm), hl = strlen(hp);
+            char *t1 = malloc(cl + 16), *t2 = malloc(cl + hl + 96);
+            if (!t1 || !t2) { free(t1); free(t2); free(seen_ids); snprintf(err, errcap, "out of memory"); return -1; }
+            sprintf(t1, "Create %s", nm);
+            sprintf(t2, "Create <b>%s<b> (<cost>) \n%s \n<hp> <attack> <armor> <piercearmor> <range>", nm, hp);
+            int rc = wl_ext_add_string(ext, sid, nm, err, errcap) ||
+                     wl_ext_add_string(ext, sid + 1, t1, err, errcap) ||
+                     wl_ext_add_string(ext, sid + 2, t2, err, errcap);
+            free(t1);
+            free(t2);
+            if (rc) { free(seen_ids); return -1; }
+        }
+
+        // Clone source unit with replaced internal name
+        size_t len = wl_calc_unit_len(civ->data, civ->unit_offsets[copy_from]);
+        const uint8_t *s = civ->data + civ->unit_offsets[copy_from];
+        size_t s1 = 150 + (size_t)s[149] * 5 + 6;
+        size_t old_nl = (size_t)(uint16_t)(s[1] | (s[2] << 8));
+        size_t nlen = len - old_nl + un_len;
+        uint8_t *u = malloc(nlen);
+        if (!u) { free(seen_ids); snprintf(err, errcap, "out of memory"); return -1; }
+        memcpy(u, s, s1);
+        memcpy(u + s1, un, un_len);
+        memcpy(u + s1 + un_len, s + s1 + old_nl, len - s1 - old_nl);
+        wl_put16(u + 1, (int)un_len);
+        wl_put16(u + 3, slot);
+        wl_put16(u + s1 + un_len, slot);
+        wl_put16(u + s1 + un_len + 2, slot);
+
+        char fw[1100];
+        snprintf(fw, sizeof(fw), "%.1000s unit %d", w, slot);
+        int rc = wl_set_unit_int(u, w, "enabled", 0, err, errcap) ||
+                 wl_set_unit_int(u, w, "train_location_id", -1, err, errcap) ||
+                 wl_set_unit_int(u, w, "button_id", 0, err, errcap) ||
+                 wl_set_unit_int(u, w, "language_dll_name", sid, err, errcap) ||
+                 wl_set_unit_int(u, w, "language_dll_creation", sid + 1, err, errcap) ||
+                 wl_set_unit_int(u, w, "language_dll_help", 79000 + sid + 2, err, errcap) ||
+                 wl_set_unit_int(u, w, "language_dll_hotkey_text", 150000 + sid, err, errcap);
+
+        const WlJsonVal *units_v = wl_json_get(cu, "units");
+        if (!rc && units_v && units_v->type != WL_JSON_NULL) {
+            if (units_v->type != WL_JSON_OBJECT) {
+                snprintf(err, errcap, "%s: units must be an object", w);
+                rc = -1;
+            }
+            for (size_t i = 0; !rc && i < units_v->u.obj.count; i++) {
+                const char *fk = units_v->u.obj.members[i].key;
+                const WlJsonVal *fv = units_v->u.obj.members[i].val;
+                rc = (strcmp(fk, "graphics") == 0)
+                    ? wl_apply_graphics(gctx, u, fv, fw, err, errcap)
+                    : wl_set_unit_field(u, fw, fk, fv, err, errcap);
+            }
+        }
+
+        static const char *const stat_keys[] = { "hit_points", "train_time", "speed", "line_of_sight" };
+        for (size_t sk = 0; !rc && sk < 4; sk++) {
+            const WlJsonVal *sv = wl_json_get(cu, stat_keys[sk]);
+            if (sv && sv->type != WL_JSON_NULL) rc = wl_set_unit_field(u, fw, stat_keys[sk], sv, err, errcap);
+        }
+        const WlJsonVal *rng_v = wl_json_get(cu, "range");
+        if (!rc && rng_v && rng_v->type != WL_JSON_NULL) {
+            rc = wl_set_unit_field(u, fw, "max_range", rng_v, err, errcap) ||
+                 wl_set_unit_field(u, fw, "displayed_range", rng_v, err, errcap);
+        }
+
+        const WlJsonVal *cost_v = wl_json_get(cu, "cost");
+        if (!rc && cost_v && cost_v->type != WL_JSON_NULL) {
+            rc = wl_cu_set_cost(u, cost_v, w, err, errcap);
+        }
+
+        const WlJsonVal *atk_v = wl_json_get(cu, "attack");
+        if (!rc && atk_v && atk_v->type != WL_JSON_NULL) {
+            if (!wl_json_is_int(atk_v) || atk_v->u.num.ival < 0 || atk_v->u.num.ival > 32767) {
+                snprintf(err, errcap, "%s: attack must be an integer 0..32767", w);
+                rc = -1;
+            } else {
+                rc = wl_cu_set_attack(&u, &nlen, (int)atk_v->u.num.ival, err, errcap);
+            }
+        }
+
+        const WlJsonVal *arm_v = wl_json_get(cu, "armor");
+        if (!rc && arm_v && arm_v->type != WL_JSON_NULL) {
+            if (wl_json_is_int(arm_v)) {
+                if (arm_v->u.num.ival < 0 || arm_v->u.num.ival > 32767) {
+                    snprintf(err, errcap, "%s: armor must be an integer 0..32767", w);
+                    rc = -1;
+                } else {
+                    rc = wl_cu_set_armor(&u, &nlen, 4, (int)arm_v->u.num.ival, err, errcap);
+                }
+            } else if (arm_v->type == WL_JSON_OBJECT) {
+                static const char *const known_arm[] = { "melee", "pierce" };
+                rc = wl_check_known_keys(arm_v, known_arm, 2, w, "armor ", err, errcap);
+                const WlJsonVal *mv = !rc ? wl_json_get(arm_v, "melee") : NULL;
+                if (!rc && mv) {
+                    if (!wl_json_is_int(mv) || mv->u.num.ival < 0 || mv->u.num.ival > 32767) {
+                        snprintf(err, errcap, "%s: armor.melee must be an integer 0..32767", w);
+                        rc = -1;
+                    } else {
+                        rc = wl_cu_set_armor(&u, &nlen, 4, (int)mv->u.num.ival, err, errcap);
+                    }
+                }
+                const WlJsonVal *pv = !rc ? wl_json_get(arm_v, "pierce") : NULL;
+                if (!rc && pv) {
+                    if (!wl_json_is_int(pv) || pv->u.num.ival < 0 || pv->u.num.ival > 32767) {
+                        snprintf(err, errcap, "%s: armor.pierce must be an integer 0..32767", w);
+                        rc = -1;
+                    } else {
+                        rc = wl_cu_set_armor(&u, &nlen, 3, (int)pv->u.num.ival, err, errcap);
+                    }
+                }
+            } else {
+                snprintf(err, errcap, "%s: armor must be an integer or {\"melee\", \"pierce\"}", w);
+                rc = -1;
+            }
+        }
+
+        const WlJsonVal *pa_v = wl_json_get(cu, "pierce_armor");
+        if (!rc && pa_v && pa_v->type != WL_JSON_NULL) {
+            if (!wl_json_is_int(pa_v) || pa_v->u.num.ival < 0 || pa_v->u.num.ival > 32767) {
+                snprintf(err, errcap, "%s: pierce_armor must be an integer 0..32767", w);
+                rc = -1;
+            } else {
+                rc = wl_cu_set_armor(&u, &nlen, 3, (int)pa_v->u.num.ival, err, errcap);
+            }
+        }
+
+        const WlJsonVal *gfx_v = wl_json_get(cu, "graphics");
+        if (!rc && gfx_v && gfx_v->type != WL_JSON_NULL) {
+            rc = wl_apply_graphics(gctx, u, gfx_v, w, err, errcap);
+        }
+
+        const WlJsonVal *icon_v = wl_json_get(cu, "icon");
+        if (!rc && icon_v && icon_v->type != WL_JSON_NULL) {
+            int icon_id = 0;
+            rc = wl_resolve_unit_icon(ext, w, icon_v, &icon_id, err, errcap);
+            if (!rc) wl_put16(u + 47, icon_id);
+        }
+
+        const WlJsonVal *age_v = wl_json_get(cu, "available_in_age");
+        int age = 0;
+        if (!rc && age_v && age_v->type != WL_JSON_NULL) {
+            if (!wl_json_is_int(age_v) || age_v->u.num.ival < 0 || age_v->u.num.ival > 3) {
+                snprintf(err, errcap, "%s: available_in_age must be 0..3", w);
+                rc = -1;
+            } else {
+                age = (int)age_v->u.num.ival;
+            }
+        }
+
+        const WlJsonVal *ta_v = wl_json_get(cu, "trained_at");
+        if (!rc && ta_v && ta_v->type != WL_JSON_NULL) {
+            if (ta_v->type != WL_JSON_OBJECT) {
+                snprintf(err, errcap, "%s: trained_at must be an object", w);
+                rc = -1;
+            } else {
+                static const char *const known_ta[] = { "building", "page", "button" };
+                rc = wl_check_known_keys(ta_v, known_ta, 3, w, "trained_at ", err, errcap);
+            }
+            const WlJsonVal *bref = !rc ? wl_json_get(ta_v, "building") : NULL;
+            if (!rc && !bref) {
+                snprintf(err, errcap, "%s: trained_at missing required key 'building'", w);
+                rc = -1;
+            }
+            int bldg_id = -1;
+            if (!rc) {
+                if (bref->type == WL_JSON_STRING && bref->u.str) {
+                    const WlJsonVal *ub_name_v = (ub_val && ub_val->type == WL_JSON_OBJECT) ? wl_json_get(ub_val, "name") : NULL;
+                    const char *ub_name = (ub_name_v && ub_name_v->type == WL_JSON_STRING) ? ub_name_v->u.str : NULL;
+                    if (strcmp(bref->u.str, "unique_building") == 0 || (ub_name && strcmp(bref->u.str, ub_name) == 0)) {
+                        if (ub_slot < 0) {
+                            snprintf(err, errcap, "%s: trained_at building '%s' requires a unique_building on this civ", w, bref->u.str);
+                            rc = -1;
+                        } else {
+                            bldg_id = ub_slot;
+                        }
+                    } else {
+                        snprintf(err, errcap, "%s: trained_at unknown building key '%s'", w, bref->u.str);
+                        rc = -1;
+                    }
+                } else if (wl_json_is_int(bref)) {
+                    long long bid = bref->u.num.ival;
+                    if (bid < 0 || (size_t)bid >= civ->unit_count || civ->unit_offsets[bid] == 0) {
+                        snprintf(err, errcap, "%s: trained_at building unit %lld does not exist", w, bid);
+                        rc = -1;
+                    } else if (civ->data[civ->unit_offsets[bid]] != 80) {
+                        snprintf(err, errcap, "%s: trained_at building unit %lld must be a building (type 80)", w, bid);
+                        rc = -1;
+                    } else {
+                        bldg_id = (int)bid;
+                    }
+                } else {
+                    snprintf(err, errcap, "%s: trained_at building must be a unit id or 'unique_building'", w);
+                    rc = -1;
+                }
+            }
+            int page = 1, button = 1;
+            if (!rc) {
+                const WlJsonVal *pv = wl_json_get(ta_v, "page");
+                if (pv) {
+                    if (!wl_json_is_int(pv) || pv->u.num.ival < 1) {
+                        snprintf(err, errcap, "%s: trained_at page must be an integer >= 1", w);
+                        rc = -1;
+                    } else {
+                        page = (int)pv->u.num.ival;
+                    }
+                }
+            }
+            if (!rc) {
+                const WlJsonVal *bv = wl_json_get(ta_v, "button");
+                if (bv) {
+                    if (!wl_json_is_int(bv) || bv->u.num.ival < 1 || bv->u.num.ival > 14) {
+                        snprintf(err, errcap, "%s: trained_at button must be 1..14 (button 15 is reserved for Next Page)", w);
+                        rc = -1;
+                    } else {
+                        button = (int)bv->u.num.ival;
+                    }
+                }
+            }
+            if (!rc) {
+                rc = wl_set_unit_int(u, w, "train_location_id", bldg_id, err, errcap) ||
+                     wl_set_unit_int(u, w, "button_id", button, err, errcap);
+            }
+            if (!rc) {
+                int u_icon = (int)(int16_t)(u[47] | (u[48] << 8));
+                rc = wl_ext_add_cmd_line(ext, cid, bldg_id, page, button, "train", slot, u_icon, sid + 2,
+                                         nm, "disable", "", err, errcap);
+            }
+        }
+
+        if (!rc) rc = wl_replace_civ_units(civ, slot, u, nlen, -1, NULL, 0, err, errcap);
+        free(u);
+        if (rc) { free(seen_ids); return -1; }
+
+        // Effect enabling this unit for `cid`
+        WlDatEffect eff;
+        memset(&eff, 0, sizeof(eff));
+        char ef_name[64];
+        snprintf(ef_name, sizeof(ef_name), "WL CU avail %d.%zu", cid, k);
+        if (wl_make_effect_name(ef_name, w, eff.name, err, errcap) != 0) { free(seen_ids); return -1; }
+        eff.cmd_count = 1;
+        eff.cmd_cap = 1;
+        eff.commands = malloc(sizeof(WlDatEffectCmd));
+        if (!eff.commands) { free(seen_ids); snprintf(err, errcap, "out of memory"); return -1; }
+        eff.commands[0].type = 2;
+        eff.commands[0].a = (int16_t)slot;
+        eff.commands[0].b = 1;
+        eff.commands[0].c = -1;
+        eff.commands[0].d = 0.0f;
+        size_t eff_id = ef_cnt + *p_custom_effects_cnt;
+        if (wl_push_effect(p_custom_effects, p_custom_effects_cnt, p_custom_effects_cap, &eff, err, errcap) != 0) {
+            free(eff.commands);
+            free(seen_ids);
+            return -1;
+        }
+
+        // Research cloned from 570 (auto-researched in available_in_age)
+        if (WL_UB_TEMPLATE_TECH >= orig_res_cnt) {
+            free(seen_ids);
+            snprintf(err, errcap, "%s: template tech %d not found", w, WL_UB_TEMPLATE_TECH);
+            return -1;
+        }
+        WlDatResearch tech;
+        memset(&tech, 0, sizeof(tech));
+        memcpy(tech.header, orig + orig_researches[WL_UB_TEMPLATE_TECH].offset, 62);
+        uint8_t *th = tech.header;
+        wl_put16(th + 29, cid);
+        wl_put16(th + 41, (int)eff_id);
+        wl_put16(th + 0, age_techs[age]);
+        for (int i = 1; i < 6; i++) wl_put16(th + 2 * i, -1);
+        wl_put16(th + 27, 1);
+        wl_put16(th + 35, sid);
+        wl_put16(th + 37, sid);
+        char tech_name[48];
+        snprintf(tech_name, sizeof(tech_name), "WL CU %d.%zu", cid, k);
+        tech.name_length = (uint16_t)(strlen(tech_name) + 1);
+        tech.name = malloc(tech.name_length);
+        if (!tech.name) { free(seen_ids); snprintf(err, errcap, "out of memory"); return -1; }
+        memcpy(tech.name, tech_name, tech.name_length);
+        if (wl_push_research(p_custom_researches, p_custom_researches_cnt, p_custom_researches_cap, &tech, err, errcap) != 0) {
+            free(tech.name);
+            free(seen_ids);
+            return -1;
+        }
+    }
+    free(seen_ids);
+    return 0;
+}
+
+// ==========================================================================
 // Apply Civ JSON Definition
 // ==========================================================================
 
@@ -2758,7 +3658,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         // "extend": change an existing civ of the game (1..31) in place instead of making a new
         // one; no identity keys (name, AI names, ...), no unique unit / unique techs.
         const char *known_keys[] = {
-            "disabled_techs", "disabled_units", "effects",
+            "custom_units", "disabled_techs", "disabled_units", "effects",
             "enabled_techs", "enabled_units", "extend",
             "resources", "team_bonus_effects", "unique_building", "units"
         };
@@ -2788,7 +3688,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "%s'%s'", (i > 0 ? ", " : ""), extra_keys[i]);
             }
             epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "]");
-            snprintf(err, errcap, "%s: key(s) %s cannot be used with \"extend\" (only disabled_techs, disabled_units, effects, enabled_techs, enabled_units, resources, team_bonus_effects, unique_building, units)", where, extra_buf);
+            snprintf(err, errcap, "%s: key(s) %s cannot be used with \"extend\" (only custom_units, disabled_techs, disabled_units, effects, enabled_techs, enabled_units, resources, team_bonus_effects, unique_building, units)", where, extra_buf);
             return -1;
         }
 
@@ -2820,16 +3720,17 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         // Unknown keys check: must match Python's `set(spec) - known` sorted error format
         // Identity keys are ignored here and read by the DLL (civs.c); keep in sync with build.py.
         const char *known_keys[] = {
-            "ai_names", "base", "dat_name", "description",
+            "ai_names", "base", "custom_units", "dat_name", "description",
             "disabled_techs", "disabled_units", "effects",
-            "enabled_techs", "enabled_units", "interface_slp",
+            "enabled_techs", "enabled_units", "history", "icon", "interface_slp",
             "name", "resources", "sound", "team_bonus",
-            "team_bonus_effects", "tech_tree", "unique_building", "unique_techs", "unique_unit", "units"
+            "team_bonus_effects", "tech_tree", "unique_building", "unique_techs", "unique_unit", "units", "victory_sound"
         };
         char *extra_keys[32];
         size_t extra_cnt = 0;
         for (size_t i = 0; i < spec->u.obj.count; i++) {
             const char *k = spec->u.obj.members[i].key;
+            if (k[0] == '_') continue; // Skip UI/transient keys
             int is_known = 0;
             for (size_t j = 0; j < sizeof known_keys / sizeof *known_keys; j++) {
                 if (strcmp(k, known_keys[j]) == 0) {
@@ -3952,8 +4853,10 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
 
     // unique_building
     const WlJsonVal *ub_val = wl_json_get(spec, "unique_building");
+    int ub_slot = -1;
     if (ub_val) {
         int cid = extend ? (int)extend_val->u.num.ival : (int)*civs_count;
+        ub_slot = 1400 - (int)*p_ub_k;
         if (wl_add_unique_building(civ_ptr, civs, cid, ub_val, where, *p_ub_k, uu_total,
                                    orig, graphics_section_offset, orig_graphics_count,
                                    orig_effects, ef_cnt,
@@ -3967,6 +4870,21 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             return -1;
         }
         *p_ub_k = ext->slots;   // building slot + one per train command (build.py: ub_k = ext["slots"])
+    }
+
+    // custom_units
+    const WlJsonVal *cu_val = wl_json_get(spec, "custom_units");
+    if (cu_val) {
+        int cid = extend ? (int)extend_val->u.num.ival : (int)*civs_count;
+        if (wl_add_custom_units(civ_ptr, civs, cid, cu_val, ub_val, ub_slot, where, uu_total,
+                                orig, &gctx, ef_cnt,
+                                p_custom_effects, p_custom_effects_cnt, p_custom_effects_cap,
+                                orig_researches, orig_res_cnt,
+                                p_custom_researches, p_custom_researches_cnt, p_custom_researches_cap,
+                                ext, err, errcap) != 0) {
+            if (!extend) wl_free_civ(&new_civ);
+            return -1;
+        }
     }
 
     if (extend) {
@@ -4343,7 +5261,11 @@ int wl_dat_build(const WlZlib *z,
     // ----------------------------------------------------------------------
     WlCivFile *civ_files = NULL;
     size_t num_civ_files = 0;
-    if (wl_find_civ_files(mods_dir, &civ_files, &num_civ_files, err, errcap) != 0) {
+    if (wl_find_civ_files(mods_dir, &civ_files, &num_civ_files, err, errcap) != 0 ||
+        wl_find_icons(mods_dir, "buildings", WL_BLDG_ICON_BASE, &ext.bldg_icons, &ext.bldg_icons_count, &ext.bldg_icons_cap, err, errcap) != 0 ||
+        wl_find_icons(mods_dir, "units", WL_UNIT_ICON_BASE, &ext.unit_icons, &ext.unit_icons_count, &ext.unit_icons_cap, err, errcap) != 0) {
+        wl_ext_free(&ext);
+        free(civ_files);
         free(orig_researches);
         for (size_t i = 0; i < cur_civ_count; i++) wl_free_civ(&civs[i]);
         free(civs);
@@ -4390,7 +5312,7 @@ int wl_dat_build(const WlZlib *z,
             cur_civ_count++;
         }
 
-        // Count uu_total first (needed for unique_building slot allocation)
+        // Count uu_total and cu_total first (needed for unique_building slot allocation)
         size_t uu_total = 0;
         for (size_t f = 0; f < num_civ_files; f++) {
             size_t jlen = 0;
@@ -4399,8 +5321,10 @@ int wl_dat_build(const WlZlib *z,
                 char tmp_err[2048];
                 WlJsonVal *spec = wl_json_parse(jbytes, tmp_err, sizeof(tmp_err));
                 free(jbytes);
-                if (spec && spec->type == WL_JSON_OBJECT && wl_json_get(spec, "unique_unit")) {
-                    uu_total++;
+                if (spec && spec->type == WL_JSON_OBJECT) {
+                    if (wl_json_get(spec, "unique_unit")) uu_total++;
+                    const WlJsonVal *cu = wl_json_get(spec, "custom_units");
+                    if (cu && cu->type == WL_JSON_ARRAY) ext.cu_total += cu->u.arr.count;
                 }
                 wl_json_free(spec);
             }

@@ -68,6 +68,14 @@
       outputs: [{ name: 'exec', kind: 'flow' }, { name: 'building', type: 'unit' }],
       values: { button: '' }
     },
+    ButtonCondition: {
+      category: 'event',
+      title: 'Button Condition',
+      tooltip: 'Defines whether a building button is enabled/active or disabled/hidden',
+      inputs: [],
+      outputs: [{ name: 'exec', kind: 'flow' }, { name: 'building', type: 'unit' }],
+      values: { button: '' }
+    },
     EveryNSeconds: {
       category: 'event',
       title: 'Every N Seconds',
@@ -207,6 +215,17 @@
       ],
       outputs: [{ name: 'exec', kind: 'flow' }],
       values: { var: '' }
+    },
+    SetButtonAvailable: {
+      category: 'action',
+      title: 'Set Button Available',
+      tooltip: 'Set whether the button is available (true) or disabled (false)',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'available', type: 'bool', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { available: true }
     },
 
     // Flow control (yellow)
@@ -507,12 +526,24 @@
     const toolbar = document.createElement('div');
     toolbar.className = 'scgraph-toolbar';
     toolbar.innerHTML = `
-      <button class="btn btn-wood btn-sm" id="scg-add-node" title="Add Node (Space)">+ Node</button>
+      <button class="btn btn-save btn-sm" id="scg-add-node" title="Add Node (Space)">+ Node</button>
       <button class="btn btn-wood btn-sm" id="scg-fit" title="Fit View">Fit</button>
-      <button class="btn btn-wood btn-sm" id="scg-vars" title="Variables Panel">Variables</button>
-      <button class="btn btn-wood btn-sm" id="scg-lua" title="Show Generated Lua">Lua</button>
+      <div class="sc-more-wrap">
+        <button type="button" class="btn btn-wood btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false">More &#9662;</button>
+        <div class="sc-more-menu scgraph-more-menu" hidden>
+          <button type="button" class="sc-more-item" id="scg-vars" title="Variables Panel">Variables</button>
+          <button type="button" class="sc-more-item" id="scg-lua" title="Show Generated Lua">Generated Lua</button>
+        </div>
+      </div>
     `;
     container.appendChild(toolbar);
+
+    const emptyHint = document.createElement('div');
+    emptyHint.className = 'scgraph-empty-hint';
+    emptyHint.id = 'scg-empty-hint';
+    emptyHint.hidden = graph.nodes.length > 0;
+    emptyHint.innerHTML = 'Empty script &mdash; click <strong>+ Node</strong> (or press Space) to add an event such as <em>On Game Start</em>.';
+    container.appendChild(emptyHint);
 
     const canvas = document.createElement('div');
     canvas.className = 'scgraph-canvas';
@@ -577,6 +608,8 @@
 
   function renderNodes(state) {
     const { nodesDiv, graph, selectedNodes } = state;
+    const hint = state.container && state.container.querySelector('#scg-empty-hint');
+    if (hint) hint.hidden = graph.nodes.length > 0;
     nodesDiv.innerHTML = '';
 
     graph.nodes.forEach(node => {
@@ -1764,6 +1797,14 @@
         }
         const bLocal = makeLocal(ctx, eventNode.id, 'building');
         eventCode.push(`Game.OnCommand(${luaString(name)}, function(${bLocal})`);
+      } else if (eventNode.type === 'ButtonCondition') {
+        const name = eventNode.values.button || eventNode.values.name || '';
+        if (!name) {
+          errors.push({ nodeId: eventNode.id, message: 'Button name is required' });
+          return;
+        }
+        const bLocal = makeLocal(ctx, eventNode.id, 'building');
+        eventCode.push(`Game.CommandCondition(${luaString(name)}, function(${bLocal})`);
       } else if (eventNode.type === 'EveryNSeconds') {
         const sec = eventNode.values.seconds || 5;
         eventCode.push(`Game.OnStart(function()`);
@@ -1911,6 +1952,11 @@
       const t = getInputExpr(ctx, node, 'text');
       if (!t) return null;
       return [`print(${t})`];
+    }
+
+    if (node.type === 'SetButtonAvailable') {
+      const avail = getInputExpr(ctx, node, 'available');
+      return [`return ${avail !== null ? avail : 'true'}`];
     }
 
     if (node.type === 'SetVariable') {

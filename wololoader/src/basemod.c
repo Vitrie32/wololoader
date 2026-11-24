@@ -65,3 +65,25 @@ BOOL wl_feature_opt(const char *name) {
     const WlJsonVal *f = wl_json_get(wl_json_get(g_features, "features"), name);
     return f && wl_json_is_true(f);
 }
+
+// Re-read WololoaderBase\mod.json from disk after wl_scan_mods() during hot reload.
+// Runtime-checked features (e.g. monk_autoconvert, Lua wl.feature()) see the new
+// values immediately; binary-patched features are diffed by hotreload.c to report
+// whether a restart is needed.
+void wl_basemod_reload(void) {
+    if (g_features) {
+        wl_json_free(g_features);
+        g_features = NULL;
+    }
+    g_base_enabled = TRUE;
+    g_loaded = 0;
+    load();
+}
+
+void wl_basemod_read_flags(int *popcap, int *sel250, int *borderless, int *formtab) {
+    load();
+    if (popcap)     *popcap     = wl_feature("popcap_1000") ? 1 : 0;
+    if (sel250)     *sel250     = wl_feature("selection_250") ? 1 : 0;
+    if (borderless) *borderless = wl_feature("borderless") ? 1 : 0;
+    if (formtab)    *formtab    = wl_feature("formations_tab") ? 1 : 0;
+}

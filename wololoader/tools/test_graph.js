@@ -399,6 +399,35 @@ test('Lua string escaping', () => {
   assertLuaSyntax(result.lua);
 });
 
+// Test 8: ButtonCondition and SetButtonAvailable
+test('ButtonCondition and SetButtonAvailable', () => {
+  const g = ScGraph.newGraph('test8');
+
+  g.nodes.push({
+    id: 'n1',
+    type: 'ButtonCondition',
+    x: 100,
+    y: 100,
+    values: { button: 'CallCrusaders' }
+  });
+
+  g.nodes.push({
+    id: 'n2',
+    type: 'SetButtonAvailable',
+    x: 300,
+    y: 100,
+    values: { available: true }
+  });
+
+  g.links.push({ from: ['n1', 'exec'], to: ['n2', 'exec'] });
+
+  const result = ScGraph.toLua(g);
+  assertEqual(result.errors.length, 0, 'Should have no errors');
+  assertContains(result.lua, 'Game.CommandCondition("CallCrusaders"', 'Registers CommandCondition');
+  assertContains(result.lua, 'return true', 'Returns button availability');
+  assertLuaSyntax(result.lua);
+});
+
 // Summary
 console.log(`\n${passCount}/${testCount} tests passed`);
 

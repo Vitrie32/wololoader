@@ -65,7 +65,12 @@ static void *__fastcall lobby_ctor_hook(void *self, void *edx, void *parent) {
     (void)edx;
     void *ret = o_lobby_ctor(self, parent);
     g_lobby_btn = NULL;
-    if (!lobby_is_mp()) { wl_log("lobby: single player setup, no Active Mods button"); return ret; }
+    if (!lobby_is_mp()) {
+        wl_mpcheck_on_lobby_enter(NULL);
+        wl_log("lobby: single player setup, no Active Mods button");
+        return ret;
+    }
+    wl_mpcheck_on_lobby_enter(self);
     int rw = *(int *)((char *)self + 0x130), rh = *(int *)((char *)self + 0x134);
     if (rw < 640 || rw > 8000) rw = 1024;
     if (rh < 480 || rh > 8000) rh = 768;

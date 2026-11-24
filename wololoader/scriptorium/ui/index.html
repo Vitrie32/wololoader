@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="slpviewer.css">
   <link rel="stylesheet" href="theme.css">
   <link rel="stylesheet" href="workspace.css">
+  <link rel="stylesheet" href="hub.css">
 </head>
 <body>
   <!-- Hidden element for JS error capture in headless test dumps -->
@@ -24,12 +25,16 @@
   <div id="modal-container" class="modal-overlay" style="display:none;"></div>
 
   <div id="app" class="app-layout">
-    <!-- HOME: the mod list. Shown when no mod is open; nothing else is on this page. -->
+    <!-- HOME: the mod list and Mod Hub. Shown when no mod is open. -->
     <section id="home-view" class="home-view">
       <header class="home-header">
         <div class="home-brand">
           <span class="window-app-crest">W</span>
           <span class="home-brand-name">Scriptorium</span>
+          <nav class="home-tabs" aria-label="Home sections">
+            <button type="button" class="home-tab active" id="tab-my-mods">My Mods</button>
+            <button type="button" class="home-tab" id="tab-mod-hub">Mod Hub <span class="hub-tab-badge" id="hub-tab-badge" hidden></span></button>
+          </nav>
         </div>
         <div class="app-status">
           <span class="status-dot connected ping-dot" title="Server status"></span>
@@ -39,20 +44,49 @@
         </div>
       </header>
 
-      <div class="home-toolbar">
-        <div class="home-title-group">
-          <h2 class="home-title">Mods</h2>
-          <span class="home-count" id="home-count"></span>
+      <div id="mods-home-panel" class="home-panel">
+        <div class="home-toolbar">
+          <div class="home-title-group">
+            <h2 class="home-title">Mods</h2>
+            <span class="home-count" id="home-count"></span>
+          </div>
+          <div class="search-input-wrapper home-search">
+            <input type="text" id="mod-search" placeholder="Search mods..." autocomplete="off">
+            <button id="mod-search-clear" class="btn-clear" style="display:none;" title="Clear search">&times;</button>
+          </div>
+          <button id="btn-open-mods-dir" class="btn btn-ghost btn-sm" title="Open the mods folder">Open folder</button>
+          <button type="button" id="btn-new-mod" class="btn btn-save btn-sm" title="Create a new mod">+ New mod</button>
         </div>
-        <div class="search-input-wrapper home-search">
-          <input type="text" id="mod-search" placeholder="Search mods..." autocomplete="off">
-          <button id="mod-search-clear" class="btn-clear" style="display:none;" title="Clear search">&times;</button>
+
+        <div id="mods-grid" class="mods-grid">
+          <!-- Populated dynamically: one card per mod (app.js renderModCards) -->
         </div>
-        <button id="btn-open-mods-dir" class="btn btn-wood btn-sm" title="Open the mods folder">Open Mods Folder</button>
       </div>
 
-      <div id="mods-grid" class="mods-grid">
-        <!-- Populated dynamically: one card per mod, then the New mod card (app.js renderModCards) -->
+      <div id="hub-home-panel" class="home-panel" hidden>
+        <div class="home-toolbar">
+          <div class="home-title-group">
+            <h2 class="home-title">Mod Hub</h2>
+            <span class="home-count" id="hub-count"></span>
+          </div>
+          <div class="search-input-wrapper home-search">
+            <input type="text" id="hub-search" placeholder="Search hub mods..." autocomplete="off">
+            <button id="hub-search-clear" class="btn-clear" style="display:none;" title="Clear search">&times;</button>
+          </div>
+          <select id="hub-filter" class="hub-select" aria-label="Filter hub mods">
+            <option value="all">All mods</option>
+            <option value="installed">Installed</option>
+            <option value="updates">Updates available</option>
+            <option value="available">Not installed</option>
+          </select>
+          <select id="hub-tag-filter" class="hub-select" aria-label="Filter by tag">
+            <option value="">All tags</option>
+          </select>
+          <button type="button" id="btn-hub-refresh" class="btn btn-wood btn-sm" title="Refresh Mod Hub index">Refresh</button>
+          <button type="button" id="btn-hub-settings" class="btn btn-ghost btn-sm" title="Configure Mod Hub index URL">Hub URL...</button>
+        </div>
+
+        <div id="hub-body" class="hub-body"></div>
       </div>
     </section>
 
@@ -90,15 +124,21 @@
           </div>
 
           <div class="mod-header-actions">
-            <button id="btn-mod-details" class="btn btn-wood btn-sm" title="Mod name, version, author and description">Details</button>
-            <button id="btn-change-icon" class="btn btn-wood btn-sm" title="Use your own picture as this mod's icon (saved as icon.png)">Icon</button>
-            <button id="btn-revert" class="btn btn-wood btn-sm" title="Discard all unsaved changes" disabled>Revert</button>
-            <button id="btn-validate" class="btn btn-wood btn-sm" title="Test building this mod into dat with wl_dat_build">Validate</button>
+            <div class="sc-more-wrap" id="mod-more-wrap">
+              <button type="button" id="btn-mod-more" class="btn btn-wood btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false">More &#9662;</button>
+              <div class="sc-more-menu" id="mod-more-menu" hidden>
+                <button type="button" id="btn-mod-details" class="sc-more-item" title="Mod name, version, author and description">Details...</button>
+                <button type="button" id="btn-change-icon" class="sc-more-item" title="Use your own picture as this mod's icon (saved as icon.png)">Change icon...</button>
+                <button type="button" id="btn-validate" class="sc-more-item" title="Test building this mod into dat with wl_dat_build"><span>Validate</span></button>
+                <button type="button" id="btn-open-mod-folder" class="sc-more-item" title="Open this mod's folder">Open mod folder</button>
+                <div class="sc-more-sep"></div>
+                <button type="button" id="btn-revert" class="sc-more-item danger" title="Discard all unsaved changes" disabled>Revert unsaved changes</button>
+              </div>
+            </div>
             <button id="btn-save" class="btn btn-wood btn-sm btn-save" title="Save everything in this mod (Ctrl+S)">
               <span>Save</span>
               <kbd class="kbd-hint">Ctrl+S</kbd>
             </button>
-            <button id="btn-open-mod-folder" class="btn btn-wood btn-sm" title="Open this mod's folder">Folder</button>
           </div>
         </header>
 
@@ -124,5 +164,6 @@
   <script src="graph.js"></script>
   <script src="basic.js"></script>
   <script src="sections.js"></script>
+  <script src="hub.js"></script>
 </body>
 </html>

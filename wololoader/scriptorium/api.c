@@ -25,6 +25,7 @@
 #include "launcher.h"
 #include "modio.h"
 #include "catalog.h"
+#include "hub.h"
 #include "../src/json.h"
 #include "../src/datbuild.h"
 #include "gamepath.h"
@@ -34,6 +35,10 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+
+// Implemented in launcher.c
+extern int  launcher_is_game_running(void);
+extern void launcher_launch_steam_game(void);
 
 // ==========================================================================
 // Dynamic String Buffer for API JSON Responses
@@ -1250,6 +1255,356 @@ static void handle_put_settings(ServerState *s, const HttpRequest *req, HttpResp
 }
 
 // ==========================================================================
+// POST /api/testit — Write <game>/wololoader/autostart.json & launch AoE2 HD
+// ==========================================================================
+
+static int lookup_civ_in_cache(const char *game_dir, const char *mod_folder,
+                               const char *civ_file, const char *civ_name) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/wololoader/cache/civs.txt", game_dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+
+    int by_mod_file = -1, by_name = -1;
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *f_id   = strtok(line, "\t");
+        char *f_base = strtok(NULL, "\t");
+        char *f_name = strtok(NULL, "\t");
+        char *f_mod  = strtok(NULL, "\t");
+        char *f_json = strtok(NULL, "\t");
+        if (!f_id || !f_base || !f_name) continue;
+        int id = atoi(f_id);
+        if (id < 35) continue;
+        if (mod_folder && mod_folder[0] && civ_file && civ_file[0] && f_mod && f_json &&
+            _stricmp(f_mod, mod_folder) == 0 && _stricmp(f_json, civ_file) == 0) {
+            by_mod_file = id;
+            break;
+        }
+        if (civ_name && civ_name[0] && by_name < 0 && _stricmp(f_name, civ_name) == 0) {
+            by_name = id;
+        }
+    }
+    fclose(f);
+    return (by_mod_file >= 35) ? by_mod_file : by_name;
+}
+
+static const char *catalog_civ_name(const ScCatalog *cat, int id) {
+    if (!cat) return NULL;
+    for (size_t i = 0; i < cat->civ_count; i++) {
+        if (cat->civs[i].id == id) return cat->civs[i].name;
+    }
+    return NULL;
+}
+
+static int ensure_mod_enabled(const char *mods_dir, const char *folder, int *was_disabled,
+                              char *err, size_t err_cap) {
+    *was_disabled = 0;
+    char mjson_path[MAX_PATH];
+    snprintf(mjson_path, sizeof(mjson_path), "%s/%s/mod.json", mods_dir, folder);
+    char *txt = wl_read_file(mjson_path, NULL);
+    if (!txt) {
+        snprintf(err, err_cap, "Mod not found");
+        return -1;
+    }
+    WlJsonVal *m_ast = wl_json_parse(txt, NULL, 0);
+    free(txt);
+    if (!m_ast || m_ast->type != WL_JSON_OBJECT) {
+        wl_json_free(m_ast);
+        snprintf(err, err_cap, "Malformed mod.json");
+        return -1;
+    }
+
+    int enabled = 1;
+    int found_idx = -1;
+    for (size_t i = 0; i < m_ast->u.obj.count; i++) {
+        if (strcmp(m_ast->u.obj.members[i].key, "enabled") == 0) {
+            found_idx = (int)i;
+            if (m_ast->u.obj.members[i].val && m_ast->u.obj.members[i].val->type == WL_JSON_BOOL) {
+                enabled = m_ast->u.obj.members[i].val->u.bool_val;
+            }
+            break;
+        }
+    }
+
+    if (!enabled) {
+        *was_disabled = 1;
+        if (found_idx >= 0) {
+            wl_json_free(m_ast->u.obj.members[found_idx].val);
+            WlJsonVal *bv = calloc(1, sizeof(WlJsonVal));
+            bv->type = WL_JSON_BOOL;
+            bv->u.bool_val = 1;
+            m_ast->u.obj.members[found_idx].val = bv;
+        }
+        size_t out_len = 0;
+        char *out_str = modio_json_write_pretty(m_ast, &out_len);
+        int wrc = modio_atomic_write_file(mjson_path, out_str, out_len, err, err_cap);
+        free(out_str);
+        wl_json_free(m_ast);
+        return wrc;
+    }
+
+    wl_json_free(m_ast);
+    return 0;
+}
+
+// POST /api/testit
+// Body: { mod, civ (filename, name or id), map, size, ai, ai_civ, difficulty,
+//         resources, reveal_map, cheats, launch (optional bool, default true) }
+static void handle_post_testit(ServerState *s, const HttpRequest *req, HttpResponse *res) {
+    char err[256] = "";
+    WlJsonVal *body = wl_json_parse(req->body ? req->body : "", err, sizeof(err));
+    if (!body || body->type != WL_JSON_OBJECT) {
+        wl_json_free(body);
+        http_response_error(res, 400, "Invalid JSON body");
+        return;
+    }
+
+    const char *mod_folder = wl_json_str(wl_json_get(body, "mod"), NULL);
+    const WlJsonVal *v_civ = wl_json_get(body, "civ");
+    if (!mod_folder || !is_valid_folder_name(mod_folder)) {
+        wl_json_free(body);
+        http_response_error(res, 400, "Missing or invalid 'mod'");
+        return;
+    }
+    if (!v_civ || (v_civ->type != WL_JSON_STRING && v_civ->type != WL_JSON_NUMBER)) {
+        wl_json_free(body);
+        http_response_error(res, 400, "Missing or invalid 'civ'");
+        return;
+    }
+
+    // 1. Ensure the mod exists and is enabled (same mod.json write as the UI).
+    int mod_was_disabled = 0;
+    if (ensure_mod_enabled(s->mods_dir, mod_folder, &mod_was_disabled, err, sizeof(err)) != 0) {
+        wl_json_free(body);
+        http_response_error(res, strcmp(err, "Mod not found") == 0 ? 404 : 500, err);
+        return;
+    }
+
+    // 2. Resolve the civ (extend id, cache\civs.txt id, or name/file for DLL resolution after build).
+    int civ_id = -1;
+    char civ_file[MAX_PATH] = "";
+    char civ_name[128] = "";
+
+    if (v_civ->type == WL_JSON_NUMBER) {
+        civ_id = (int)v_civ->u.num.ival;
+        const char *cn = catalog_civ_name(s->catalog, civ_id);
+        if (cn) snprintf(civ_name, sizeof(civ_name), "%s", cn);
+    } else {
+        const char *req_civ = v_civ->u.str;
+        if (is_valid_civ_filename(req_civ)) {
+            snprintf(civ_file, sizeof(civ_file), "%s", req_civ);
+        } else {
+            // Try matching a civs/*.json file by filename or "name" field.
+            snprintf(civ_name, sizeof(civ_name), "%s", req_civ);
+            char pat[MAX_PATH];
+            snprintf(pat, sizeof(pat), "%s/%s/civs/*.json", s->mods_dir, mod_folder);
+            WIN32_FIND_DATAA cfd;
+            HANDLE hf = FindFirstFileA(pat, &cfd);
+            if (hf != INVALID_HANDLE_VALUE) {
+                do {
+                    if (cfd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+                    char cpath[MAX_PATH];
+                    snprintf(cpath, sizeof(cpath), "%s/%s/civs/%s", s->mods_dir, mod_folder, cfd.cFileName);
+                    char *ctxt = wl_read_file(cpath, NULL);
+                    if (!ctxt) continue;
+                    WlJsonVal *cast = wl_json_parse(ctxt, NULL, 0);
+                    free(ctxt);
+                    if (cast && cast->type == WL_JSON_OBJECT) {
+                        const char *n = wl_json_str(wl_json_get(cast, "name"), NULL);
+                        const WlJsonVal *ext = wl_json_get(cast, "extend");
+                        const char *en = (ext && ext->type == WL_JSON_NUMBER)
+                                       ? catalog_civ_name(s->catalog, (int)ext->u.num.ival) : NULL;
+                        if ((n && _stricmp(n, req_civ) == 0) || (en && _stricmp(en, req_civ) == 0)) {
+                            snprintf(civ_file, sizeof(civ_file), "%s", cfd.cFileName);
+                            wl_json_free(cast);
+                            break;
+                        }
+                    }
+                    wl_json_free(cast);
+                } while (FindNextFileA(hf, &cfd));
+                FindClose(hf);
+            }
+        }
+
+        if (civ_file[0]) {
+            char cpath[MAX_PATH];
+            snprintf(cpath, sizeof(cpath), "%s/%s/civs/%s", s->mods_dir, mod_folder, civ_file);
+            char *ctxt = wl_read_file(cpath, NULL);
+            if (!ctxt) {
+                wl_json_free(body);
+                http_response_error(res, 404, "Civilization file not found in mod");
+                return;
+            }
+            WlJsonVal *cast = wl_json_parse(ctxt, NULL, 0);
+            free(ctxt);
+            if (cast && cast->type == WL_JSON_OBJECT) {
+                const WlJsonVal *ext = wl_json_get(cast, "extend");
+                if (ext && ext->type == WL_JSON_NUMBER) {
+                    civ_id = (int)ext->u.num.ival;
+                    const char *cn = catalog_civ_name(s->catalog, civ_id);
+                    snprintf(civ_name, sizeof(civ_name), "%s", cn ? cn : civ_file);
+                } else {
+                    const char *n = wl_json_str(wl_json_get(cast, "name"), NULL);
+                    if (n && n[0]) snprintf(civ_name, sizeof(civ_name), "%s", n);
+                    civ_id = lookup_civ_in_cache(s->game_dir, mod_folder, civ_file, civ_name);
+                }
+            }
+            wl_json_free(cast);
+        } else {
+            // Check cache\civs.txt by name, then vanilla catalog by name
+            civ_id = lookup_civ_in_cache(s->game_dir, mod_folder, NULL, req_civ);
+            if (civ_id < 0 && s->catalog) {
+                for (size_t i = 0; i < s->catalog->civ_count; i++) {
+                    if (_stricmp(s->catalog->civs[i].name, req_civ) == 0) {
+                        civ_id = s->catalog->civs[i].id;
+                        snprintf(civ_name, sizeof(civ_name), "%s", s->catalog->civs[i].name);
+                        break;
+                    }
+                }
+            }
+            if (civ_id < 0) {
+                wl_json_free(body);
+                http_response_error(res, 404, "Civilization not found");
+                return;
+            }
+        }
+    }
+
+    // 3. Extract match options with sensible defaults.
+    const WlJsonVal *v_map     = wl_json_get(body, "map");
+    const char *size_str       = wl_json_str(wl_json_get(body, "size"), "tiny");
+    const WlJsonVal *v_ai      = wl_json_get(body, "ai");
+    int ai_count               = (v_ai && v_ai->type == WL_JSON_NUMBER) ? (int)v_ai->u.num.ival : 1;
+    if (ai_count < 0) ai_count = 0;
+    if (ai_count > 7) ai_count = 7;
+    const WlJsonVal *v_aiciv   = wl_json_get(body, "ai_civ");
+    const char *diff_str       = wl_json_str(wl_json_get(body, "difficulty"), "easiest");
+    const char *res_str        = wl_json_str(wl_json_get(body, "resources"), "standard");
+    const WlJsonVal *v_reveal  = wl_json_get(body, "reveal_map");
+    const WlJsonVal *v_cheats  = wl_json_get(body, "cheats");
+    int cheats                 = (v_cheats && v_cheats->type == WL_JSON_BOOL) ? v_cheats->u.bool_val : 1;
+    const WlJsonVal *v_launch  = wl_json_get(body, "launch");
+    int want_launch            = (v_launch && v_launch->type == WL_JSON_BOOL) ? v_launch->u.bool_val : 1;
+
+    // 4. Write <game>/wololoader/autostart.json atomically.
+    char wl_dir[MAX_PATH], as_path[MAX_PATH];
+    snprintf(wl_dir, sizeof(wl_dir), "%s/wololoader", s->game_dir);
+    CreateDirectoryA(wl_dir, NULL);
+    snprintf(as_path, sizeof(as_path), "%s/autostart.json", wl_dir);
+
+    ApiBuf ab;
+    buf_init(&ab);
+    buf_puts(&ab, "{\n");
+    if (civ_id >= 1) {
+        char num[32];
+        snprintf(num, sizeof(num), "  \"civ\": %d,\n", civ_id);
+        buf_puts(&ab, num);
+    }
+    buf_puts(&ab, "  \"mod\": ");
+    buf_puts_escaped(&ab, mod_folder);
+    buf_puts(&ab, ",\n");
+    if (civ_file[0]) {
+        buf_puts(&ab, "  \"civ_file\": ");
+        buf_puts_escaped(&ab, civ_file);
+        buf_puts(&ab, ",\n");
+    }
+    if (civ_name[0]) {
+        buf_puts(&ab, "  \"civ_name\": ");
+        buf_puts_escaped(&ab, civ_name);
+        buf_puts(&ab, ",\n");
+    }
+    buf_puts(&ab, "  \"map\": ");
+    if (v_map && v_map->type == WL_JSON_NUMBER) {
+        char num[32];
+        snprintf(num, sizeof(num), "%d", (int)v_map->u.num.ival);
+        buf_puts(&ab, num);
+    } else {
+        buf_puts_escaped(&ab, (v_map && v_map->type == WL_JSON_STRING && v_map->u.str[0]) ? v_map->u.str : "Arabia");
+    }
+    buf_puts(&ab, ",\n  \"size\": ");
+    buf_puts_escaped(&ab, size_str);
+    {
+        char num[32];
+        snprintf(num, sizeof(num), ",\n  \"ai\": %d,\n", ai_count);
+        buf_puts(&ab, num);
+    }
+    buf_puts(&ab, "  \"ai_civ\": ");
+    if (v_aiciv && v_aiciv->type == WL_JSON_NUMBER) {
+        char num[32];
+        snprintf(num, sizeof(num), "%d", (int)v_aiciv->u.num.ival);
+        buf_puts(&ab, num);
+    } else {
+        buf_puts_escaped(&ab, (v_aiciv && v_aiciv->type == WL_JSON_STRING && v_aiciv->u.str[0]) ? v_aiciv->u.str : "random");
+    }
+    buf_puts(&ab, ",\n  \"difficulty\": ");
+    buf_puts_escaped(&ab, diff_str);
+    buf_puts(&ab, ",\n  \"resources\": ");
+    buf_puts_escaped(&ab, res_str);
+    buf_puts(&ab, ",\n  \"reveal_map\": ");
+    if (v_reveal && v_reveal->type == WL_JSON_STRING) {
+        buf_puts_escaped(&ab, v_reveal->u.str);
+    } else if (v_reveal && v_reveal->type == WL_JSON_NUMBER) {
+        char num[32];
+        snprintf(num, sizeof(num), "%d", (int)v_reveal->u.num.ival);
+        buf_puts(&ab, num);
+    } else {
+        buf_puts(&ab, (v_reveal && v_reveal->type == WL_JSON_BOOL && v_reveal->u.bool_val) ? "true" : "false");
+    }
+    buf_puts(&ab, ",\n  \"cheats\": ");
+    buf_puts(&ab, cheats ? "true" : "false");
+    buf_puts(&ab, "\n}\n");
+
+    int wrc = modio_atomic_write_file(as_path, ab.data, ab.len, err, sizeof(err));
+    free(ab.data);
+    wl_json_free(body);
+    if (wrc != 0) {
+        http_response_error(res, 500, err);
+        return;
+    }
+
+    // 5. Launch the game through Steam if not already running (and launch != false).
+    int game_running = launcher_is_game_running();
+    int launched = 0;
+    const char *status = "ready";
+    const char *message = "Autostart written.";
+
+    if (game_running) {
+        status = "waiting_main_menu";
+        message = "Game is already running. Return to the Main Menu to start the test match.";
+    } else if (want_launch) {
+        launcher_launch_steam_game();
+        launched = 1;
+        status = "starting";
+        message = "Starting the game...";
+    } else {
+        status = "ready";
+        message = "Autostart written (Steam launch skipped).";
+    }
+
+    ApiBuf rb;
+    buf_init(&rb);
+    char hdr[128];
+    snprintf(hdr, sizeof(hdr), "{\"ok\":true,\"civ_id\":%d,\"mod_was_enabled\":%s,\"game_running\":%s,\"launched\":%s",
+             civ_id,
+             mod_was_disabled ? "true" : "false",
+             game_running ? "true" : "false",
+             launched ? "true" : "false");
+    buf_puts(&rb, hdr);
+    buf_puts(&rb, ",\"civ_name\":");
+    buf_puts_escaped(&rb, civ_name);
+    buf_puts(&rb, ",\"status\":");
+    buf_puts_escaped(&rb, status);
+    buf_puts(&rb, ",\"message\":");
+    buf_puts_escaped(&rb, message);
+    buf_puts(&rb, "}");
+
+    http_response_set_json(res, 200, rb.data);
+    free(rb.data);
+}
+
+// ==========================================================================
 // Main API Router
 // ==========================================================================
 
@@ -1278,6 +1633,8 @@ void api_handle_request(ServerState *s, const HttpRequest *req, HttpResponse *re
         handle_post_upload(s, req, res);
     } else if (strcmp(req->path, "/api/open-folder") == 0 && strcmp(req->method, "POST") == 0) {
         handle_post_open_folder(s, req, res);
+    } else if (strcmp(req->path, "/api/testit") == 0 && strcmp(req->method, "POST") == 0) {
+        handle_post_testit(s, req, res);
     } else if (strcmp(req->path, "/api/palette") == 0 && strcmp(req->method, "GET") == 0) {
         handle_get_palette(s, res);
     } else if (strcmp(req->path, "/api/game-file") == 0 && strcmp(req->method, "GET") == 0) {
@@ -1298,6 +1655,14 @@ void api_handle_request(ServerState *s, const HttpRequest *req, HttpResponse *re
         handle_get_files(s, req, res);
     } else if (strcmp(req->path, "/api/mod-tree") == 0 && strcmp(req->method, "GET") == 0) {
         handle_get_mod_tree(s, req, res);
+    } else if (strcmp(req->path, "/api/hub/index") == 0 && strcmp(req->method, "GET") == 0) {
+        hub_handle_index(s, req, res);
+    } else if (strcmp(req->path, "/api/hub/icon") == 0 && strcmp(req->method, "GET") == 0) {
+        hub_handle_icon(s, req, res);
+    } else if (strcmp(req->path, "/api/hub/install") == 0 && strcmp(req->method, "POST") == 0) {
+        hub_handle_install(s, req, res);
+    } else if (strcmp(req->path, "/api/hub/uninstall") == 0 && strcmp(req->method, "POST") == 0) {
+        hub_handle_uninstall(s, req, res);
     } else if (strcmp(req->path, "/api/ping") == 0 && strcmp(req->method, "POST") == 0) {
         launcher_notify_ping();
         http_response_set_json(res, 200, "{\"ok\":true}");

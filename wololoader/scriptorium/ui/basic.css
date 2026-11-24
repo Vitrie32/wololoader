@@ -8,7 +8,26 @@
 .new-element-types {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  gap: 8px;
+}
+
+.sc-modal-group-label {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  margin: 14px 0 6px;
+}
+.sc-modal-group-label:first-child { margin-top: 0; }
+
+.basic-cost-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+@media (max-width: 600px) {
+  .basic-cost-grid { grid-template-columns: 1fr 1fr; }
 }
 
 .new-element-type-card {
@@ -354,4 +373,1975 @@
 /* the script editor fills its area and never scrolls (a scrolled area shifted the graph and its toolbar) */
 .basic-editor-fullscreen .basic-editor-content { overflow: hidden; padding: 12px 14px; min-height: 0; }
 .basic-editor-fullscreen #script-graph-container { box-sizing: border-box; width: 100%; }
+
+/* --------------------------------------------------------------------------
+   History & Civ Tab Styling
+   -------------------------------------------------------------------------- */
+.basic-editor-tab-bar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 20px 0 20px;
+  background: var(--surface-0);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.basic-tab-btn {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 18px;
+  font-family: var(--ui);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-radius: 4px 4px 0 0;
+}
+
+.basic-tab-btn:hover {
+  color: var(--text);
+  background: var(--surface-1);
+}
+
+.basic-tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--surface-1);
+}
+
+/* General tab form polish */
+.basic-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.basic-section-header .basic-form-section-title {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+  color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.basic-form-hint {
+  font-size: 12px;
+  color: var(--text-3);
+  font-weight: normal;
+}
+
+.basic-field-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* General tab: Civilization Theme Audio card */
+.general-sound-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--surface-0);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 14px 18px;
+  flex-wrap: wrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.general-sound-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  flex: 1;
+}
+
+.general-sound-icon-box {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.general-sound-icon {
+  font-size: 18px;
+  color: var(--accent);
+}
+
+.general-sound-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.general-sound-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.general-sound-status {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.general-sound-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   Civilization History Editor: Authentic AoE2 In-Game Book Screen (SLP 50161)
+   ========================================================================== */
+
+.history-book-stage {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12px 6px;
+  overflow-x: auto;
+  background: var(--surface-0, #141416);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  margin-top: 6px;
+}
+
+.history-book-frame {
+  position: relative;
+  width: 800px;
+  height: 600px;
+  flex: none;
+  /* Open book drawn with CSS (the game's own history art, scr_hist_32.slp, is not
+     redistributable): red cover, left page 0..250 px, right page 256..790 px. */
+  background:
+    linear-gradient(90deg, rgba(60, 35, 15, 0.35) 0, transparent 14px, transparent 236px, rgba(60, 35, 15, 0.45) 250px, transparent 250px),
+    linear-gradient(90deg, transparent 256px, rgba(60, 35, 15, 0.4) 256px, transparent 276px, transparent 770px, rgba(60, 35, 15, 0.3) 790px, transparent 790px),
+    radial-gradient(ellipse at 30% 40%, rgba(255, 250, 235, 0.35), transparent 60%),
+    radial-gradient(ellipse at 70% 60%, rgba(120, 90, 50, 0.18), transparent 70%),
+    linear-gradient(90deg, #d8cbb0 0, #d8cbb0 250px, #7a1c12 250px, #7a1c12 256px, #d9ccb1 256px, #d9ccb1 790px, #7a1c12 790px);
+  border: 1px solid #2b1d12;
+  border-radius: 4px;
+  box-sizing: border-box;
+  overflow: hidden;
+  user-select: text;
+}
+
+/* Force override any global dark theme inputs/textareas inside the book */
+body .history-book-frame input,
+body .history-book-frame textarea,
+body .history-book-frame select {
+  font-family: 'Georgia', 'Palatino', serif;
+}
+
+/* --- Left Page --- */
+.history-book-left-page {
+  position: absolute;
+  left: 18px;
+  top: 22px;
+  width: 220px;
+  height: 556px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+/* Inside the blue ornate stone border */
+.history-book-left-top {
+  height: 362px;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.history-civ-list-header {
+  font-family: 'Cinzel', 'Trajan Pro', Georgia, serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: #2b1809;
+  text-align: center;
+  border-bottom: 1px solid rgba(80, 50, 20, 0.25);
+  padding-bottom: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.history-civ-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 230px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.history-civ-list::-webkit-scrollbar {
+  width: 5px;
+}
+.history-civ-list::-webkit-scrollbar-track {
+  background: rgba(80, 50, 20, 0.08);
+}
+.history-civ-list::-webkit-scrollbar-thumb {
+  background: rgba(80, 50, 20, 0.35);
+  border-radius: 3px;
+}
+
+.history-civ-list-item {
+  padding: 4px 8px;
+  border-radius: 2px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  font-family: 'Cinzel', 'Trajan Pro', 'Georgia', serif;
+  font-size: 12.5px;
+  color: #2b1809;
+  transition: all 0.12s ease;
+  user-select: none;
+}
+
+.history-civ-list-item:hover {
+  background: rgba(80, 50, 20, 0.12);
+}
+
+.history-civ-list-item.selected {
+  background: #deb654;
+  color: #170d05;
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.history-quick-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: #3d2712;
+  padding-top: 4px;
+  border-top: 1px solid rgba(80, 50, 20, 0.2);
+}
+
+.history-info-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.history-info-label {
+  font-weight: 700;
+  color: #2b1809;
+  font-size: 10.5px;
+  flex: none;
+}
+
+.history-info-val {
+  font-size: 10.5px;
+  color: #5a3d24;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-info-tip {
+  font-size: 10px;
+  line-height: 1.35;
+  color: #6a4c30;
+  font-style: italic;
+  margin-top: 4px;
+}
+
+/* Bottom-left corner (below blue stone border): Side Portrait Slot */
+.history-book-side-slot-container {
+  position: absolute;
+  left: 0;
+  bottom: 8px;
+  width: 220px;
+  height: 165px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.history-book-side-slot-container .history-slot-card {
+  width: 190px;
+  height: 140px;
+  aspect-ratio: 280 / 206;
+}
+
+/* --- Right Page --- */
+.history-book-right-page {
+  position: absolute;
+  left: 295px;
+  top: 28px;
+  width: 465px;
+  height: 546px;
+  box-sizing: border-box;
+  padding: 6px 14px 10px 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.history-book-right-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+
+/* Title on parchment */
+.history-book-title-wrapper {
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+body .history-book-frame input.history-book-title-input {
+  width: 85% !important;
+  background: transparent !important;
+  border: none !important;
+  border-bottom: 1.5px dashed rgba(80, 50, 20, 0.3) !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  color: #1a1008 !important;
+  caret-color: #1a1008 !important;
+  font-family: 'Cinzel', 'Trajan Pro', 'Georgia', serif !important;
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+  letter-spacing: 1px !important;
+  text-transform: uppercase !important;
+  padding: 2px 8px !important;
+  outline: none !important;
+  margin: 0 auto !important;
+  display: block !important;
+  transition: all 0.2s ease !important;
+}
+
+body .history-book-frame input.history-book-title-input:hover,
+body .history-book-frame input.history-book-title-input:focus {
+  background: rgba(255, 255, 255, 0.25) !important;
+  border-bottom: 1.5px solid #1a1008 !important;
+  box-shadow: none !important;
+}
+
+body .history-book-frame input.history-book-title-input::placeholder {
+  color: rgba(90, 60, 25, 0.45) !important;
+  text-transform: none;
+}
+
+/* Main Illustration Slot */
+.history-book-main-slot-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+
+.history-slot-card.history-main-aspect {
+  width: 350px;
+  height: 188px;
+  aspect-ratio: 490 / 263;
+  margin: 0 auto;
+}
+
+/* Card & Slots */
+.history-slot-card {
+  position: relative;
+  background: rgba(120, 85, 45, 0.08);
+  border: 1px dashed rgba(90, 60, 25, 0.4);
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: none;
+  transition: all 0.15s ease;
+}
+
+.history-slot-card:hover {
+  background: rgba(120, 85, 45, 0.14);
+  border-color: rgba(90, 60, 25, 0.7);
+}
+
+.history-slot-card.has-image {
+  background: transparent;
+  border: 1px solid rgba(80, 50, 20, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.history-slot-thumb {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.history-slot-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.history-thumb-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: #5c3e21;
+  font-family: 'Georgia', serif;
+  user-select: none;
+  height: 100%;
+  text-align: center;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.history-thumb-placeholder .placeholder-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #3d2410;
+  font-family: 'Cinzel', serif;
+}
+
+.history-thumb-placeholder .placeholder-dim {
+  font-size: 10px;
+  color: #6d4b29;
+  font-style: italic;
+}
+
+.history-thumb-placeholder .placeholder-hint {
+  font-size: 9px;
+  color: #7d5b39;
+  margin-top: 2px;
+}
+
+.history-slot-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(25, 18, 10, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.history-slot-card:hover .history-slot-overlay {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* History Text Toolbar */
+.history-book-text-area-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 4px;
+}
+
+.history-book-text-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding: 0 4px;
+}
+
+body .history-book-frame .history-mono-toggle {
+  font-size: 11px !important;
+  color: #3b2410 !important;
+  font-weight: 600 !important;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* History Textarea & Book View on parchment */
+.history-text-wrapper {
+  flex: 1;
+  min-height: 200px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+body .history-book-frame textarea.history-book-textarea {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  background: transparent !important;
+  border: 1px dashed rgba(80, 50, 20, 0.25) !important;
+  border-radius: 3px !important;
+  box-shadow: none !important;
+  color: #1a1008 !important;
+  caret-color: #1a1008 !important;
+  font-family: 'Georgia', 'Palatino', 'Times New Roman', serif !important;
+  font-size: 13.5px !important;
+  line-height: 1.6 !important;
+  padding: 8px 10px !important;
+  resize: none !important;
+  box-sizing: border-box !important;
+  outline: none !important;
+}
+
+body .history-book-frame textarea.history-book-textarea:focus {
+  background: rgba(255, 255, 255, 0.22) !important;
+  border: 1px dashed rgba(80, 50, 20, 0.55) !important;
+  box-shadow: none !important;
+}
+
+body .history-book-frame textarea.history-book-textarea::placeholder {
+  color: rgba(90, 60, 25, 0.45) !important;
+  font-style: italic;
+}
+
+body .history-book-frame textarea.history-book-textarea.font-mono {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace !important;
+  font-size: 12.5px !important;
+}
+
+body .history-book-frame .history-book-formatted-view {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+  color: #1a1008 !important;
+  font-family: 'Georgia', 'Palatino', 'Times New Roman', serif !important;
+  font-size: 13.5px !important;
+  line-height: 1.6 !important;
+  padding: 8px 10px !important;
+  white-space: pre-wrap !important;
+  box-sizing: border-box !important;
+}
+
+body .history-book-frame .history-book-formatted-view b {
+  color: #050302 !important;
+  font-weight: 700 !important;
+}
+
+/* Parchment scrollbars */
+body .history-book-frame textarea::-webkit-scrollbar,
+body .history-book-frame .history-book-formatted-view::-webkit-scrollbar {
+  width: 7px;
+}
+
+body .history-book-frame textarea::-webkit-scrollbar-track,
+body .history-book-frame .history-book-formatted-view::-webkit-scrollbar-track {
+  background: rgba(80, 50, 20, 0.08);
+  border-radius: 4px;
+}
+
+body .history-book-frame textarea::-webkit-scrollbar-thumb,
+body .history-book-frame .history-book-formatted-view::-webkit-scrollbar-thumb {
+  background: rgba(80, 50, 20, 0.35);
+  border-radius: 4px;
+}
+
+body .history-book-frame textarea::-webkit-scrollbar-thumb:hover,
+body .history-book-frame .history-book-formatted-view::-webkit-scrollbar-thumb:hover {
+  background: rgba(80, 50, 20, 0.6);
+}
+
+/* Authentic AoE2 buttons inside book */
+body .history-book-frame .btn-wood {
+  background: #332316 !important;
+  border: 1px solid #6b4d32 !important;
+  color: #f1dfc2 !important;
+  font-family: var(--font-title, serif) !important;
+  border-radius: 3px !important;
+}
+
+body .history-book-frame .btn-wood:hover {
+  background: #473221 !important;
+  border-color: #926945 !important;
+  color: #fff !important;
+}
+
+body .history-book-frame .btn-wood:disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+}
+
+/* Footer: Back button centered at bottom of right page */
+.history-book-footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: 4px;
+}
+
+body .history-book-frame #history-back-btn {
+  min-width: 140px;
+  padding: 5px 20px !important;
+  font-size: 13px !important;
+  letter-spacing: 0.5px;
+}
+
+
+
+/* Crop Modal */
+.crop-modal-dialog {
+  max-width: 650px;
+  width: 95%;
+}
+
+.crop-canvas-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #09090b;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+
+.crop-canvas-wrapper canvas {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--accent);
+  cursor: grab;
+  display: block;
+}
+
+/* --------------------------------------------------------------------------
+   Building Sprite & Look Animation Cards
+   -------------------------------------------------------------------------- */
+.building-sprite-card {
+  display: flex;
+  gap: 16px;
+  padding: 14px 16px;
+  background: var(--surface-0);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg, 11px);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+  align-items: center;
+  position: relative;
+}
+
+.building-sprite-card.dragover,
+.look-anim-card.dragover,
+.general-sound-card.dragover,
+.history-slot-card.dragover {
+  border-color: var(--accent) !important;
+  background: var(--surface-2) !important;
+  box-shadow: 0 0 0 2px var(--accent-soft) !important;
+}
+
+.building-sprite-thumb-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.building-sprite-thumb-box {
+  width: 90px;
+  height: 90px;
+  background: #0d0d0f;
+  background-image: 
+    linear-gradient(45deg, #141418 25%, transparent 25%),
+    linear-gradient(-45deg, #141418 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #141418 75%),
+    linear-gradient(-45deg, transparent 75%, #141418 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius, 7px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.building-sprite-thumb-box img.building-sprite-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  display: block;
+}
+
+.sprite-thumb-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.sprite-thumb-empty {
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.building-sprite-tag {
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+
+.building-sprite-tag.muted {
+  color: var(--text-3);
+}
+
+.building-sprite-info-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.building-sprite-status strong {
+  display: block;
+  font-size: 13.5px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.building-sprite-status p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+.building-sprite-dropzone-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  padding: 6px 10px;
+  background: var(--surface-1);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius, 7px);
+}
+
+.dropzone-notice-icon {
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+}
+
+.building-sprite-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Look Section Grid (Unique Unit Animations) */
+.look-section-wrapper {
+  margin-top: 4px;
+}
+
+.look-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.look-anim-card {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--surface-0);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius, 7px);
+  align-items: center;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.look-anim-card:hover {
+  border-color: var(--line);
+  background: var(--surface-1);
+}
+
+.look-anim-thumb-box {
+  width: 54px;
+  height: 54px;
+  background: #0d0d0f;
+  background-image: 
+    linear-gradient(45deg, #141418 25%, transparent 25%),
+    linear-gradient(-45deg, #141418 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #141418 75%),
+    linear-gradient(-45deg, transparent 75%, #141418 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.look-anim-thumb-box img.look-anim-thumb-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  display: block;
+}
+
+.look-thumb-placeholder {
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.look-anim-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.look-anim-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.look-anim-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.look-anim-badge {
+  font-size: 10.5px;
+  padding: 1px 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-2);
+}
+
+.look-anim-badge.muted {
+  color: var(--text-3);
+}
+
+.look-anim-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.2;
+}
+
+.look-anim-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.btn-danger-soft {
+  color: #ff9999 !important;
+  border-color: rgba(240, 106, 106, 0.35) !important;
+}
+
+.btn-danger-soft:hover {
+  background: rgba(240, 106, 106, 0.15) !important;
+  border-color: var(--danger) !important;
+  color: #fff !important;
+}
+
+.sprite-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sprite-spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+@keyframes sprite-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ==========================================================================
+   Building Type Selector & AoE2 5x3 Command Grid
+   ========================================================================== */
+
+.building-type-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.building-type-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+  user-select: none;
+}
+
+.building-type-card:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.building-type-card.active {
+  background: rgba(200, 160, 90, 0.12);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.building-type-radio {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.btype-icon-box {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.building-type-card.active .btype-icon-box {
+  background: var(--accent);
+  color: #1a1208;
+  border-color: var(--accent);
+}
+
+.btype-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.btype-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.btype-desc {
+  font-size: 11px;
+  color: var(--text-2);
+  line-height: 1.35;
+}
+
+/* --- AoE2 Command Panel & 5x3 Grid (Unslopped) --- */
+
+.aoe2-command-panel-wrapper {
+  background: #120d08;
+  border: 1px solid #382819;
+  border-radius: 6px;
+  padding: 14px;
+  margin-top: 8px;
+}
+
+.aoe2-command-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #261a10;
+  flex-wrap: wrap;
+}
+
+.aoe2-panel-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 200px;
+}
+
+.aoe2-panel-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #dfc79b;
+  letter-spacing: -0.01em;
+}
+
+.aoe2-panel-hint {
+  font-size: 11.5px;
+  color: #9a8670;
+  line-height: 1.35;
+}
+
+.aoe2-page-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.aoe2-page-tab {
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #1c140c;
+  border: 1px solid #3a291a;
+  color: #bfa588;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  user-select: none;
+}
+
+.aoe2-page-tab:hover {
+  background: #2a1e13;
+  color: #f0deb8;
+  border-color: #5a402a;
+}
+
+.aoe2-page-tab.active {
+  background: #382617;
+  border-color: #b89352;
+  color: #f7e7c4;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.aoe2-page-tab-count {
+  font-size: 9.5px;
+  opacity: 0.65;
+  margin-left: 2px;
+}
+
+.aoe2-page-add-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid #42301f;
+  color: #a08970;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.aoe2-page-add-btn:hover {
+  background: #23180f;
+  color: #dfc79b;
+  border-color: #7d5e38;
+}
+
+.aoe2-page-del-btn {
+  padding: 3px 7px;
+  font-size: 10.5px;
+  background: transparent;
+  border: 1px solid #4a2828;
+  color: #b87272;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: all 0.12s ease;
+}
+
+.aoe2-page-del-btn:hover {
+  background: rgba(180, 50, 50, 0.18);
+  border-color: #d45b5b;
+  color: #ffa8a8;
+}
+
+/* 5x3 Grid matching AoE2 in-game frame */
+.aoe2-grid-container {
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 10px 0;
+}
+
+.aoe2-command-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 70px);
+  grid-template-rows: repeat(3, 70px);
+  gap: 7px;
+  padding: 9px;
+  background: #17100a;
+  border: 1px solid #402f1f;
+  border-radius: 5px;
+}
+
+.aoe2-cmd-slot {
+  width: 70px;
+  height: 70px;
+  position: relative;
+  background: #080604;
+  border: 1px solid #2a1d12;
+  border-radius: 4px;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.05), inset -1px -1px 0 rgba(0, 0, 0, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  user-select: none;
+  overflow: hidden;
+}
+
+.aoe2-cmd-slot:hover {
+  border-color: #8c6e44;
+  background: #120d08;
+}
+
+.aoe2-cmd-slot .slot-number {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  font-family: monospace;
+  color: #6d5843;
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* Empty Slot */
+.aoe2-cmd-slot.slot-empty {
+  opacity: 0.8;
+}
+
+.aoe2-cmd-slot.slot-empty:hover {
+  opacity: 1;
+}
+
+.slot-empty-icon {
+  width: 14px;
+  height: 14px;
+  opacity: 0.3;
+  color: #8c7358;
+  transition: all 0.12s ease;
+}
+
+.aoe2-cmd-slot.slot-empty:hover .slot-empty-icon {
+  opacity: 0.85;
+  color: #dfc79b;
+  transform: scale(1.15);
+}
+
+/* Occupied Slot */
+.aoe2-cmd-slot.slot-occupied {
+  border-color: #4d3622;
+  background: #090705;
+}
+
+.aoe2-cmd-slot.slot-occupied:hover {
+  border-color: #c9a35e;
+  box-shadow: inset 0 0 6px rgba(200, 160, 90, 0.2);
+}
+
+.slot-icon-wrapper {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+.slot-icon-wrapper img {
+  max-width: 42px;
+  max-height: 42px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.slot-title {
+  font-size: 9px;
+  font-weight: 500;
+  color: #dfcfb8;
+  text-align: center;
+  width: 88%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.1;
+  margin-top: 2px;
+}
+
+.slot-actions-overlay {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: none;
+  gap: 2px;
+  z-index: 4;
+}
+
+.aoe2-cmd-slot.slot-occupied:hover .slot-actions-overlay {
+  display: flex;
+}
+
+.slot-mini-btn {
+  width: 15px;
+  height: 15px;
+  background: rgba(14, 10, 6, 0.92);
+  border: 1px solid #553e27;
+  border-radius: 3px;
+  color: #c4ad8d;
+  font-size: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+}
+
+.slot-mini-btn:hover {
+  background: #833;
+  border-color: #e55;
+  color: #fff;
+}
+
+.slot-mini-btn.btn-edit:hover {
+  background: #382617;
+  border-color: #dfc79b;
+  color: #f7e7c4;
+}
+
+/* Gather Point Slot (Slot 5 in military recruit buildings) */
+.aoe2-cmd-slot.slot-gather-point {
+  background: #0b0805;
+  border-color: #4a3522;
+}
+
+.aoe2-cmd-slot.slot-gather-point:hover {
+  border-color: #7d5e38;
+}
+
+.gather-point-art {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gather-point-art svg {
+  width: 34px;
+  height: 34px;
+}
+
+.gather-point-label {
+  font-size: 8.5px;
+  font-weight: 500;
+  color: #b59e82;
+  margin-top: 2px;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.gather-point-sublabel {
+  font-size: 7.5px;
+  color: #8c7359;
+  line-height: 1;
+  text-align: center;
+}
+
+.aoe2-cmd-slot.slot-duplicate {
+  border-color: #b53838 !important;
+  box-shadow: 0 0 6px rgba(181, 56, 56, 0.45) !important;
+}
+
+.aoe2-grid-footer {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #85725d;
+  border-top: 1px solid #24190f;
+  padding-top: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aoe2-grid-footer-note {
+  font-size: 11px;
+  color: #8c7863;
+}
+
+/* ==========================================================================
+   Universal Sprite Field & Modal Component
+   ========================================================================== */
+
+.aoe2-sprite-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #140e08;
+  border: 1px solid #3d2c1c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.aoe2-sprite-field:hover {
+  border-color: #7a5a3a;
+  background: #19120a;
+}
+
+.aoe2-sprite-thumb-box {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  background-color: #21160d;
+  background-image: linear-gradient(45deg, #181008 25%, transparent 25%),
+                    linear-gradient(-45deg, #181008 25%, transparent 25%),
+                    linear-gradient(45deg, transparent 75%, #181008 75%),
+                    linear-gradient(-45deg, transparent 75%, #181008 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0px;
+  border: 1px solid #483421;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.aoe2-sprite-thumb-box img {
+  max-width: 48px;
+  max-height: 48px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.aoe2-sprite-thumb-box .empty-thumb {
+  font-size: 9px;
+  color: #6a533f;
+  text-align: center;
+  font-style: italic;
+}
+
+.aoe2-sprite-meta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.aoe2-sprite-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #dfc79b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoe2-sprite-desc {
+  font-size: 11px;
+  color: #8c7863;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aoe2-sprite-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Sprite Picker Modal */
+.sprite-picker-modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(2px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.sprite-picker-modal {
+  width: 720px;
+  max-width: 95vw;
+  max-height: 90vh;
+  background: #1a120b;
+  border: 2px solid #553e27;
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.9);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sprite-picker-header {
+  padding: 12px 16px;
+  background: #24190f;
+  border-bottom: 1px solid #432e1c;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sprite-picker-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #dfc79b;
+  letter-spacing: 0.3px;
+}
+
+.sprite-picker-tabs {
+  display: flex;
+  background: #140e08;
+  border-bottom: 1px solid #332112;
+  padding: 0 12px;
+  gap: 4px;
+}
+
+.sprite-picker-tab {
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #9c856f;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.sprite-picker-tab:hover {
+  color: #dfc79b;
+}
+
+.sprite-picker-tab.active {
+  color: #f7e7c4;
+  border-bottom-color: #c9a35e;
+  font-weight: 600;
+}
+
+.sprite-picker-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.sprite-dropzone-box {
+  border: 2px dashed #4d3620;
+  border-radius: 6px;
+  background: #110b06;
+  padding: 24px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.sprite-dropzone-box:hover, .sprite-dropzone-box.dragover {
+  border-color: #c9a35e;
+  background: #181008;
+}
+
+.sprite-dropzone-box p {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: #a8947f;
+}
+
+.sprite-convert-preview {
+  margin-top: 14px;
+  display: flex;
+  gap: 16px;
+  background: #130c07;
+  border: 1px solid #382515;
+  border-radius: 5px;
+  padding: 12px;
+}
+
+.sprite-canvas-wrap {
+  width: 140px;
+  height: 140px;
+  background-color: #2b3a1a;
+  background-image: linear-gradient(45deg, #222e14 25%, transparent 25%),
+                    linear-gradient(-45deg, #222e14 25%, transparent 25%),
+                    linear-gradient(45deg, transparent 75%, #222e14 75%),
+                    linear-gradient(-45deg, transparent 75%, #222e14 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+  border: 1px solid #4a5c2d;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.sprite-canvas-wrap canvas {
+  image-rendering: pixelated;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.sprite-convert-controls {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sprite-preset-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.sprite-preset-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  background: #24180f;
+  border: 1px solid #47321e;
+  border-radius: 3px;
+  color: #c4ad8d;
+  cursor: pointer;
+}
+
+.sprite-preset-btn.active, .sprite-preset-btn:hover {
+  background: #3d2919;
+  border-color: #c9a35e;
+  color: #f7e7c4;
+}
+
+.sprite-picker-footer {
+  padding: 10px 16px;
+  background: #24190f;
+  border-top: 1px solid #432e1c;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Sprite Browser (Gallery Tab in SpritePickerModal) */
+.sprite-browser-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 380px;
+}
+
+.sprite-browser-sources {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sprite-source-tabs {
+  display: flex;
+  gap: 4px;
+  background: #120b06;
+  padding: 2px;
+  border-radius: 4px;
+  border: 1px solid #332112;
+}
+
+.sprite-src-btn {
+  padding: 4px 10px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: #9c856f;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.sprite-src-btn:hover {
+  color: #dfc79b;
+}
+
+.sprite-src-btn.active {
+  background: #2b1c11;
+  border-color: #553e27;
+  color: #f7e7c4;
+  font-weight: 600;
+}
+
+.sprite-browser-search-wrap {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.sprite-browser-split {
+  display: flex;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+
+.sprite-browser-list-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #110b06;
+  border: 1px solid #332112;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.sprite-browser-list-header {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #8c7863;
+  border-bottom: 1px solid #231509;
+  background: #181008;
+  display: flex;
+  justify-content: space-between;
+}
+
+.sprite-browser-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sprite-browser-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  background: #150f09;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11.5px;
+  color: #c9b497;
+  text-align: left;
+}
+
+.sprite-browser-item:hover {
+  background: #22170c;
+  color: #f7e7c4;
+}
+
+.sprite-browser-item.selected {
+  background: #2e1d0d;
+  border-color: #c9a35e;
+  color: #f7e7c4;
+  font-weight: 600;
+}
+
+.sprite-browser-item-badge {
+  font-size: 10px;
+  color: #7d6852;
+}
+
+.sprite-browser-preview-pane {
+  width: 250px;
+  background: #120c07;
+  border: 1px solid #332112;
+  border-radius: 4px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sprite-preview-canvas-box {
+  width: 100%;
+  height: 160px;
+  background-color: #2b3a1a;
+  background-image: linear-gradient(45deg, #222e14 25%, transparent 25%),
+                    linear-gradient(-45deg, #222e14 25%, transparent 25%),
+                    linear-gradient(45deg, transparent 75%, #222e14 75%),
+                    linear-gradient(-45deg, transparent 75%, #222e14 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
+  border: 1px solid #4a5c2d;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.sprite-preview-canvas-box canvas {
+  image-rendering: pixelated;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.sprite-preview-details {
+  width: 100%;
+  margin: 10px 0;
+  font-size: 11px;
+  color: #b59e82;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sprite-preview-details .detail-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.cu-list-actions {
+  margin-top: 10px;
+}
+
+.cu-bldg-picker-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.cu-bldg-picker-row .form-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.sprite-preview-details .detail-val {
+  color: #dfc79b;
+  font-weight: 500;
+}
+
+/* ==========================================================================
+   "Test it" Quick-Launch Button & Match Options Popover
+   ========================================================================== */
+.civ-group-head-bar {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.civ-group-head-bar > .civ-group-head {
+  flex: 1;
+  min-width: 0;
+}
+
+.civ-group-testit {
+  flex: none;
+  padding: 0 14px 0 6px;
+  display: flex;
+  align-items: center;
+}
+
+.testit-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.testit-status {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.testit-status.is-error {
+  color: var(--danger);
+}
+
+.testit-split {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.testit-split .testit-go-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+  padding-right: 10px;
+}
+
+.testit-split .testit-opts-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+  border-left: 1px solid rgba(0, 0, 0, 0.22) !important;
+  padding: 5px 7px !important;
+}
+
+.testit-play-ico {
+  flex: none;
+}
+
+.testit-popover {
+  position: fixed;
+  z-index: 120;
+  width: 326px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.testit-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.testit-pop-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.testit-pop-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-3);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.testit-pop-close:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.testit-pop-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 12px 14px 8px;
+}
+
+.testit-pop-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.testit-pop-field .form-select {
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+
+.testit-pop-checks {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 14px 12px;
+}
+
+.testit-pop-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.testit-pop-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-1);
+}
+
+.testit-pop-foot #ti-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+
 

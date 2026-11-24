@@ -17,6 +17,7 @@ apply_civ_json().
 import copy
 import json
 import os
+import struct
 import sys
 
 # `python3 -I` drops the script directory from sys.path; add it back for datfile.
@@ -274,13 +275,16 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
     effects [{type, a, b, c, d}...] (opt), team_bonus_effects [{...}...] (opt),
     unique_techs [castle_tech, imp_tech] (opt).
     """
+    if ext is None:
+        ext = {"slots": 0, "sids": 0, "strings": [], "lua": [], "cu_k": 0, "cu_total": 0}
     civs = dat.civilizations.civs
     extend = "extend" in spec
     if extend:
         # "extend": change an existing civ of the game (1..31) in place instead of making a new
         # one; no identity keys (name, AI names, ...), no unique unit / unique techs.
         known = {"extend", "units", "resources", "disabled_techs", "enabled_techs",
-                 "disabled_units", "enabled_units", "effects", "team_bonus_effects", "unique_building"}
+                 "disabled_units", "enabled_units", "effects", "team_bonus_effects",
+                 "unique_building", "custom_units"}
         extra = set(spec) - known
         if extra:
             raise BuildError("%s: key(s) %s cannot be used with \"extend\" (only %s)"
@@ -296,10 +300,11 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
                 raise BuildError("%s: missing required key %r" % (where, key))
         # Identity keys are not used by the builder; the DLL reads them (civs.c).
         known = {"name", "dat_name", "base", "tech_tree", "team_bonus", "units", "resources",
-                 "description", "ai_names", "sound", "interface_slp",
+                 "description", "ai_names", "sound", "victory_sound", "interface_slp", "history", "icon",
                  "disabled_techs", "enabled_techs", "disabled_units", "enabled_units",
-                 "effects", "team_bonus_effects", "unique_techs", "unique_unit", "unique_building"}
-        extra = set(spec) - known
+                 "effects", "team_bonus_effects", "unique_techs", "unique_unit", "unique_building",
+                 "custom_units"}
+        extra = {k for k in spec if not k.startswith("_")} - known
         if extra:
             raise BuildError("%s: unknown key(s) %s" % (where, sorted(extra)))
         civ = clone_civ(civs, spec["base"], where)
@@ -610,10 +615,15 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
             apply_graphics(dat, e_unit, uu.get("elite_graphics", uu.get("graphics")), "%s unique_unit elite" % where)
         civ.units[E] = e_unit
 
+    ub_slot = -1
     if "unique_building" in spec:
+        ub_slot = 1400 - ub_k
         add_unique_building(dat, civ, spec["extend"] if extend else len(civs), spec["unique_building"],
-                            where, ub_k, uu_total,
-                            ext if ext is not None else {"slots": 0, "sids": 0, "strings": [], "lua": []})
+                            where, ub_k, uu_total, ext)
+
+    if "custom_units" in spec:
+        add_custom_units(dat, civ, spec["extend"] if extend else len(civs), spec["custom_units"],
+                         spec.get("unique_building"), ub_slot, where, uu_total, ext)
 
     if extend:
         return spec["extend"]
@@ -648,15 +658,15 @@ def add_unique_building(dat, civ, cid, ub, where, ub_k, uu_total, ext):
     for req in ("copy_from", "name"):
         if req not in ub:
             raise BuildError("%s: unique_building missing required key %r" % (where, req))
-    known_ub = {"copy_from", "name", "help", "page", "button", "age", "slp", "units", "commands"}
-    extra_ub = set(ub) - known_ub
+    known_ub = {"copy_from", "name", "help", "page", "button", "age", "slp", "icon", "units", "commands", "building_type"}
+    extra_ub = {k for k in ub if not k.startswith("_")} - known_ub
     if extra_ub:
         raise BuildError("%s: unknown unique_building key(s) %s" % (where, sorted(extra_ub)))
     if cid > 114:
         raise BuildError("%s: civ_id %d exceeds 114 for unique_building" % (where, cid))
     game_civ = cid < 35   # a building for an existing civ ("extend"): its names go to strings.txt
     B = 1400 - ub_k
-    if B < 1300 or B <= 1225 + 2 * uu_total:     # buildpage.c treats 1300..1400 as mod buildings
+    if B < 1300 or B <= 1225 + 2 * uu_total + ext.get("cu_total", 0):     # buildpage.c treats 1300..1400 as mod buildings
         raise BuildError("%s: unique building slot %d collides with unique unit slots" % (where, B))
     civ1 = dat.civilizations.civs[1]
     u_check = civ1.units[B] if B < len(civ1.units) else None
@@ -710,6 +720,15 @@ def add_unique_building(dat, civ, cid, ub, where, ub_k, uu_total, ext):
     b_name = make_unit_name(ub["name"], "%s unique_building" % where)
     b_unit.name = b_name
     b_unit.name_length = len(b_name)
+
+    if "icon" in ub:
+        icon = ub["icon"]
+        if isinstance(icon, bool) or not isinstance(icon, int) or not 0 <= icon <= 65535:
+            raise BuildError("%s: unique_building icon must be an integer (0..65535)" % where)
+        cur_mod = where.split("/", 1)[0]
+        resolved = resolve_building_icon(ext, cur_mod, icon)
+        if resolved is not None:
+            b_unit.icon_id = resolved
 
     if "slp" in ub:
         slp = ub["slp"]
@@ -795,13 +814,32 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
         if len(kinds) != 1:
             raise BuildError("%s: needs exactly one of 'train', 'research', 'lua'" % w)
         kind = kinds[0]
-        known = {"button", kind} | {"train": set(), "research": set(), "lua": {"text", "help", "icon"}}[kind]
-        extra = set(c) - known
+        known = {"button", "page", "condition", kind} | {"train": set(), "research": set(), "lua": {"text", "help", "icon"}}[kind]
+        extra = {k for k in c if not k.startswith("_")} - known
         if extra:
             raise BuildError("%s: unknown key(s) %s" % (w, sorted(extra)))
         button = c.get("button")
-        if isinstance(button, bool) or not isinstance(button, int) or not 1 <= button <= 15:
-            raise BuildError("%s: button must be 1..15" % w)
+        if isinstance(button, bool) or not isinstance(button, int) or not 1 <= button <= 14:
+            raise BuildError("%s: button must be 1..14 (button 15 is reserved for Next Page)" % w)
+        page = c.get("page", 1)
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            page = 1
+
+        cond_act = "disable"
+        cond_name = ""
+        if "condition" in c and c["condition"] is not None:
+            cond = c["condition"]
+            if not isinstance(cond, dict):
+                raise BuildError("%s: condition must be an object" % w)
+            extra_c = set(cond) - {"action", "name"}
+            if extra_c:
+                raise BuildError("%s: unknown condition key(s) %s" % (w, sorted(extra_c)))
+            cond_act = cond.get("action", "disable")
+            if not isinstance(cond_act, str) or cond_act not in ("disable", "hide"):
+                raise BuildError("%s: condition action must be 'disable' or 'hide'" % w)
+            cond_name = cond.get("name", "")
+            if not isinstance(cond_name, str) or "\t" in cond_name or "\n" in cond_name or "\r" in cond_name:
+                raise BuildError("%s: condition name must be a string without tab or newline" % w)
 
         if kind == "train":
             t = c["train"]
@@ -819,7 +857,7 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
                 raise BuildError("%s: train copy_from unit %d must be a trainable unit (type 70)" % (w, src))
             slot = 1400 - ext["slots"]
             ext["slots"] += 1
-            if slot < 1300 or slot <= 1225 + 2 * uu_total:
+            if slot < 1300 or slot <= 1225 + 2 * uu_total + ext.get("cu_total", 0):
                 raise BuildError("%s: no free unit slot left (1300..1400)" % w)
             civ1 = dat.civilizations.civs[1]
             if civ1.units[slot] is None or df.cstr(civ1.units[slot].name) != "RESERVED":
@@ -831,10 +869,14 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
             u.train_location_id = B
             u.button_id = button
             u.enabled = 0
+            sid = 0
+            nm = ""
             if "name" in t:
                 nm, hp = t["name"], t.get("help", t["name"])
                 if not isinstance(nm, str) or not isinstance(hp, str):
                     raise BuildError("%s: train name and help must be strings" % w)
+                if "\t" in nm or "\n" in nm or "\r" in nm:
+                    raise BuildError("%s: train name must not contain tab or newline" % w)
                 sid = _new_sids(ext)
                 ext["strings"] += [(sid, nm), (sid + 1, "Create %s" % nm),
                                    (sid + 2, "Create <b>%s<b> (<cost>) \n%s \n<hp> <attack> <armor> <piercearmor> <range>" % (nm, hp))]
@@ -854,11 +896,16 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
                 apply_graphics(dat, u, t["graphics"], "%s unit %d" % (w, slot))
             civ.units[slot] = u
             avail_eff.commands.append(df.EffectCommand(type=2, a=slot, b=1, c=-1, d=0.0))
+            u_icon = int(getattr(civ.units[src], "icon_id", 0))
+            ext["lua"].append("%d\t%d\t%d\t%d\ttrain\t%d\t%d\t%d\t%s\t%s\t%s" %
+                              (cid, B, page, button, slot, u_icon, sid + 2 if sid else 0, nm, cond_act, cond_name))
 
         elif kind == "research":
             r = c["research"]
             if not isinstance(r, dict) or not isinstance(r.get("name"), str) or not isinstance(r.get("help", ""), str):
                 raise BuildError("%s: research must be an object with a name (string)" % w)
+            if "\t" in r["name"] or "\n" in r["name"] or "\r" in r["name"]:
+                raise BuildError("%s: research name must not contain tab or newline" % w)
             extra = set(r) - {"copy_from", "name", "help", "cost", "time", "effects", "age", "icon"}
             if extra:
                 raise BuildError("%s: unknown research key(s) %s" % (w, sorted(extra)))
@@ -919,10 +966,13 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
             tech.name_length = len(tech.name)
             dat.researches.researches.append(tech)
             dat.researches.count = len(dat.researches.researches)
+            res_idx = len(dat.researches.researches) - 1
+            ext["lua"].append("%d\t%d\t%d\t%d\tresearch\t%d\t%d\t%d\t%s\t%s\t%s" %
+                              (cid, B, page, button, res_idx, int(tech.icon_id), sid + 2, nm, cond_act, cond_name))
 
         else:  # lua button: nothing in the dat; the DLL adds it to the building's panel
             name = c["lua"]
-            if not isinstance(name, str) or not name or "\t" in name or "\n" in name:
+            if not isinstance(name, str) or not name or "\t" in name or "\n" in name or "\r" in name:
                 raise BuildError("%s: lua must be a handler name" % w)
             icon = c.get("icon", 32)
             if isinstance(icon, bool) or not isinstance(icon, int):
@@ -933,7 +983,8 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
                 raise BuildError("%s: lua text and help must be strings" % w)
             sid = _new_sids(ext)
             ext["strings"] += [(sid, text), (sid + 1, text), (sid + 2, "<b>%s<b> \n%s" % (text, hp))]
-            ext["lua"].append("%d\t%d\t%d\t%s\t%d\t%d" % (cid, B, button, name, icon, sid + 2))
+            ext["lua"].append("%d\t%d\t%d\t%d\tlua\t0\t%d\t%d\t%s\t%s\t%s" %
+                              (cid, B, page, button, icon, sid + 2, name, cond_act, cond_name))
 
 
 def copy_civ_sounds(dat, base, cid):
@@ -960,6 +1011,360 @@ def load_json(path):
             return json.load(f)
     except (OSError, ValueError) as e:
         raise BuildError("%s: %s" % (path, e))
+
+
+BLDG_ICON_BASE = 55  # AoE2 HD 5.8 gamedata_x2/50706.slp frame count (0..54); matches iconmerge.c
+UNIT_ICON_BASE = 249  # AoE2 HD 5.8 gamedata_x2/50730.slp frame count (0..248); matches iconmerge.c
+
+
+def _is_valid_1frame_slp(path):
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return False
+    if len(data) <= 64 or len(data) >= 16 * 1024 * 1024 or data[:4] != b"2.0N":
+        return False
+    fc = struct.unpack_from("<i", data, 4)[0]
+    cmd, outl, _pal, _prop, _w, h = struct.unpack_from("<IIIIii", data, 32)
+    return fc == 1 and cmd >= 64 and outl >= 64 and 0 < h <= 4096 and cmd + 4 * h <= len(data)
+
+
+def find_icons(mods_dir, folder, base_idx):
+    """Deterministic [(mod, stem, frame_index)] matching iconmerge.c and datbuild.c."""
+    out = []
+    if not os.path.isdir(mods_dir):
+        return out
+    idx = base_idx
+    for mod in sorted(os.listdir(mods_dir)):
+        mdir = os.path.join(mods_dir, mod)
+        if not os.path.isdir(mdir):
+            continue
+        meta = os.path.join(mdir, "mod.json")
+        if os.path.isfile(meta) and load_json(meta).get("enabled", True) is False:
+            continue
+        idir = os.path.join(mdir, "icons", folder)
+        if not os.path.isdir(idir):
+            continue
+        stems = []
+        for fn in os.listdir(idir):
+            p = os.path.join(idir, fn)
+            if fn.lower().endswith(".slp") and os.path.isfile(p):
+                stems.append((fn[:-4], p))
+        stems.sort(key=lambda x: x[0])
+        for stem, p in stems:
+            if _is_valid_1frame_slp(p):
+                out.append((mod, stem, idx))
+                idx += 1
+    return out
+
+
+def find_building_icons(mods_dir):
+    return find_icons(mods_dir, "buildings", BLDG_ICON_BASE)
+
+
+def resolve_building_icon(ext, mod, icon):
+    if icon < 1000:
+        return icon
+    stem = str(icon).lower()
+    icons = ext.get("bldg_icons", [])
+    for m, s, idx in icons:
+        if m == mod and s.lower() == stem:
+            return idx
+    for m, s, idx in icons:
+        if s.lower() == stem:
+            return idx
+    return None
+
+
+def resolve_unit_icon(ext, mod, icon, where):
+    if _is_int(icon):
+        if not 0 <= icon <= 65535:
+            raise BuildError("%s: icon must be an integer (0..65535)" % where)
+        if icon < 1000:
+            return icon
+        stem = str(icon).lower()
+    elif isinstance(icon, str):
+        s = icon
+        if s.lower().endswith(".slp"):
+            s = s[:-4]
+        if not s or "/" in s or "\\" in s or ".." in s or "\t" in s or "\n" in s or "\r" in s:
+            raise BuildError("%s: invalid icon name %r" % (where, icon))
+        stem = s.lower()
+    else:
+        raise BuildError("%s: icon must be an integer (0..65535) or an icon name in icons/units/" % where)
+    icons = ext.get("unit_icons", [])
+    for m, st, idx in icons:
+        if m == mod and st.lower() == stem:
+            return idx
+    for m, st, idx in icons:
+        if st.lower() == stem:
+            return idx
+    raise BuildError("%s: icon %r not found in icons/units/" % (where, icon))
+
+
+def _set_unit_armor(u, cls_id, val):
+    if cls_id == 4:
+        u.displayed_melee_armour = val
+    elif cls_id == 3:
+        u.displayed_pierce_armour = val
+    for a in u.armours:
+        if getattr(a, "class") == cls_id:
+            a.amount = val
+            return
+    u.armours.append(df.AttackOrArmour(**{"class": cls_id, "amount": val}))
+    u.armour_count = len(u.armours)
+
+
+def add_custom_units(dat, civ, cid, cu_list, ub_spec, ub_slot, where, uu_total, ext):
+    """Brand-new trainable units in RESERVED slots after unique_unit slots (1224 + 2*uu_total + cu_k).
+
+    Enabled only for `cid` via a cloned auto-tech (template 570) unlocked in `available_in_age`.
+    When `trained_at` is set, registers a train button in cache/commands.txt (same mechanism as
+    unique_building commands) so buildpage.c shows it on the chosen building and page.
+    The C port (datbuild.c, wl_add_custom_units) must do exactly the same.
+    """
+    if not isinstance(cu_list, list):
+        raise BuildError("%s: custom_units must be a list" % where)
+    known_cu = {
+        "id", "name", "copy_from", "help", "cost", "train_time", "hit_points",
+        "attack", "armor", "pierce_armor", "range", "speed", "line_of_sight",
+        "units", "graphics", "icon", "available_in_age", "trained_at"
+    }
+    civ1 = dat.civilizations.civs[1]
+    cur_mod = where.split("/", 1)[0]
+    seen_ids = set()
+
+    for k, cu in enumerate(cu_list):
+        w = "%s custom_units[%d]" % (where, k)
+        if not isinstance(cu, dict):
+            raise BuildError("%s: must be an object" % w)
+        for req in ("id", "name", "copy_from"):
+            if req not in cu:
+                raise BuildError("%s: missing required key %r" % (w, req))
+        extra = {key for key in cu if not key.startswith("_")} - known_cu
+        if extra:
+            raise BuildError("%s: unknown key(s) %s" % (w, sorted(extra)))
+
+        uid_key = cu["id"]
+        if not isinstance(uid_key, str) or not uid_key or len(uid_key) > 64 or any(c in uid_key for c in "\t\n\r"):
+            raise BuildError("%s: id must be a non-empty string (max 64 chars)" % w)
+        if uid_key in seen_ids:
+            raise BuildError("%s: duplicate custom unit id %r" % (w, uid_key))
+        seen_ids.add(uid_key)
+
+        nm = cu["name"]
+        if not isinstance(nm, str) or not nm or any(c in nm for c in "\t\n\r"):
+            raise BuildError("%s: name must be a non-empty string without tab or newline" % w)
+        hp = cu.get("help", "")
+        if hp is None:
+            hp = ""
+        if not isinstance(hp, str):
+            raise BuildError("%s: help must be a string" % w)
+        if not hp:
+            hp = nm
+
+        copy_from = cu["copy_from"]
+        if not _is_int(copy_from) or not 0 <= copy_from < len(civ.units) or civ.units[copy_from] is None:
+            raise BuildError("%s: copy_from unit %r does not exist" % (w, copy_from))
+        if getattr(civ.units[copy_from], "type", None) != 70:
+            raise BuildError("%s: copy_from unit %d must be a trainable unit (type 70)" % (w, copy_from))
+
+        slot = 1224 + 2 * uu_total + ext["cu_k"]
+        ext["cu_k"] += 1
+        if slot > 1400:
+            raise BuildError("%s: custom unit slot %d exceeds 1400" % (w, slot))
+        if slot > 1400 - ext["slots"]:
+            raise BuildError("%s: custom unit slot %d collides with unique building slots" % (w, slot))
+        u_check = civ1.units[slot] if slot < len(civ1.units) else None
+        if u_check is None or df.cstr(u_check.name) != "RESERVED":
+            raise BuildError("%s: civ 1 unit at %d is not named 'RESERVED'" % (w, slot))
+
+        u = copy.deepcopy(civ.units[copy_from])
+        u.id = slot
+        u.id2 = slot
+        u.id3 = slot
+        u.enabled = 0
+        u.train_location_id = -1
+        u.button_id = 0
+
+        sid = _new_sids(ext)
+        ext["strings"] += [
+            (sid, nm),
+            (sid + 1, "Create %s" % nm),
+            (sid + 2, "Create <b>%s<b> (<cost>) \n%s \n<hp> <attack> <armor> <piercearmor> <range>" % (nm, hp)),
+        ]
+        u.language_dll_name = sid
+        u.language_dll_creation = sid + 1
+        u.language_dll_help = 79000 + sid + 2
+        u.language_dll_hotkey_text = 150000 + sid
+        un = make_unit_name(nm, w)
+        u.name = un
+        u.name_length = len(un)
+
+        if "units" in cu and cu["units"] is not None:
+            if not isinstance(cu["units"], dict):
+                raise BuildError("%s: units must be an object" % w)
+            for field, value in cu["units"].items():
+                if field == "graphics":
+                    apply_graphics(dat, u, value, "%s unit %d" % (w, slot))
+                else:
+                    _set_field(u, field, value, "%s unit %d" % (w, slot))
+
+        for stat_key in ("hit_points", "train_time", "speed", "line_of_sight"):
+            if stat_key in cu and cu[stat_key] is not None:
+                _set_field(u, stat_key, cu[stat_key], "%s unit %d" % (w, slot))
+        if "range" in cu and cu["range"] is not None:
+            _set_field(u, "max_range", cu["range"], "%s unit %d" % (w, slot))
+            _set_field(u, "displayed_range", cu["range"], "%s unit %d" % (w, slot))
+
+        if "cost" in cu and cu["cost"] is not None:
+            cost = cu["cost"]
+            if not isinstance(cost, dict):
+                raise BuildError("%s: cost must be an object with food/wood/stone/gold" % w)
+            extra_res = set(cost) - set(RES_IDS)
+            if extra_res:
+                raise BuildError("%s: unknown cost resource(s) %s" % (w, sorted(extra_res)))
+            items = []
+            for rname in ("food", "wood", "stone", "gold"):
+                if rname in cost:
+                    val = cost[rname]
+                    if not _is_int(val) or val < 0 or val > 32767:
+                        raise BuildError("%s: cost %s must be a whole number 0..32767" % (w, rname))
+                    if val > 0:
+                        items.append((RES_IDS[rname], val))
+            if len(items) > 3:
+                raise BuildError("%s: cost has more than 3 resources" % w)
+            pop_cost = next((copy.deepcopy(c) for c in u.resource_costs if c.type == 4 and c.enabled == 0), None)
+            if len(items) <= 2 and pop_cost is not None:
+                for i in range(2):
+                    u.resource_costs[i] = (df.ResourceCost(type=items[i][0], amount=items[i][1], enabled=1)
+                                           if i < len(items) else df.ResourceCost(type=-1, amount=0, enabled=0))
+                u.resource_costs[2] = pop_cost
+            else:
+                for i in range(3):
+                    u.resource_costs[i] = (df.ResourceCost(type=items[i][0], amount=items[i][1], enabled=1)
+                                           if i < len(items) else df.ResourceCost(type=-1, amount=0, enabled=0))
+
+        if "attack" in cu and cu["attack"] is not None:
+            atk = cu["attack"]
+            if not _is_int(atk) or not 0 <= atk <= 32767:
+                raise BuildError("%s: attack must be an integer 0..32767" % w)
+            u.displayed_attack = atk
+            has_c3 = any(getattr(a, "class") == 3 for a in u.attacks)
+            has_c4 = any(getattr(a, "class") == 4 for a in u.attacks)
+            target_cls = 3 if (has_c3 and (u.projectile_unit_id >= 0 or not has_c4)) else (4 if has_c4 else (3 if u.projectile_unit_id >= 0 else 4))
+            updated = False
+            for a in u.attacks:
+                if getattr(a, "class") == target_cls:
+                    a.amount = atk
+                    updated = True
+                    break
+            if not updated:
+                u.attacks.append(df.AttackOrArmour(**{"class": target_cls, "amount": atk}))
+                u.attack_count = len(u.attacks)
+
+        if "armor" in cu and cu["armor"] is not None:
+            arm = cu["armor"]
+            if _is_int(arm):
+                if not 0 <= arm <= 32767:
+                    raise BuildError("%s: armor must be an integer 0..32767" % w)
+                _set_unit_armor(u, 4, arm)
+            elif isinstance(arm, dict):
+                extra_arm = set(arm) - {"melee", "pierce"}
+                if extra_arm:
+                    raise BuildError("%s: unknown armor key(s) %s" % (w, sorted(extra_arm)))
+                if "melee" in arm:
+                    if not _is_int(arm["melee"]) or not 0 <= arm["melee"] <= 32767:
+                        raise BuildError("%s: armor.melee must be an integer 0..32767" % w)
+                    _set_unit_armor(u, 4, arm["melee"])
+                if "pierce" in arm:
+                    if not _is_int(arm["pierce"]) or not 0 <= arm["pierce"] <= 32767:
+                        raise BuildError("%s: armor.pierce must be an integer 0..32767" % w)
+                    _set_unit_armor(u, 3, arm["pierce"])
+            else:
+                raise BuildError("%s: armor must be an integer or {\"melee\", \"pierce\"}" % w)
+
+        if "pierce_armor" in cu and cu["pierce_armor"] is not None:
+            pa = cu["pierce_armor"]
+            if not _is_int(pa) or not 0 <= pa <= 32767:
+                raise BuildError("%s: pierce_armor must be an integer 0..32767" % w)
+            _set_unit_armor(u, 3, pa)
+
+        if "graphics" in cu and cu["graphics"] is not None:
+            apply_graphics(dat, u, cu["graphics"], w)
+
+        if "icon" in cu and cu["icon"] is not None:
+            u.icon_id = resolve_unit_icon(ext, cur_mod, cu["icon"], w)
+
+        age = cu.get("available_in_age", 0)
+        if age is None:
+            age = 0
+        if not _is_int(age) or age not in AGE_TECHS:
+            raise BuildError("%s: available_in_age must be 0..3" % w)
+
+        if "trained_at" in cu and cu["trained_at"] is not None:
+            ta = cu["trained_at"]
+            if not isinstance(ta, dict):
+                raise BuildError("%s: trained_at must be an object" % w)
+            extra_ta = set(ta) - {"building", "page", "button"}
+            if extra_ta:
+                raise BuildError("%s: unknown trained_at key(s) %s" % (w, sorted(extra_ta)))
+            if "building" not in ta:
+                raise BuildError("%s: trained_at missing required key 'building'" % w)
+            bref = ta["building"]
+            if isinstance(bref, str):
+                ub_name = ub_spec.get("name") if isinstance(ub_spec, dict) else None
+                if bref == "unique_building" or (ub_name and bref == ub_name):
+                    if ub_slot < 0:
+                        raise BuildError("%s: trained_at building %r requires a unique_building on this civ" % (w, bref))
+                    bldg_id = ub_slot
+                else:
+                    raise BuildError("%s: trained_at unknown building key %r" % (w, bref))
+            elif _is_int(bref):
+                if not 0 <= bref < len(civ.units) or civ.units[bref] is None:
+                    raise BuildError("%s: trained_at building unit %d does not exist" % (w, bref))
+                if getattr(civ.units[bref], "type", None) != 80:
+                    raise BuildError("%s: trained_at building unit %d must be a building (type 80)" % (w, bref))
+                bldg_id = bref
+            else:
+                raise BuildError("%s: trained_at building must be a unit id or 'unique_building'" % w)
+
+            page = ta.get("page", 1)
+            if not _is_int(page) or page < 1:
+                raise BuildError("%s: trained_at page must be an integer >= 1" % w)
+            button = ta.get("button", 1)
+            if not _is_int(button) or not 1 <= button <= 14:
+                raise BuildError("%s: trained_at button must be 1..14 (button 15 is reserved for Next Page)" % w)
+
+            u.train_location_id = bldg_id
+            u.button_id = button
+            ext["lua"].append("%d\t%d\t%d\t%d\ttrain\t%d\t%d\t%d\t%s\tdisable\t" %
+                              (cid, bldg_id, page, button, slot, int(u.icon_id), sid + 2, nm))
+
+        civ.units[slot] = u
+
+        eff = df.Effect()
+        eff.name = make_effect_name("WL CU avail %d.%d" % (cid, k), w)
+        eff.commands = [df.EffectCommand(type=2, a=slot, b=1, c=-1, d=0.0)]
+        eff.effect_count = 1
+        dat.effects.effects.append(eff)
+        dat.effects.count = len(dat.effects.effects)
+        eff_id = len(dat.effects.effects) - 1
+
+        tech = copy.deepcopy(dat.researches.researches[UB_TEMPLATE_TECH])
+        tech.civ = cid
+        tech.effect_id = eff_id
+        tech.required_techs[0] = AGE_TECHS[age]
+        for i in range(1, len(tech.required_techs)):
+            tech.required_techs[i] = -1
+        tech.required_tech_count = 1
+        tech.language_dll_name = sid
+        tech.language_dll_description = sid
+        tech.name = ("WL CU %d.%d\0" % (cid, k)).encode("ascii")
+        tech.name_length = len(tech.name)
+        dat.researches.researches.append(tech)
+        dat.researches.count = len(dat.researches.researches)
 
 
 def find_civ_files(mods_dir):
@@ -994,9 +1399,13 @@ def build(game_dir):
     if n_orig != FIRST_RESERVED_ID:
         raise BuildError("expected %d civs in the base dat, found %d" % (FIRST_RESERVED_ID, n_orig))
 
-    files = find_civ_files(os.path.join(game_dir, "wololoader", "mods"))
+    mods_dir = os.path.join(game_dir, "wololoader", "mods")
+    files = find_civ_files(mods_dir)
     lines = []
-    ext = {"slots": 0, "sids": 0, "strings": [], "lua": [], "orig_res": len(dat.researches.researches)}
+    ext = {"slots": 0, "sids": 0, "strings": [], "lua": [], "orig_res": len(dat.researches.researches),
+           "bldg_icons": find_building_icons(mods_dir),
+           "unit_icons": find_icons(mods_dir, "units", UNIT_ICON_BASE),
+           "cu_k": 0, "cu_total": 0}
     if files:
         for k in range(NUM_RESERVED):
             ph = copy.deepcopy(civs[1])
@@ -1007,8 +1416,12 @@ def build(game_dir):
         uu_total = 0
         for mod, fn, path in files:      # unique unit slots count up, building slots count down
             spec = load_json(path)
-            if isinstance(spec, dict) and "unique_unit" in spec:
-                uu_total += 1
+            if isinstance(spec, dict):
+                if "unique_unit" in spec:
+                    uu_total += 1
+                cu = spec.get("custom_units")
+                if isinstance(cu, list):
+                    ext["cu_total"] += len(cu)
         for mod, fn, path in files:
             spec = load_json(path)
             where = "%s/civs/%s" % (mod, fn)

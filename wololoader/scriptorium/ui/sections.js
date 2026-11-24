@@ -38,6 +38,8 @@
 
   const $ = (id) => document.getElementById(id);
   const root = () => $('basic-root');
+  const CHEV_SVG = '<svg class="sc-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 3 11 8 6 13"/></svg>';
+  const wireDisclosures = (el) => { if (S.wireDisclosures) S.wireDisclosures(el); };
 
   function esc(str) {
     if (str === null || str === undefined) return '';
@@ -230,6 +232,7 @@
     const body = r.querySelector('[data-role="body"]');
     r.onclick = onAction;
     sec.render(body);
+    wireDisclosures(body);
   }
 
   // One click handler for the whole page: any element with data-act runs its action.
@@ -395,38 +398,42 @@ end)
       </button>`).join('');
 
     body.innerHTML = `
-      <section class="sec-group">
-        <div class="sec-group-head">
-          <h3>Lua scripts</h3>
-          <p>The game runs <span class="mono">scripts/main.lua</span> at start. It loads other scripts of the mod with
-             <span class="mono">require("name")</span>: <span class="mono">require("ai.economy")</span> runs
-             <span class="mono">scripts/ai/economy.lua</span> the first time it is required, in the same environment as main.lua.</p>
+      <details class="sc-section" data-pref-key="sec-visual-scripts" open>
+        <summary class="sc-section-summary">
+          ${CHEV_SVG}
+          <span class="sc-section-title">Visual scripts</span>
+          <span class="sc-section-meta">${visual.length} script${visual.length === 1 ? '' : 's'}</span>
+        </summary>
+        <div class="sc-section-body">
+          <p class="basic-form-hint">No-code event graphs compiled into <span class="mono">scripts/visual.lua</span> on save.</p>
+          ${visual.length ? `<div class="list">${visualRows}</div>` : `
+            <div class="empty-card compact">
+              <h3 class="empty-card-title">No visual scripts yet</h3>
+              <p class="empty-card-text">Build game events with nodes — for example, give gold when a unit is created.</p>
+              <div class="empty-card-actions"><button class="btn btn-save btn-sm" data-act="visual-new">New visual script</button></div>
+            </div>`}
         </div>
-        ${lua.length ? `<div class="list">${luaRows}</div>` : ''}
-        ${hasMain ? '' : `
-          <div class="inline-empty">
-            <div>
-              <strong>No main.lua yet</strong>
-              <span>Create it to write Lua events (Game.OnStart, timers, buttons).</span>
-            </div>
-            <button class="btn btn-wood btn-sm" data-act="lua-create-main">Create main.lua</button>
-          </div>`}
-      </section>
+      </details>
 
-      <section class="sec-group">
-        <div class="sec-group-head">
-          <h3>Visual scripts</h3>
-          <p>Node graphs: an event runs the actions you connect. They are compiled into
-             <span class="mono">scripts/visual.lua</span> when you save; main.lua loads that file with
-             <span class="mono">require("visual")</span>.</p>
+      <details class="sc-section" data-pref-key="sec-lua-scripts">
+        <summary class="sc-section-summary">
+          ${CHEV_SVG}
+          <span class="sc-section-title">Lua scripts</span>
+          <span class="sc-section-meta">${lua.length} file${lua.length === 1 ? '' : 's'}</span>
+        </summary>
+        <div class="sc-section-body">
+          <p class="basic-form-hint"><span class="mono">scripts/main.lua</span> runs at game start and loads modules via <span class="mono">require("name")</span>.</p>
+          ${lua.length ? `<div class="list">${luaRows}</div>` : ''}
+          ${hasMain ? '' : `
+            <div class="inline-empty">
+              <div>
+                <strong>No main.lua yet</strong>
+                <span>Create it to write custom Lua events.</span>
+              </div>
+              <button class="btn btn-wood btn-sm" data-act="lua-create-main">Create main.lua</button>
+            </div>`}
         </div>
-        ${visual.length ? `<div class="list">${visualRows}</div>` : `
-          <div class="empty-card compact">
-            <h3 class="empty-card-title">No visual scripts yet</h3>
-            <p class="empty-card-text">Build an event in the node editor, with no code: for example "when a unit is created, give 50 gold".</p>
-            <div class="empty-card-actions"><button class="btn btn-save btn-sm" data-act="visual-new">New visual script</button></div>
-          </div>`}
-      </section>`;
+      </details>`;
   }
 
   // ==========================================================================
@@ -729,8 +736,8 @@ end)
   // ==========================================================================
   function playerHtml() {
     const np = st.nowPlaying;
-    return `<div class="player-bar${np ? '' : ' idle'}">
-      <span class="player-label">${np ? 'Now playing <strong>' + esc(basename(np.path)) + '</strong>' : 'Press &#9654; on a sound to hear it'}</span>
+    return `<div class="player-bar"${np ? '' : ' hidden'}>
+      <span class="player-label">${np ? 'Now playing <strong>' + esc(basename(np.path)) + '</strong>' : ''}</span>
       <audio class="player" controls preload="auto" ${np ? `src="${esc(np.url)}"` : ''}></audio>
     </div>`;
   }
@@ -742,9 +749,7 @@ end)
         <div class="empty-card">
           <div class="empty-card-icon">${NAV_ICONS.taunts}</div>
           <h3 class="empty-card-title">No taunts yet</h3>
-          <p class="empty-card-text">A taunt is a sound that plays when someone types its number in chat, for example <strong>43</strong>.
-            Numbers from ${TAUNT_FIRST_NEW} up are new taunts. Numbers 1 to 42 replace the game's own taunt of that number.
-            Other players hear a taunt only if they have the mod.</p>
+          <p class="empty-card-text">Upload an MP3 or WAV to play when a player types its number (43+) in chat.</p>
           <div class="empty-card-actions"><button class="btn btn-save btn-sm" data-act="taunt-add">Add taunt</button></div>
         </div>`;
       return;
@@ -767,9 +772,15 @@ end)
             </div>
             <div class="row-actions">
               <button class="btn btn-wood btn-sm" data-act="taunt-play" data-path="${esc(t.path)}" title="Play this sound">&#9654; Play</button>
-              <button class="btn btn-ghost btn-sm" data-act="taunt-rename" data-path="${esc(t.path)}">Rename</button>
-              <button class="btn btn-ghost btn-sm" data-act="taunt-replace" data-path="${esc(t.path)}">Replace</button>
-              <button class="btn btn-ghost btn-sm danger" data-act="taunt-delete" data-path="${esc(t.path)}">Delete</button>
+              <div class="sc-more-wrap">
+                <button type="button" class="btn btn-ghost btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false" title="More actions">&#8943;</button>
+                <div class="sc-more-menu" hidden>
+                  <button type="button" class="sc-more-item" data-act="taunt-rename" data-path="${esc(t.path)}">Rename...</button>
+                  <button type="button" class="sc-more-item" data-act="taunt-replace" data-path="${esc(t.path)}">Replace sound...</button>
+                  <div class="sc-more-sep"></div>
+                  <button type="button" class="sc-more-item danger" data-act="taunt-delete" data-path="${esc(t.path)}">Delete</button>
+                </div>
+              </div>
             </div>
           </div>`).join('')}
       </div>`;
@@ -799,7 +810,7 @@ end)
       const label = root().querySelector('.player-label');
       if (label) label.innerHTML = 'Now playing <strong>' + esc(basename(path)) + '</strong>';
       const bar = root().querySelector('.player-bar');
-      if (bar) bar.classList.remove('idle');
+      if (bar) bar.hidden = false;
     } catch (e) {
       S.showToast('Could not play ' + basename(path) + ': ' + e.message, 'error');
     }
@@ -929,7 +940,7 @@ end)
         <span class="list-head-count" data-role="count"></span>
       </div>
       <div class="list file-list" data-role="list"></div>
-      <p class="list-note">Every file of the mod folder. Changes take effect the next time the game starts. The civilization files (civs/) and mod.json are not listed: they belong to Civilizations.</p>
+      <p class="list-note">All files in the mod folder (except civs/ and mod.json, which are edited in Civilizations).</p>
       <input type="file" class="file-replace-input" hidden>`;
     const listEl = body.querySelector('[data-role="list"]');
     const countEl = body.querySelector('[data-role="count"]');
@@ -963,9 +974,15 @@ end)
       <span class="file-size">${esc(formatSize(f.size))}</span>
       <span class="row-actions">
         ${primary}
-        <button class="btn btn-ghost btn-sm" data-act="file-download" data-path="${esc(f.path)}">Download</button>
-        <button class="btn btn-ghost btn-sm" data-act="file-replace" data-path="${esc(f.path)}">Replace</button>
-        <button class="btn btn-ghost btn-sm danger" data-act="file-delete" data-path="${esc(f.path)}">Delete</button>
+        <div class="sc-more-wrap">
+          <button type="button" class="btn btn-ghost btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false" title="More actions">&#8943;</button>
+          <div class="sc-more-menu" hidden>
+            <button type="button" class="sc-more-item" data-act="file-download" data-path="${esc(f.path)}">Download</button>
+            <button type="button" class="sc-more-item" data-act="file-replace" data-path="${esc(f.path)}">Replace...</button>
+            <div class="sc-more-sep"></div>
+            <button type="button" class="sc-more-item danger" data-act="file-delete" data-path="${esc(f.path)}">Delete</button>
+          </div>
+        </div>
       </span>
     </div>`;
   }
@@ -1119,10 +1136,18 @@ end)
     },
     {
       id: 'scripts', label: 'Scripts',
-      sub: 'Lua code that the game runs with the mod, and visual scripts (node graphs) that compile to Lua.',
+      sub: 'Visual event graphs and Lua scripts for your mod.',
       count: () => luaFiles().length + visualList().length,
-      actions: () => '<button class="btn btn-save btn-sm" data-act="lua-new">New script</button>'
-        + ' <button class="btn btn-wood btn-sm" data-act="visual-new">New visual script</button>',
+      actions: () => {
+        const hasMain = luaFiles().some(f => f.path === MAIN_LUA);
+        return '<button class="btn btn-save btn-sm" data-act="visual-new">New visual script</button>'
+          + '<div class="sc-more-wrap">'
+          + '<button type="button" class="btn btn-wood btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false">More &#9662;</button>'
+          + '<div class="sc-more-menu" hidden>'
+          + '<button type="button" class="sc-more-item" data-act="lua-new">New Lua script...</button>'
+          + (hasMain ? '' : '<button type="button" class="sc-more-item" data-act="lua-create-main">Create main.lua</button>')
+          + '</div></div>';
+      },
       render: renderScripts
     },
     {

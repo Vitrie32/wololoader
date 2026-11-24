@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.4.1"
+#define WOLOLOADER_VERSION "0.5.0"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -43,16 +43,30 @@ BOOL wl_set_mod_enabled(const char *mod_dir, BOOL enabled);
 
 // autobuild.c: rebuilds wololoader\cache when mods changed (before civ hooks)
 void wl_autobuild(void);
+int wl_autobuild_run(void);       // 1 = rebuilt, 0 = up to date, -1 = error
+unsigned long long wl_autobuild_fingerprint(void);
+void wl_content_checksum(char out[9]);
+void wl_content_checksum_invalidate(void);
 extern char g_wl_build_error[512];
 
 // ui_mods.c
 void wl_install_mods_screen(void);
+void wl_mods_return_from_hub(int mods_changed);
+int wl_mods_is_readonly_open(void);
+
+// ui_hub.c
+void wl_hub_open(void *return_screen, int readonly);
+
+// zlib_game.c
+int wl_game_inflate_raw_bounded(const unsigned char *in, size_t in_len, size_t max_out,
+                                unsigned char **out, size_t *out_len);
 
 // iconcache.c: scaled PNG caching for mod icons (WIC)
 const char *wl_icon_scaled(const char *src_png, const char *mod_id, int size);
 
 // shell.c
 void wl_open_folder(const char *path);
+BOOL wl_launch_scriptorium_args(const char *args);   // same, with extra arguments ("--hub")
 BOOL wl_launch_scriptorium(void);   // starts <root>\\Scriptorium.exe
 
 // hook.c
@@ -66,6 +80,9 @@ BOOL wl_patch_call(DWORD at, void *fn, int len);
 void wl_install_menu_hooks(void);
 void wl_menu_set_label(const char *text);
 
+// autostart.c: quick-launch single-player match from <root>\autostart.json ("Test it")
+void wl_install_autostart(void);
+
 // overflow.c: units selected beyond the game's 60 (0..190, pruned); total selection = 60 + this
 int wl_overflow_count(void);
 int wl_overflow_owns(void *player);   // is this the list's player object?
@@ -75,15 +92,39 @@ void wl_install_selpanel(void);
 // mpguard.c: warns when entering multiplayer with mods active
 void wl_install_mp_guard(void);
 
+// mpcheck.c: lobby mod compatibility check via lobby chat
+void wl_install_mp_check(void);
+void wl_mpcheck_on_lobby_enter(void *screen);
+
 // civs.c
 void wl_install_civ_hooks(void);
 void wl_civs_ensure(void);  // lazy: autobuild + civs.txt, never from DllMain
+int wl_civs_count(void);
+int wl_civs_reload_tables(int *old_ids, int *old_n, int *new_ids, int *new_n);
+int wl_civs_reconcile_registry(void);
+const char *wl_civ_get_sound(int civ_id);
+const char *wl_civ_get_victory_sound(int civ_id);
+
+// hotreload.c: Level 2 mod hot reload at the main menu (World == NULL)
+void wl_install_hotreload(void);
+void wl_hotreload_mark_baseline(void);
+int wl_hotreload_mods_changed(void);
+int wl_hotreload_can_run(char *reason, size_t cap);
+int wl_hotreload_run(int force, char *out_msg, size_t out_cap);
+int wl_hotreload_from_lua(char *out_msg, size_t out_cap);
+const char *wl_hotreload_last_message(void);
+int wl_hotreload_restart_reason(char *out, size_t cap);
+
+// victory.c
+void wl_install_victory(void);
 
 // taunts.c
 void wl_install_taunts(void);
 
 // script.c: Lua 5.4 mod scripts (<mod>\\scripts\\main.lua). Single-threaded: game main thread only.
 void wl_script_init(void);   // lazy (from wl_civs_ensure), never from DllMain; idempotent
+void wl_script_restart(void); // full reload of all mod scripts (hotreload.c)
+void wl_script_set_reload_mods(int (*fn)(char *msg, size_t cap));
 void wl_script_event(const char *name);
 void wl_script_event_int(const char *name, int arg);
 // Plug the game-side UI in later; until then wl.message/wl.dialog only log.
@@ -129,8 +170,11 @@ void wl_counter_reset(void);
 void wl_install_lua_game(void);
 BOOL wl_feature(const char *name);
 BOOL wl_feature_opt(const char *name);  // basemod.c: off unless set true
+void wl_basemod_reload(void);
+void wl_basemod_read_flags(int *popcap, int *sel250, int *borderless, int *formtab);
 void wl_monk_tick(void);  // monk.c, once a second in a game
 void wl_install_lobby(void);  // lobby.c
+void wl_install_history(void); // history.c
 void wl_mods_readonly_reset(void);  // ui_mods.c
 void wl_install_string_hook_only(void);  // civs.c (Vanilla Mode)
 void wl_install_ui_textures_only(void);  // files.c (Vanilla Mode)  // basemod.c: Wololoader Base mod feature switches  // luagame.c: game_start event, wl.message backend
@@ -147,6 +191,9 @@ void wl_loadscreen_close(void);
 
 // files.c
 void wl_install_file_hooks(void);
+void wl_files_clear_redirects(void);
+void wl_files_rebuild_assets(void);
+void wl_files_drs_fingerprints(unsigned long long pkg_fp[4], unsigned long long *iface_new_fp);
 
 // popcap.c: "1000" population option + lifted 500 clamps
 void wl_install_popcap(void);
@@ -167,9 +214,27 @@ void wl_install_uikit(void);
 void wl_install_buildpage(void);   // buildpage.c: villager mod buildings page
 void wl_icons_build(void);          // iconmerge.c: append mod icons to interface SLPs
 int wl_icon_index(const char *sheet, const char *name);
+#define WL_MAX_BLDG_CMDS 128
 typedef struct { int civ, building, button, icon, help; char name[64]; } WlLuaButton;
+typedef struct {
+    int civ;
+    int building;
+    int page;
+    int button;
+    char type[16];          // "train", "research", "lua"
+    int target_id;          // unit id or tech id or 0
+    int icon;
+    int help;
+    char name[64];          // handler or display name
+    char cond_action[16];   // "disable" or "hide"
+    char cond_name[64];     // condition name registered in Lua
+} WlBuildingCmd;
 const WlLuaButton *wl_lua_buttons(int *n);   // civs.c: Lua buttons of mod buildings (cache\\commands.txt)
+const WlBuildingCmd *wl_building_commands(int *n);
 void wl_script_command(const char *name, int unit_id);   // script.c: Game.OnCommand handlers
+void wl_script_cond_begin_refresh(int unit_id);
+void wl_script_cond_end_refresh(void);
+int wl_script_eval_condition(const char *name, int unit_id);
 void wl_ui_frame(void);
 int wl_ui_create(int type);              // 1 frame, 2 label, 3 button, 4 text box; id or -1
 void wl_ui_destroy(int id);

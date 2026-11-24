@@ -226,6 +226,25 @@
 }
 
 /* ---- small screens: stack the list above the picture ---------------------------- */
+.slpv-display-menu {
+  left: 0;
+  right: auto;
+  min-width: 220px;
+  padding: 10px 12px;
+  gap: 10px;
+}
+.slpv-pop-row { display: flex; gap: 14px; align-items: center; }
+.slpv-pop-col { display: flex; flex-direction: column; gap: 6px; }
+
+.slpv-timing-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
+  right: 0;
+  min-width: 230px;
+  padding: 10px 12px;
+  gap: 10px;
+}
+
 @media (max-width: 800px) {
   .slpv-body { grid-template-columns: 1fr; grid-template-rows: 40% 1fr; }
   .slpv-side { border-right: 0; border-bottom: 1px solid var(--line); }

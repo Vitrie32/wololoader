@@ -1,7 +1,7 @@
 CC      = i686-w64-mingw32-gcc
 CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc
-LDFLAGS = -shared -static -Wl,--enable-stdcall-fixup -Wl,--kill-at -lshell32 -lgdi32 -luser32 -lole32 -lwindowscodecs -luuid
-SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/civs.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/buildpage.c src/iconmerge.c src/taunts.c src/proxy_version.S
+LDFLAGS = -shared -static -Wl,--enable-stdcall-fixup -Wl,--kill-at -lshell32 -lgdi32 -luser32 -lole32 -lwindowscodecs -luuid -lwinhttp
+SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/autostart.c src/civs.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/ui_hub.c src/hubcore.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/mpcheck.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/buildpage.c src/iconmerge.c src/taunts.c src/history.c src/victory.c src/hotreload.c src/proxy_version.S
 
 # Embedded Lua 5.4 (third_party/lua, unmodified). Only the core and the safe
 # libraries: no lua.c/luac.c, no linit.c (script.c opens libs itself), no
@@ -30,10 +30,10 @@ GAME   ?= $(HOME)/.steam/steam/steamapps/common/Age2HD
 # Scriptorium v2 (mod creator HTTP server & launcher) sources and flags
 SC_CATALOG_SRC = $(if $(wildcard scriptorium/catalog.c),scriptorium/catalog.c,scriptorium/catalog_stub.c)
 SC_SRC  = scriptorium/main.c scriptorium/server.c scriptorium/api.c scriptorium/launcher.c \
-          scriptorium/sc_zlib.c scriptorium/modio.c \
+          scriptorium/sc_zlib.c scriptorium/modio.c scriptorium/hub.c src/hubcore.c \
           $(SC_CATALOG_SRC) scriptorium/gamepath.c src/json.c src/datbuild.c
 SC_CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc -Iscriptorium -Ibuild -Isrc
-SC_LDFLAGS = -mwindows -static -lws2_32 -lshell32
+SC_LDFLAGS = -mwindows -static -lws2_32 -lshell32 -lwinhttp
 
 all: build/version.dll build/Scriptorium.exe
 
@@ -48,7 +48,7 @@ build/kind.$(BUILD_KIND):
 	rm -f build/kind.*
 	touch $@
 
-build/version.dll: build/kind.$(BUILD_KIND) $(SRC) $(LUA_OBJ) build/wl_icon.o src/wololoader.h src/datbuild.h src/json.h src/version.def
+build/version.dll: build/kind.$(BUILD_KIND) $(SRC) $(LUA_OBJ) build/wl_icon.o src/wololoader.h src/datbuild.h src/json.h src/hubcore.h src/version.def
 	mkdir -p build
 	$(CC) $(CFLAGS) -I$(LUA_DIR) -o $@ $(SRC) $(LUA_OBJ) build/wl_icon.o src/version.def $(LDFLAGS)
 
@@ -62,7 +62,7 @@ build/sc_icon.o: scriptorium/scriptorium.rc art/wololoader.ico
 	mkdir -p build
 	i686-w64-mingw32-windres scriptorium/scriptorium.rc -O coff -o $@
 
-build/Scriptorium.exe: build/sc_icon.o build/ui_files.h $(SC_SRC) scriptorium/server.h scriptorium/api.h scriptorium/launcher.h scriptorium/catalog.h scriptorium/sc_zlib.h scriptorium/modio.h src/json.h src/datbuild.h
+build/Scriptorium.exe: build/sc_icon.o build/ui_files.h $(SC_SRC) scriptorium/server.h scriptorium/api.h scriptorium/launcher.h scriptorium/catalog.h scriptorium/sc_zlib.h scriptorium/modio.h scriptorium/hub.h src/json.h src/datbuild.h src/hubcore.h
 	mkdir -p build
 	$(CC) $(SC_CFLAGS) -o $@ $(SC_SRC) build/sc_icon.o $(SC_LDFLAGS)
 
@@ -78,6 +78,11 @@ install: build/version.dll build/Scriptorium.exe
 	# Wololoader's own command icons (iconmerge.c appends them to the game's sheets)
 	mkdir -p "$(GAME)/wololoader/mods/WololoaderBase/icons/50721"
 	cp base_mod/icons/50721/*.slp "$(GAME)/wololoader/mods/WololoaderBase/icons/50721/"
+	# Wololoader Base scripts (DevPanel + console)
+	mkdir -p "$(GAME)/wololoader/mods/WololoaderBase/scripts"
+	cp -r base_mod/scripts/. "$(GAME)/wololoader/mods/WololoaderBase/scripts/"
+	# Remove leftover old shipped DevPanel mod only if mod.json matches the original shipped one
+	@python3 -c 'import json, os, shutil, sys; d = os.path.join(sys.argv[1], "wololoader", "mods", "DevPanel"); p = os.path.join(d, "mod.json"); info = None; exec("try:\n with open(p, encoding=\"utf-8\") as f: info = json.load(f)\nexcept Exception: pass"); (shutil.rmtree(d), print("Removed legacy DevPanel mod:", d)) if isinstance(info, dict) and info.get("name") == "Dev Panel" and info.get("author") == "ali" else None' "$(GAME)"
 	# Icons drawn over the Mods screen buttons and mod rows (ui_mods.c loads <game>\wololoader\ui\<name>.png)
 	mkdir -p build/ui "$(GAME)/wololoader/ui"
 	# One PNG per shown size (name_SIZE.png): the drawables are not scaled in ui_mods.c (see ui_icon).

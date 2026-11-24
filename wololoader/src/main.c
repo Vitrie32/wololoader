@@ -98,6 +98,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     wl_install_lobby();   // lobby: say why a player with different mods cannot join
     if (wl_feature("borderless")) wl_install_borderless();
     g_wl_vanilla = wl_vanilla_flag_exists();
+    wl_install_hotreload();  // captures startup feature snapshot; hooks GameDataSet::ctor in normal mode
     if (g_wl_vanilla) {
         // Vanilla Mode: the game must stay identical to an unmodded one (online
         // lobbies with players without Wololoader). Only UI that does not touch
@@ -115,7 +116,10 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     wl_install_taunts();
     wl_install_civ_hooks();
     wl_install_menu_hooks();
+    wl_install_autostart();
     wl_install_mods_screen();
+    wl_install_history();
+    wl_install_victory();
     // Gameplay/UI features of the "Wololoader Base" mod (basemod.c), each can be switched off.
     wl_install_gamecmd();   // command executor hook: Lua game commands + overflow clones
     if (wl_feature("popcap_1000")) wl_install_popcap();
@@ -125,6 +129,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     wl_install_uikit();
     wl_install_buildpage();
     wl_install_mp_guard();
+    wl_install_mp_check();
 #ifdef WL_SELTRACE
     wl_log("TRACE BUILD: Selection field access tracing enabled");
     wl_seltrace_init();

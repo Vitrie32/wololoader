@@ -108,6 +108,8 @@ static void lua_message(const char *text) {
     } else if (g_msg_dropped++ == 0) wl_log("[lua] message queue full, dropped: %s (and more this frame)", text);
 }
 
+extern void wl_script_hotreload_frame(DWORD now_ms);
+
 static void __fastcall hook_tick(void *screen, void *edx) {
     (void)edx;
     g_orig_tick(screen);
@@ -125,6 +127,7 @@ static void __fastcall hook_tick(void *screen, void *edx) {
     deliver_nil_answers();                                // MP asks from the previous frame
     DWORD gnow = game_clock();
     wl_script_frame(gnow);                                 // wl.after / wl.every / wl.wait
+    wl_script_hotreload_frame(now);                        // hot-reload changed mod scripts (~1/s, debounced)
     wl_gamecmd_frame();                                    // Lua game commands over 100/s
     wl_counter_frame(gs);                                 // wl.counter line (src/counter.c)
     wl_ui_frame();                                        // UI button clicks (src/uikit.c)
@@ -213,13 +216,27 @@ static void lua_chat(const char *text, const char *sender, int player) {
 // 0x583640 = lea eax,[ecx+0xd54]): settings = [[[0xaf2c58]+0x98]+0xd54], and
 // settings+0x408 == 1 is 'isMultiPlayer' (serializer string at 0x9ccc6c,
 // read at 0x611cab). Verified in the disassembly 2026-11-15.
-static int is_multiplayer(void) {
+int wl_is_multiplayer(void) {
     DWORD game = *(DWORD *)0xaf2c58;
     if (!game) return 0;
     DWORD a = *(DWORD *)(game + 0x98);
     if (!a) return 0;
     DWORD settings = *(DWORD *)(a + 0xd54);
     return settings && *(int *)(settings + 0x408) == 1;
+}
+static int is_multiplayer(void) { return wl_is_multiplayer(); }
+
+// Cheats enabled in game settings? Verified in AoK HD.exe 5.8 disassembly:
+// cheat executor 0x80a1b0 checks settings* via 0x5408c0 ([[game+0x98]+0xd54])
+// at 0x80a20b..0x80a22f and reads BYTE [settings+0x40f] != 0; matches
+// GameSettings serializer 0x611d16..0x611d26 ("&mCheatsEnabled" at 0x9ccc7c).
+int wl_cheats_enabled(void) {
+    DWORD game = *(DWORD *)0xaf2c58;
+    if (!game) return 0;
+    DWORD a = *(DWORD *)(game + 0x98);
+    if (!a) return 0;
+    DWORD settings = *(DWORD *)(a + 0xd54);
+    return settings && *(unsigned char *)(settings + 0x40f) != 0;
 }
 
 static void show_next_dialog(void *gs) {
@@ -266,11 +283,16 @@ static int __fastcall hook_gs_event(void *self, void *edx, void *panel, int code
     return g_orig_gs_event(self, panel, code, a, b);
 }
 
+extern void wl_script_set_mp_info(int (*is_mp)(void), int (*cheats_on)(void));
+extern void wl_script_set_feature(BOOL (*feature_fn)(const char *));
+extern void wl_script_set_dev_ctx_fn(void (*set_dev_ctx)(int));
+extern void wl_cmd_set_dev_ctx(int on);
+
 static void __fastcall hook_start_game(void *game, void *edx) {
     (void)edx;
     g_orig_start_game(game);
     wl_mods_readonly_reset();
-    wl_log("lua: game_start");
+    wl_log("lua: game_start (mp=%d, cheats=%d)", wl_is_multiplayer(), wl_cheats_enabled());
     g_game_start_tick = GetTickCount();
     g_have_wt = 0;
     g_last_second = g_clock;
@@ -283,6 +305,10 @@ static void __fastcall hook_start_game(void *game, void *edx) {
 void wl_install_lua_game(void) {
     static const BYTE start_orig[] = { 0x55, 0x8b, 0xec, 0x6a, 0xff };
     static const BYTE msg_orig[] = { 0x55, 0x8b, 0xec, 0x8b, 0x89, 0x28, 0x0c, 0x00, 0x00 };
+    wl_script_set_mp_info(wl_is_multiplayer, wl_cheats_enabled);
+    wl_script_set_feature(wl_feature);
+    wl_script_set_dev_ctx_fn(wl_cmd_set_dev_ctx);
+    wl_script_set_reload_mods(wl_hotreload_from_lua);
     if (memcmp((void *)0x6cbed0, msg_orig, sizeof msg_orig) == 0)
     { wl_script_set_ui(lua_message, lua_dialog); wl_script_set_game(wl_game_api()); wl_script_set_sound(lua_sound); wl_script_set_counter(wl_counter_set); wl_script_set_chat(lua_chat); wl_script_set_ask(lua_ask);
       static const WlUiApi ui = { wl_ui_create, wl_ui_destroy, wl_ui_set, wl_ui_get_text }; wl_script_set_uikit(&ui); }

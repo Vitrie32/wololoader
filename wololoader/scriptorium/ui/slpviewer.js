@@ -405,10 +405,10 @@
       <div class="slpv-body">
         <aside class="slpv-side">
           <div class="slpv-side-top">
-            <button class="btn btn-gold btn-sm slpv-new" title="Make a sprite from a PNG or JPG with the SLP creator. It is saved in this mod.">+ New sprite from PNG</button>
+            <button class="btn btn-save btn-sm slpv-new" title="Make a sprite from a PNG or JPG with the SLP creator. It is saved in this mod.">+ New sprite from PNG</button>
           </div>
           <label class="slpv-check slpv-game-toggle" title="Also browse the game's own sprites, for reference. Read only.">
-            <input type="checkbox" class="slpv-game"> Game graphics
+            <input type="checkbox" class="slpv-game"> Show game sprites
           </label>
           <div class="slpv-sources" hidden>
             ${SOURCES.filter(s => s.id !== 'mod').map(s => `<button class="slpv-source" data-source="${s.id}">${esc(s.label)}</button>`).join('')}
@@ -430,28 +430,38 @@
               <span class="slpv-zoom-label">${st.zoom}x</span>
               <button class="btn btn-wood btn-sm slpv-zoom-in" title="Zoom in">+</button>
             </div>
-            <div class="slpv-group">
-              <label class="slpv-check"><input type="checkbox" class="slpv-shadow" checked> Shadow</label>
-              <label class="slpv-check"><input type="checkbox" class="slpv-outline"> Outline</label>
+            <div class="sc-more-wrap">
+              <button type="button" class="btn btn-wood btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false">Display &#9662;</button>
+              <div class="sc-more-menu slpv-display-menu" hidden>
+                <div class="slpv-pop-row">
+                  <label class="slpv-check"><input type="checkbox" class="slpv-shadow" checked> Shadow</label>
+                  <label class="slpv-check"><input type="checkbox" class="slpv-outline"> Outline</label>
+                </div>
+                <div class="slpv-pop-col">
+                  <span class="slpv-label">Player colour</span>
+                  <span class="slpv-swatches"></span>
+                </div>
+              </div>
             </div>
-            <div class="slpv-group">
-              <span class="slpv-label">Player colour</span>
-              <span class="slpv-swatches"></span>
-            </div>
-            <div class="slpv-group">
+            <div class="slpv-group" style="margin-left:auto;">
               <button class="btn btn-wood btn-sm slpv-export">Export PNG</button>
             </div>
           </div>
           <div class="slpv-stage"><canvas class="slpv-canvas"></canvas></div>
           <div class="slpv-controls">
             <button class="btn btn-wood btn-sm slpv-play" disabled>Play</button>
-            <label class="slpv-label">FPS <input type="range" class="slpv-fps" min="1" max="30" value="${st.fps}"><span class="slpv-fps-label">${st.fps}</span></label>
-            <label class="slpv-label">Frames per direction <input type="number" class="slpv-perdir form-input" min="0" max="999" value="0" title="0 = one animation of all frames"></label>
-            <select class="slpv-dir form-input" hidden></select>
             <input type="range" class="slpv-scrub" min="0" max="0" value="0" step="1">
             <span class="slpv-frame-label"></span>
+            <div class="sc-more-wrap">
+              <button type="button" class="btn btn-ghost btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false">Timing &#9662;</button>
+              <div class="sc-more-menu slpv-timing-menu" hidden>
+                <label class="slpv-label">FPS <input type="range" class="slpv-fps" min="1" max="30" value="${st.fps}"><span class="slpv-fps-label">${st.fps}</span></label>
+                <label class="slpv-label">Frames / dir <input type="number" class="slpv-perdir form-input" min="0" max="999" value="0" title="0 = one animation of all frames"></label>
+                <select class="slpv-dir form-input" hidden></select>
+              </div>
+            </div>
           </div>
-          <p class="slpv-info">Pick a sprite on the left to look at it.</p>
+          <p class="slpv-info">Pick a sprite on the left to inspect it.</p>
         </section>
       </div>`;
     st.root = root;
@@ -556,6 +566,7 @@
       SlpCreator.open({
         title: opts.title || 'New sprite from PNG',
         kind: opts.kind || 'sprite',
+        file: opts.file,
         frames: opts.frames,
         directions: opts.directions,
         onCancel: () => resolve(null),

@@ -72,7 +72,11 @@ static int is_computer(void *p) { return p && RD32(p, 0x8) == 3; }
 
 // 1: this machine sends commands for player `pid`, 0: another machine does.
 static int g_local_ctx;   // set while UI click handlers run: only this machine runs them
+static int g_dev_ctx;     // set while DevPanel / console runs a command
+extern int wl_is_multiplayer(void);
+extern int wl_cheats_enabled(void);
 void wl_cmd_set_local_ctx(int on) { g_local_ctx = on; }
+void wl_cmd_set_dev_ctx(int on) { g_dev_ctx = on; }
 static int i_send_for(void *w, int pid) {
     int n, me = (int)RD32(w, 0x174);
     if (g_local_ctx) return player_obj(w, pid, NULL) != NULL;
@@ -91,6 +95,7 @@ static int i_send_for(void *w, int pid) {
 static BYTE *begin(int pid, int size, void **w_out, int *rc) {
     void *w = world();
     *rc = -1;
+    if (g_dev_ctx && wl_is_multiplayer() && !wl_cheats_enabled()) return NULL;
     if (!w || !RDP(w, 0xc0) || !player_obj(w, pid, NULL)) return NULL;
     if (!i_send_for(w, pid)) { *rc = 0; return NULL; }
     BYTE *pkt = ((Calloc_t)0x8ea479)(1, (size_t)size);

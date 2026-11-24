@@ -40,50 +40,80 @@ static struct {
     DeflateBound_t deflate_bound;
 } z;
 
+static volatile LONG g_z_lock;
+
 static BOOL load_zlib(void) {
     if (z.inflate) return TRUE;
-    HMODULE m = GetModuleHandleA("zlibwapi.dll");
-    if (!m) m = LoadLibraryA("zlibwapi.dll");
-    if (!m) return FALSE;
-    z.inflate_init2 = (InflateInit2_t)GetProcAddress(m, "inflateInit2_");
-    z.inflate = (Inflate_t)GetProcAddress(m, "inflate");
-    z.inflate_end = (InflateEnd_t)GetProcAddress(m, "inflateEnd");
-    z.deflate_init2 = (DeflateInit2_t)GetProcAddress(m, "deflateInit2_");
-    z.deflate = (Deflate_t)GetProcAddress(m, "deflate");
-    z.deflate_end = (DeflateEnd_t)GetProcAddress(m, "deflateEnd");
-    z.deflate_bound = (DeflateBound_t)GetProcAddress(m, "deflateBound");
-    return z.inflate_init2 && z.inflate && z.inflate_end && z.deflate_init2 &&
-           z.deflate && z.deflate_end && z.deflate_bound;
+    while (InterlockedCompareExchange(&g_z_lock, 1, 0) != 0) Sleep(0);
+    if (!z.inflate) {
+        HMODULE m = GetModuleHandleA("zlibwapi.dll");
+        if (!m) m = LoadLibraryA("zlibwapi.dll");
+        if (m) {
+            InflateInit2_t ii = (InflateInit2_t)GetProcAddress(m, "inflateInit2_");
+            Inflate_t      inf = (Inflate_t)GetProcAddress(m, "inflate");
+            InflateEnd_t   ie = (InflateEnd_t)GetProcAddress(m, "inflateEnd");
+            DeflateInit2_t di = (DeflateInit2_t)GetProcAddress(m, "deflateInit2_");
+            Deflate_t      def = (Deflate_t)GetProcAddress(m, "deflate");
+            DeflateEnd_t   de = (DeflateEnd_t)GetProcAddress(m, "deflateEnd");
+            DeflateBound_t db = (DeflateBound_t)GetProcAddress(m, "deflateBound");
+            if (ii && inf && ie && di && def && de && db) {
+                z.inflate_init2 = ii;
+                z.inflate_end = ie;
+                z.deflate_init2 = di;
+                z.deflate = def;
+                z.deflate_end = de;
+                z.deflate_bound = db;
+                InterlockedExchangePointer((PVOID volatile *)&z.inflate, (PVOID)inf);
+            }
+        }
+    }
+    InterlockedExchange(&g_z_lock, 0);
+    return z.inflate != NULL;
 }
 
 // window bits -15 = raw deflate stream, no zlib header (that is the dat format).
-static int inflate_raw(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len) {
+int wl_game_inflate_raw_bounded(const unsigned char *in, size_t in_len, size_t max_out,
+                                unsigned char **out, size_t *out_len) {
     if (!load_zlib()) return -1;
     ZStream s;
     memset(&s, 0, sizeof s);
     if (z.inflate_init2(&s, -15, "1.2.7", sizeof s) != Z_OK) return -1;
-    size_t cap = in_len * 8 + 1024, len = 0;
+    size_t cap = in_len * 4;
+    if (cap < 4096) cap = 4096;
+    if (max_out > 0 && cap > max_out) cap = max_out;
+    if (max_out == 0) cap = 64;
+    size_t len = 0;
     unsigned char *buf = malloc(cap);
+    if (!buf) { z.inflate_end(&s); return -1; }
     s.next_in = in;
     s.avail_in = (unsigned)in_len;
     int rc = Z_OK;
     while (buf && rc == Z_OK) {
         if (len == cap) {
-            unsigned char *bigger = realloc(buf, cap * 2);
+            if (len >= max_out) { free(buf); buf = NULL; break; }
+            size_t next_cap = cap * 2;
+            if (next_cap < cap || next_cap > max_out) next_cap = max_out;
+            unsigned char *bigger = realloc(buf, next_cap);
             if (!bigger) { free(buf); buf = NULL; break; }
             buf = bigger;
-            cap *= 2;
+            cap = next_cap;
         }
+        size_t space = (max_out == 0) ? cap : (cap - len);
         s.next_out = buf + len;
-        s.avail_out = (unsigned)(cap - len);
+        s.avail_out = (unsigned)space;
         rc = z.inflate(&s, Z_NO_FLUSH);
         len = cap - s.avail_out;
+        if (len > max_out) { free(buf); buf = NULL; break; }
     }
     z.inflate_end(&s);
-    if (!buf || rc != Z_STREAM_END) { free(buf); return -1; }
+    if (!buf || rc != Z_STREAM_END || len > max_out) { free(buf); return -1; }
     *out = buf;
     *out_len = len;
     return 0;
+}
+
+static int inflate_raw(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len) {
+    return wl_game_inflate_raw_bounded(in, in_len, 256u * 1024u * 1024u, out, out_len);
 }
 
 static int deflate_raw(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len) {

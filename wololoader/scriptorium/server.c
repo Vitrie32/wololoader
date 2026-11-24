@@ -56,6 +56,7 @@ static const char *get_status_text(int status) {
         case 409: return "Conflict";
         case 413: return "Payload Too Large";
         case 500: return "Internal Server Error";
+        case 502: return "Bad Gateway";
         default:  return "Response";
     }
 }
@@ -81,8 +82,25 @@ void http_response_set_binary(HttpResponse *res, int status, const char *content
 }
 
 void http_response_error(HttpResponse *res, int status, const char *msg) {
-    char buf[512];
-    snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", msg ? msg : "An error occurred");
+    const char *src = msg ? msg : "An error occurred";
+    char buf[1024];
+    size_t o = (size_t)snprintf(buf, sizeof(buf), "{\"error\":\"");
+    for (const char *p = src; *p && o + 8 < sizeof(buf); p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') {
+            buf[o++] = '\\';
+            buf[o++] = (char)c;
+        } else if (c == '\n') {
+            buf[o++] = '\\'; buf[o++] = 'n';
+        } else if (c == '\r') {
+            buf[o++] = '\\'; buf[o++] = 'r';
+        } else if (c == '\t') {
+            buf[o++] = '\\'; buf[o++] = 't';
+        } else if (c >= 0x20) {
+            buf[o++] = (char)c;
+        }
+    }
+    snprintf(buf + o, sizeof(buf) - o, "\"}");
     http_response_set_json(res, status, buf);
 }
 

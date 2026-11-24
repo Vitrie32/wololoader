@@ -24,7 +24,7 @@ typedef void (__thiscall *SetTextFlag_t)(void *screen, int flag);
 typedef void (__thiscall *ApplyStyle_t)(void *screen, void *panel);
 
 static MainMenuCtor_t g_orig_ctor;
-static char g_label[96];
+static char g_label[256];
 static void *g_label_panel;   // last main menu label (for wl_menu_set_label)
 
 static void add_label(void *screen) {
@@ -52,7 +52,7 @@ static void add_label(void *screen) {
     ((SetTextFlag_t)ADDR_SET_TEXT_FLAG)(screen, 0);
 
     void *panel = ((AddTextPanel_t)ADDR_ADD_TEXT_PANEL)(
-        screen, screen, g_label, 10, height - 28, 360, 20, fonts, 1, 0, 0, -1, 0);
+        screen, screen, g_label, 10, height - 28, 700, 20, fonts, 1, 0, 0, -1, 0);
     g_label_panel = panel;
     if (panel) {
         ((ApplyStyle_t)ADDR_APPLY_STYLE)(screen, panel);
