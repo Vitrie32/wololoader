@@ -7,6 +7,7 @@
 //     The mod folder mirrors the game's resources\ tree. If several mods ship
 //     the same file, the mod that comes later in the mods list wins.
 #include "wololoader.h"
+#include "datbuild.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,6 +129,29 @@ static void tbl_free(WlAssetTable *t) {
     t->count = 0;
 }
 
+// Sprites renumbered because two enabled mods ship the same new id
+// (wl_slp_remap_compute in datbuild.c, the same table the dat builder uses):
+// while indexing mod g_remap_mod, "_common\drs\graphics\<from>.slp" is
+// stored as "<to>.slp", so the first mod keeps <from> and nothing clashes.
+static WlSlpRemap *g_remap;
+static size_t g_remap_n;
+static const char *g_remap_mod;
+
+static void remap_key(char *key) {
+    static const char pre[] = "_common\\drs\\graphics\\";
+    if (!g_remap_mod || strncmp(key, pre, sizeof pre - 1) != 0) return;
+    const char *name = key + sizeof pre - 1;
+    char *end;
+    long n = strtol(name, &end, 10);
+    if (end == name || strcmp(end, ".slp") != 0) return;
+    for (size_t i = 0; i < g_remap_n; i++) {
+        if (g_remap[i].from == n && _stricmp(g_remap[i].mod, g_remap_mod) == 0) {
+            snprintf(key, MAX_PATH, "%s%d.slp", pre, g_remap[i].to);
+            return;
+        }
+    }
+}
+
 // Walk <dir> recursively; `rel` is the key prefix ("" at resources\ itself).
 static void index_dir(WlAssetTable *t, const char *dir, const char *rel, int depth) {
     if (depth > 12) return;
@@ -142,7 +166,7 @@ static void index_dir(WlAssetTable *t, const char *dir, const char *rel, int dep
         snprintf(full, MAX_PATH, "%s\\%s", dir, fd.cFileName);
         snprintf(key, MAX_PATH, "%s%s%s", rel, rel[0] ? "\\" : "", fd.cFileName);
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) index_dir(t, full, key, depth + 1);
-        else { normalize(key); tbl_put(t, key, full); }
+        else { normalize(key); remap_key(key); tbl_put(t, key, full); }
     } while (FindNextFileA(h, &fd));
     FindClose(h);
 }
@@ -179,13 +203,26 @@ static void populate_asset_table(WlAssetTable *t) {
     char own[MAX_PATH];
     snprintf(own, MAX_PATH, "%s\\resources", g_wl.root);
     index_dir(t, own, "", 0);
+
+    char drs[MAX_PATH], mods[MAX_PATH];
+    snprintf(drs, MAX_PATH, "%s\\resources\\_common\\drs", g_wl.game_dir);
+    snprintf(mods, MAX_PATH, "%s\\mods", g_wl.root);
+    free(g_remap);
+    g_remap = NULL;
+    g_remap_n = 0;
+    if (wl_slp_remap_compute(drs, mods, &g_remap, &g_remap_n) != 0) { g_remap = NULL; g_remap_n = 0; }
+    for (size_t i = 0; i < g_remap_n; i++)
+        wl_log("sprites: %s graphics\\%d.slp clashes with another mod, used as %d.slp", g_remap[i].mod, g_remap[i].from, g_remap[i].to);
+
     for (int i = 0; i < g_wl.listed_count; i++) {
         const WlMod *m = &g_wl.mods[i];
         if (!m->enabled) continue;
         char res[MAX_PATH];
         snprintf(res, MAX_PATH, "%s\\resources", m->dir);
         unsigned before = t->count;
+        g_remap_mod = m->id;
         index_dir(t, res, "", 0);
+        g_remap_mod = NULL;
         add_mod_taunts(t, m->dir);
         if (t->count != before) wl_log("asset override: %s ships %u file(s)", m->id, t->count - before);
     }

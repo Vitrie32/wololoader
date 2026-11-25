@@ -1,7 +1,7 @@
 CC      = i686-w64-mingw32-gcc
 CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc
 LDFLAGS = -shared -static -Wl,--enable-stdcall-fixup -Wl,--kill-at -lshell32 -lgdi32 -luser32 -lole32 -lwindowscodecs -luuid -lwinhttp
-SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/autostart.c src/civs.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/ui_hub.c src/hubcore.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/mpcheck.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/buildpage.c src/iconmerge.c src/taunts.c src/history.c src/victory.c src/hotreload.c src/proxy_version.S
+SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/autostart.c src/civs.c src/gamemodes.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/modsettings.c src/ui_hub.c src/hubcore.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/mpcheck.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/resources.c src/resbar.c src/buildpage.c src/iconmerge.c src/taunts.c src/history.c src/victory.c src/hotreload.c src/proxy_version.S
 
 # Embedded Lua 5.4 (third_party/lua, unmodified). Only the core and the safe
 # libraries: no lua.c/luac.c, no linit.c (script.c opens libs itself), no
@@ -48,7 +48,7 @@ build/kind.$(BUILD_KIND):
 	rm -f build/kind.*
 	touch $@
 
-build/version.dll: build/kind.$(BUILD_KIND) $(SRC) $(LUA_OBJ) build/wl_icon.o src/wololoader.h src/datbuild.h src/json.h src/hubcore.h src/version.def
+build/version.dll: build/kind.$(BUILD_KIND) $(SRC) $(LUA_OBJ) build/wl_icon.o src/wololoader.h src/datbuild.h src/json.h src/hubcore.h src/modsettings.h src/version.def
 	mkdir -p build
 	$(CC) $(CFLAGS) -I$(LUA_DIR) -o $@ $(SRC) $(LUA_OBJ) build/wl_icon.o src/version.def $(LDFLAGS)
 
@@ -84,9 +84,8 @@ install: build/version.dll build/Scriptorium.exe
 	# Remove leftover old shipped DevPanel mod only if mod.json matches the original shipped one
 	@python3 -c 'import json, os, shutil, sys; d = os.path.join(sys.argv[1], "wololoader", "mods", "DevPanel"); p = os.path.join(d, "mod.json"); info = None; exec("try:\n with open(p, encoding=\"utf-8\") as f: info = json.load(f)\nexcept Exception: pass"); (shutil.rmtree(d), print("Removed legacy DevPanel mod:", d)) if isinstance(info, dict) and info.get("name") == "Dev Panel" and info.get("author") == "ali" else None' "$(GAME)"
 	# Icons drawn over the Mods screen buttons and mod rows (ui_mods.c loads <game>\wololoader\ui\<name>.png)
-	mkdir -p build/ui "$(GAME)/wololoader/ui"
-	# One PNG per shown size (name_SIZE.png): the drawables are not scaled in ui_mods.c (see ui_icon).
-	for f in art/ui/*.svg; do for s in 28 22 20 18; do rsvg-convert -w $$s -h $$s "$$f" -o build/ui/$$(basename "$$f" .svg)_$$s.png || exit 1; done; done
+	mkdir -p "$(GAME)/wololoader/ui"
+	$(MAKE) ui-icons
 	cp build/ui/*.png "$(GAME)/wololoader/ui/"
 
 # Release installers (needs `make install` once: the Mods button images come from the game folder).
@@ -100,8 +99,14 @@ build/wlsetup_stub.exe: installer/wlsetup.c build/setup_res.o src/wololoader.h
 	$(CC) -O2 -Wall -Wextra -std=c11 -municode -mwindows -DWL_VERSION='"$(VERSION)"' -o $@ $(filter %.c %.o,$^) -static -lcomctl32 -lshell32 -lole32 -ladvapi32
 	i686-w64-mingw32-strip $@
 
-release: build/version.dll build/Scriptorium.exe build/wlsetup_stub.exe installer/install.sh.in tools/package.py
+release: build/version.dll build/Scriptorium.exe build/wlsetup_stub.exe installer/install.sh.in tools/package.py ui-icons
 	python3 -I tools/package.py "$(VERSION)" "$(GAME)" build/release build/wlsetup_stub.exe
+
+# Mods screen icons: one PNG per shown size (name_SIZE.png); the drawables are not scaled in
+# ui_mods.c (see ui_icon). Needed by install AND release (0.6.0 almost shipped without them).
+ui-icons:
+	mkdir -p build/ui
+	for f in art/ui/*.svg; do for s in 28 22 20 18; do rsvg-convert -w $$s -h $$s "$$f" -o build/ui/$$(basename "$$f" .svg)_$$s.png || exit 1; done; done
 
 uninstall:
 	rm -f "$(GAME)/version.dll"
@@ -110,4 +115,4 @@ uninstall:
 clean:
 	rm -rf build
 
-.PHONY: all scriptorium install uninstall clean release
+.PHONY: all scriptorium install uninstall clean release ui-icons

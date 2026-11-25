@@ -1,0 +1,44 @@
+{
+  "name": "Age of Miracles",
+  "version": "1.0",
+  "author": "Wololoader",
+  "description": "Adds the Age of Miracles lobby game mode. Monks generate Faith every 10 seconds, spent at the Monastery on Miracles (Bountiful Harvest, Holy Warriors, Plague, Divine Favour). First player to reach the Faith target wins!",
+  "enabled": true,
+  "resources": [
+    {
+      "id": "miracle_faith",
+      "name": "Faith",
+      "icon": "icons/faith.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "description": "Generated every 10 seconds by Monks (+1) and Monks with Relics (+3). Spend at the Monastery or reach the target to win."
+    }
+  ],
+  "game_modes": [
+    {
+      "id": "age_of_miracles",
+      "name": "Age of Miracles",
+      "description": "Monks generate Faith over time. Cast Miracles from the Monastery command panel (Page 2), or be the first to reach the Faith target for victory!",
+      "script_event": true
+    }
+  ],
+  "settings": [
+    {
+      "id": "faith_target",
+      "name": "Faith victory target",
+      "type": "number",
+      "min": 1000,
+      "max": 5000,
+      "step": 250,
+      "default": 2000
+    },
+    {
+      "id": "cost_scale",
+      "name": "Miracle cost multiplier",
+      "type": "choice",
+      "choices": ["Cheap", "Normal", "Expensive"],
+      "default": "Normal"
+    }
+  ]
+}

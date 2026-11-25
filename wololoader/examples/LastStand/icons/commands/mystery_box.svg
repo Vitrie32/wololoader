@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#4e3616"/><stop offset="100%" stop-color="#221608"/></linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#fff099"/><stop offset="100%" stop-color="#d49419"/></linearGradient>
+    <linearGradient id="steel" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#dfe6ee"/><stop offset="100%" stop-color="#6b7785"/></linearGradient>
+    <linearGradient id="oak" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#c98b44"/><stop offset="100%" stop-color="#784618"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bg)" stroke="#160e05" stroke-width="1.8"/>
+  <rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+  <!-- glow -->
+  <circle cx="18" cy="17" r="12" fill="#ffd966" fill-opacity="0.22"/>
+  <!-- opened chest -->
+  <path d="M7 15 L9 8 L27 8 L29 15 Z" fill="url(#oak)" stroke="#1b1106" stroke-width="1.4" stroke-linejoin="round"/>
+  <rect x="7" y="15" width="22" height="13" rx="1.5" fill="url(#oak)" stroke="#1b1106" stroke-width="1.5"/>
+  <rect x="9.5" y="15" width="3" height="13" fill="#6b7785" stroke="#1b1106" stroke-width="1"/>
+  <rect x="23.5" y="15" width="3" height="13" fill="#6b7785" stroke="#1b1106" stroke-width="1"/>
+  <rect x="15.8" y="17" width="4.4" height="5" rx="0.8" fill="url(#gold)" stroke="#1b1106" stroke-width="1.1"/>
+  <!-- question mark -->
+  <path d="M14.5 13 C14.5 9.5 21.5 9.5 21.5 12.6 C21.5 14.6 18 14.6 18 17" fill="none" stroke="#1b1106" stroke-width="3.6" stroke-linecap="round"/>
+  <path d="M14.5 13 C14.5 9.5 21.5 9.5 21.5 12.6 C21.5 14.6 18 14.6 18 17" fill="none" stroke="#fff099" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="18" cy="20" r="1.8" fill="#fff099" stroke="#1b1106" stroke-width="1"/>
+</svg>

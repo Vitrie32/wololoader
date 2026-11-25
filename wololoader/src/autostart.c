@@ -105,6 +105,7 @@ typedef struct {
     int visibility;    // 0=Normal, 1=Explored, 2=All Visible
     int cheats;        // 0 or 1
     int auto_launch;   // 1 = click Start automatically, 0 = stop on GameSetupScreen
+    int game_mode;     // -1 = leave as is, else a mode id (custom modes via their key, gamemodes.c)
 } AutostartCfg;
 
 // Case-insensitive match ignoring spaces, underscores, and hyphens.
@@ -296,6 +297,18 @@ static int parse_autostart_json(const char *text, AutostartCfg *cfg) {
     cfg->ai_civ      = CIV_RANDOM;
     cfg->difficulty  = parse_difficulty(wl_json_get(root, "difficulty"));
     cfg->resources   = parse_resources(wl_json_get(root, "resources"));
+    // "game_mode": a custom mode key ("last_stand") or a vanilla mode number (0 = Random Map).
+    cfg->game_mode = -1;
+    {
+        const WlJsonVal *gm = wl_json_get(root, "game_mode");
+        const char *gk = wl_json_str(gm, NULL);
+        if (gk) {
+            cfg->game_mode = wl_gamemode_id_by_key(gk);
+            if (cfg->game_mode < 0) wl_log("autostart: unknown game_mode '%s' (ignored)", gk);
+        } else if (gm && gm->type == WL_JSON_NUMBER && gm->u.num.ival >= 0 && gm->u.num.ival <= 11) {
+            cfg->game_mode = (int)gm->u.num.ival;
+        }
+    }
     cfg->visibility  = parse_visibility(wl_json_get(root, "reveal_map"));
     cfg->cheats      = 1;
     cfg->auto_launch = 1;
@@ -448,6 +461,10 @@ static void launch_sp_game(const AutostartCfg *cfg) {
     ((SettingsInt_t)ADDR_SETTINGS_SET_RMAP)(settings, -3);            // +0x94 mResolvedMapType (-3 = resolve at launch)
     *(int *)((char *)settings + 0x90) = cfg->map_size;                // mMapSize
     *(int *)((char *)settings + 0xa0) = cfg->resources;               // mResourceLevel
+    // GameSettings::set_game_mode 0x6133c0 (__thiscall(settings, int mode), ret 4; gamemodes.c hooks
+    // it and accepts custom ids), so the scenario flag the setter clears stays consistent.
+    if (cfg->game_mode >= 0)
+        ((void (__thiscall *)(void *, int))0x6133c0)(settings, cfg->game_mode);
     *(int *)((char *)settings + 0x9c) = cfg->visibility;              // mVisibility
     *(BYTE *)((char *)settings + 0x40f) = (BYTE)(cfg->cheats ? 1 : 0);// mCheatsEnabled
     *(int *)((char *)settings + 0x408) = 0;                           // isMultiPlayer = 0

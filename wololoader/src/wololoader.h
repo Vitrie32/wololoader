@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.5.0"
+#define WOLOLOADER_VERSION "0.6.0"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -52,6 +52,7 @@ extern char g_wl_build_error[512];
 // ui_mods.c
 void wl_install_mods_screen(void);
 void wl_mods_return_from_hub(int mods_changed);
+void wl_mods_check_updates(void);   // background Mod Hub check for the update badges
 int wl_mods_is_readonly_open(void);
 
 // ui_hub.c
@@ -104,6 +105,17 @@ int wl_civs_reload_tables(int *old_ids, int *old_n, int *new_ids, int *new_n);
 int wl_civs_reconcile_registry(void);
 const char *wl_civ_get_sound(int civ_id);
 const char *wl_civ_get_victory_sound(int civ_id);
+void wl_civs_set_mode_string(int slot, const char *text);
+
+// gamemodes.c: custom lobby game modes (relocated GameMode table, ids 12..63)
+#define WL_MODE_VANILLA_COUNT 12
+#define WL_MODE_CAP           64   // 0x40; <= 127 (signed imm8 in 6a XX) and <= 255 (uint8 in saves)
+#define WL_MODE_MAX_CUSTOM    (WL_MODE_CAP - WL_MODE_VANILLA_COUNT)
+#define WL_MODE_SID_BASE      9200000
+void wl_install_gamemodes(void);
+const char *wl_gamemode_key_by_id(int mode_id);
+const char *wl_gamemode_current_key(void);
+int wl_gamemode_id_by_key(const char *key);   // custom mode key -> mode id, -1 if unknown
 
 // hotreload.c: Level 2 mod hot reload at the main menu (World == NULL)
 void wl_install_hotreload(void);
@@ -140,6 +152,38 @@ void wl_script_frame(DWORD now_ms);
 // New game / game screen gone: drops all timers, waiting coroutines and open asks.
 void wl_script_game_reset(DWORD now_ms);
 void wl_script_set_sound(void (*sound)(int id));
+// resources.c: custom resources registry (cache\resources.txt), <cost> tooltip & error text hooks
+#define WL_CUSTOM_RES_FIRST 211
+#define WL_CUSTOM_RES_MAX   32766
+typedef struct {
+    int id;                 // numeric id >= 211
+    char mod[64];           // declaring mod folder
+    char key[65];           // short key (e.g. "faith")
+    char name[129];         // display name (e.g. "Faith")
+    char icon[MAX_PATH];    // absolute path to icon PNG, or empty
+    char icon_rel[257];     // relative icon path from mod.json
+    float start;
+    float max;              // 0 = no cap
+    int show;               // 1 = show in top bar
+    char description[256];
+} WlResourceDef;
+
+void wl_install_resources(void);
+void wl_resources_ensure(void);          // lazy load cache\resources.txt (after wl_civs_ensure)
+void wl_resources_reload(void);          // reload cache\resources.txt
+const WlResourceDef *wl_resources_list(int *out_count);
+const WlResourceDef *wl_resource_by_id(int id);
+int wl_resource_resolve(const char *key, const char *prefer_mod);
+
+// resbar.c: custom resource top-bar HUD + "Show all" panel (driven by uikit.c)
+int  wl_resbar_active(void);
+#ifdef _WIN32
+void wl_resbar_paint(void *screen, HDC dc, const RECT *scr);
+void wl_resbar_paint_passive(void *screen, HDC dc, const RECT *scr);   // under menus: no panel/hover
+int  wl_resbar_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp, int active, int scr_w, int scr_h);
+#endif
+void wl_resbar_reset(void);
+
 // Read-only game state for Lua (gameapi.c; script.c uses it through this table)
 typedef struct { int id; float x, y; int cls; int building; int type; int owner; int state; } WlUnitInfo;  // state: [unit+0x4c], 2 = ready (a building: finished)
 typedef struct {
@@ -157,6 +201,17 @@ typedef struct {
     double (*game_time)(void);                   // game time in seconds, -1 = no game
     int (*set_age)(int pid, int age);
     int (*researched)(int pid, short *out, int max);   // ids of the techs the player has researched
+    int (*move_unit)(int unit_id, float x, float y);   // walk to a map tile (game move command)
+    int (*units_of_type)(int pid, int type, WlUnitInfo *out, int max);   // the whole list, one unit type
+    int (*spawn_neutral)(int pid, int type, float x, float y);       // like spawn, never captured
+    int (*set_resource)(int pid, int res, float amount);             // 12-byte marked 0x05 set-resource packet
+    const WlResourceDef *(*resources_list)(int *out_count);          // custom resources from cache/resources.txt
+    int (*resource_resolve)(const char *key, const char *prefer_mod);// resolve key/name to numeric id or -1
+    const char *(*game_mode)(void);                                  // current custom mode key, or NULL for vanilla
+    int (*win_player)(int pid, int team);                            // marked 0x05 win packet (team: 0 solo, 1 team)
+    int (*defeat_player)(int pid);                                   // marked 0x05 defeat packet
+    int (*player_civ)(int pid);                                      // civ id of a player, -1 if none
+    int (*attack_unit)(int unit_id, int target_id);                  // game order (attack) command
 } WlGameApi;
 void wl_script_set_game(const WlGameApi *api);
 const WlGameApi *wl_game_api(void);
@@ -203,18 +258,28 @@ void wl_install_overflow(void);
 BOOL wl_overflow_exec(void *orig, void *proc, unsigned char *pkt);   // overflow.c, called by gamecmd.c
 void wl_install_gamecmd(void);
 int wl_cmd_add_resource(int pid, int res, float amount);
+int wl_cmd_set_resource(int pid, int res, float amount);
 int wl_cmd_research(int pid, int tech);
 int wl_cmd_spawn(int pid, int type, float x, float y);
 int wl_cmd_delete(int unit_id);
+int wl_cmd_move(int unit_id, float x, float y);
+int wl_cmd_attack(int unit_id, int target_id);   // game order command 0 (gamecmd.c)
+int wl_cmd_spawn_neutral(int pid, int type, float x, float y);   // never captured by players (gamecmd.c)   // game move command 3 (gamecmd.c)
 int wl_cmd_set_age(int pid, int age);
+int wl_cmd_win(int pid, int team);
+int wl_cmd_defeat(int pid);
 void wl_gamecmd_frame(void);   // sends Lua commands queued over the 100/s rate
 void wl_cmd_set_local_ctx(int on);
 // uikit.c: Lua on-screen UI
 void wl_install_uikit(void);
 void wl_install_buildpage(void);   // buildpage.c: villager mod buildings page
+void wl_buildpage_refresh(void);   // buildpage.c: refresh active building command panel (0x6c6490)
 void wl_icons_build(void);          // iconmerge.c: append mod icons to interface SLPs
 int wl_icon_index(const char *sheet, const char *name);
+int wl_cmd_icon_index(const char *mod, const char *name);  // iconmerge.c: <mod>/icons/commands/<name>.png -> 50721 frame
 #define WL_MAX_BLDG_CMDS 128
+#define WL_MAX_RT_CMDS 64
+#define WL_RT_CMD_SID_BASE 9100000
 typedef struct { int civ, building, button, icon, help; char name[64]; } WlLuaButton;
 typedef struct {
     int civ;
@@ -229,8 +294,28 @@ typedef struct {
     char cond_action[16];   // "disable" or "hide"
     char cond_name[64];     // condition name registered in Lua
 } WlBuildingCmd;
+typedef struct {
+    int used;
+    int civ;                // -1 = any civ, or specific civ id
+    int building;           // master unit id (e.g. 84 Market, 109 Town Center)
+    int page;               // 1-based command page (default 1)
+    int button;             // 1..15 (slot = button - 1)
+    int icon;               // frame index in 50721.slp
+    int help_sid;           // WL_RT_CMD_SID_BASE + slot index
+    DWORD gen;              // monotonic generation passed as sub_id to 0x6c9200
+    char name[64];          // command handler name (Game.OnCommand)
+    char cond_action[16];   // "disable" or "hide"
+    char cond_name[64];     // condition name (defaults to name)
+    char mod[64];           // owning mod id
+} WlRuntimeCmd;
 const WlLuaButton *wl_lua_buttons(int *n);   // civs.c: Lua buttons of mod buildings (cache\\commands.txt)
 const WlBuildingCmd *wl_building_commands(int *n);
+const WlRuntimeCmd *wl_rt_commands(int *n);  // script.c: runtime Game.AddCommand table (length WL_MAX_RT_CMDS)
+void wl_script_set_rt_cmd_string_fn(void (*fn)(int slot, const char *text, const char *help));
+void wl_script_set_buildpage_refresh(void (*fn)(void));
+void wl_script_set_local_ctx_fn(void (*fn)(int on));
+void wl_script_set_cmd_icon_fn(int (*fn)(const char *mod, const char *name));
+int wl_script_reload_mod(const char *mod_id, char *err_out, size_t err_cap);
 void wl_script_command(const char *name, int unit_id);   // script.c: Game.OnCommand handlers
 void wl_script_cond_begin_refresh(int unit_id);
 void wl_script_cond_end_refresh(void);

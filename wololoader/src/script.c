@@ -31,6 +31,7 @@
 #endif
 #endif
 #include "wololoader.h"
+#include "modsettings.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -113,18 +114,24 @@ static void budget_start(lua_State *L) {
 static int api_raw_local(lua_State *L);
 static int api_raw_count(lua_State *L);
 static int api_raw_resource(lua_State *L);
+static int api_raw_resolve_resource(lua_State *L);
+static int api_raw_resources(lua_State *L);
 static int api_raw_is_enemy(lua_State *L);
 static int api_raw_units(lua_State *L);
 static int api_raw_cmd(lua_State *L);
 static int api_raw_selected(lua_State *L);
 static int api_raw_researched(lua_State *L);
 static int api_raw_time(lua_State *L);
+static int api_raw_mode(lua_State *L);
 static int api_raw_ui_create(lua_State *L);
 static int api_raw_ui_set(lua_State *L);
 static int api_raw_ui_destroy(lua_State *L);
 static int api_raw_ui_text(lua_State *L);
 static int api_raw_set_cond(lua_State *L);
+static int api_raw_add_command(lua_State *L);
+static int api_raw_remove_command(lua_State *L);
 static int api_raw_unit_by_id(lua_State *L);
+static int api_raw_player_civ(lua_State *L);
 static int api_raw_is_multiplayer(lua_State *L);
 static int api_raw_cheats_enabled(lua_State *L);
 static int api_feature(lua_State *L);
@@ -142,6 +149,10 @@ static int (*g_cheats_on)(void);
 static BOOL (*g_feature_fn)(const char *);
 static void (*g_set_dev_ctx)(int);
 static int (*g_reload_mods_fn)(char *msg, size_t cap);
+static void (*g_rt_cmd_str_fn)(int slot, const char *text, const char *help);
+static void (*g_buildpage_refresh_fn)(void);
+static void (*g_set_local_ctx_fn)(int on);
+static int (*g_cmd_icon_fn)(const char *mod, const char *name);
 
 void wl_script_set_mp_info(int (*is_mp)(void), int (*cheats_on)(void)) {
     g_is_mp = is_mp;
@@ -150,6 +161,10 @@ void wl_script_set_mp_info(int (*is_mp)(void), int (*cheats_on)(void)) {
 void wl_script_set_feature(BOOL (*feature_fn)(const char *)) { g_feature_fn = feature_fn; }
 void wl_script_set_dev_ctx_fn(void (*set_dev_ctx)(int)) { g_set_dev_ctx = set_dev_ctx; }
 void wl_script_set_reload_mods(int (*fn)(char *msg, size_t cap)) { g_reload_mods_fn = fn; }
+void wl_script_set_rt_cmd_string_fn(void (*fn)(int slot, const char *text, const char *help)) { g_rt_cmd_str_fn = fn; }
+void wl_script_set_buildpage_refresh(void (*fn)(void)) { g_buildpage_refresh_fn = fn; }
+void wl_script_set_local_ctx_fn(void (*fn)(int on)) { g_set_local_ctx_fn = fn; }
+void wl_script_set_cmd_icon_fn(int (*fn)(const char *mod, const char *name)) { g_cmd_icon_fn = fn; }
 
 static int is_multiplayer(void) { return g_is_mp ? g_is_mp() : 0; }
 static int cheats_enabled(void) { return g_cheats_on ? g_cheats_on() : 0; }
@@ -180,14 +195,123 @@ static int guarded_pcall(lua_State *L, int nargs) {
 #define WL_MAX_TASKS  64
 #define WL_MAX_ASKS   16
 typedef struct { int used; int id; DWORD next, interval; int fn; char mod[64]; } WlTimer;
-typedef struct { int used; int ref; uint32_t seq; lua_State *co; DWORD wake; char mod[64]; } WlTask;
+typedef struct { int used; int ref; uint32_t seq; lua_State *co; DWORD wake; int local_ctx; char mod[64]; } WlTask;
 typedef struct { int used; int token; int fn; int nil_pending; char mod[64]; } WlAsk;
 static WlTimer g_timers[WL_MAX_TIMERS];
 static WlTask g_tasks[WL_MAX_TASKS];
 static WlAsk g_asks[WL_MAX_ASKS];
 static int g_next_timer_id = 1, g_next_ask_token = 1;
 static uint32_t g_next_task_seq = 1;
+static int g_in_local_cmd;
 static char g_err[512];                         // message of the last failed step
+
+// Runtime building command buttons registered via Game.AddCommand (main thread only;
+// tooltip strings are stored thread-safely in civs.c via g_rt_cmd_str_fn).
+static WlRuntimeCmd g_rt_cmds[WL_MAX_RT_CMDS];
+// Monotonic across hot reloads and restarts so 0x6c9200 never skips updating tooltips
+// when a reused slot keeps the same (cmd, icon) with new text/help.
+static DWORD g_rt_cmd_gen;
+
+const WlRuntimeCmd *wl_rt_commands(int *n) {
+    if (n) *n = WL_MAX_RT_CMDS;
+    return g_rt_cmds;
+}
+
+static int unload_mod_rt_cmds(const char *mod_id) {
+    int removed = 0;
+    for (int i = 0; i < WL_MAX_RT_CMDS; i++) {
+        if (g_rt_cmds[i].used && strcmp(g_rt_cmds[i].mod, mod_id) == 0) {
+            g_rt_cmds[i].used = 0;
+            if (g_rt_cmd_str_fn) g_rt_cmd_str_fn(i, NULL, NULL);
+            removed++;
+        }
+    }
+    return removed;
+}
+
+// Deduplication list for unknown Game.AddCommand icon names (each mod+name warns once).
+#define WL_MAX_WARNED_CMD_ICONS 64
+static struct { char mod[64]; char name[64]; } g_warned_cmd_icons[WL_MAX_WARNED_CMD_ICONS];
+static int g_warned_cmd_icons_count;
+
+static int str_ieq(const char *a, const char *b) {
+    while (*a && *b) {
+        unsigned char ca = (unsigned char)*a++, cb = (unsigned char)*b++;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return 0;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+// Resolves a PNG command icon name for `mod` through g_cmd_icon_fn (iconmerge.c in-memory table)
+// or by reading <root>/cache/cmdicons.txt ("<mod>\t<name>\t<frame>") when no callback is set.
+static int resolve_cmd_icon(const char *mod, const char *name) {
+    if (!mod || !mod[0] || !name || !name[0]) return -1;
+    size_t len = strlen(name);
+    if (len >= 4 && str_ieq(name + len - 4, ".png")) len -= 4;
+    if (len == 0 || len >= 64) return -1;
+    char stem[64];
+    for (size_t i = 0; i < len; i++) {
+        char c = name[i];
+        if (c == '/' || c == '\\' || c == '\t' || c == '\r' || c == '\n') return -1;
+        stem[i] = c;
+    }
+    stem[len] = '\0';
+    if (g_cmd_icon_fn) return g_cmd_icon_fn(mod, stem);
+    if (!g_wl.root[0]) return -1;
+    char path[MAX_PATH + 32];
+    snprintf(path, sizeof path, "%s" WL_SEP "cache" WL_SEP "cmdicons.txt", g_wl.root);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    char line[256];
+    int found = -1;
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        char *t1 = strchr(line, '\t');
+        if (!t1) continue;
+        *t1++ = '\0';
+        char *t2 = strchr(t1, '\t');
+        if (!t2) continue;
+        *t2++ = '\0';
+        if (strcmp(line, mod) == 0 && str_ieq(t1, stem)) {
+            char *end = NULL;
+            long frame = strtol(t2, &end, 10);
+            if (end && end != t2 && *end == '\0' && frame >= 0) {
+                found = (int)frame;
+                break;
+            }
+        }
+    }
+    fclose(f);
+    return found;
+}
+
+static void warn_unknown_cmd_icon_once(const char *mod, const char *name) {
+    for (int i = 0; i < g_warned_cmd_icons_count; i++) {
+        if (strcmp(g_warned_cmd_icons[i].mod, mod) == 0 &&
+            str_ieq(g_warned_cmd_icons[i].name, name))
+            return;
+    }
+    if (g_warned_cmd_icons_count < WL_MAX_WARNED_CMD_ICONS) {
+        snprintf(g_warned_cmd_icons[g_warned_cmd_icons_count].mod,
+                 sizeof g_warned_cmd_icons[0].mod, "%s", mod);
+        snprintf(g_warned_cmd_icons[g_warned_cmd_icons_count].name,
+                 sizeof g_warned_cmd_icons[0].name, "%s", name);
+        g_warned_cmd_icons_count++;
+    }
+    wl_log("[lua:%s] Game.AddCommand: unknown command icon '%s', falling back to frame 32", mod, name);
+}
+
+static void clear_all_rt_cmds(void) {
+    for (int i = 0; i < WL_MAX_RT_CMDS; i++) {
+        if (g_rt_cmds[i].used) {
+            g_rt_cmds[i].used = 0;
+            if (g_rt_cmd_str_fn) g_rt_cmd_str_fn(i, NULL, NULL);
+        }
+    }
+    g_warned_cmd_icons_count = 0;
+}
 
 typedef struct { int used; char mod[64]; char text[128]; } WlModCounter;
 static WlModCounter g_mod_counters[WL_MAX_MODS];
@@ -245,6 +369,7 @@ static int start_coroutine(lua_State *L, int nargs, const char *mod) {
         t->seq = g_next_task_seq++;
         t->co = co;
         t->wake = g_now + wait;
+        t->local_ctx = (g_in_local_cmd > 0);
         snprintf(t->mod, sizeof t->mod, "%s", mod);
         t->ref = luaL_ref(L, LUA_REGISTRYINDEX);  // pops the thread
     } else {
@@ -337,10 +462,18 @@ void wl_script_frame(DWORD now_ms) {
         lua_State *co = t->co;
         int ref = t->ref;
         uint32_t seq = t->seq;
+        int lctx = t->local_ctx;
         char mod[64];
         snprintf(mod, sizeof mod, "%s", t->mod);
         DWORD wait;
+        if (lctx) {
+            g_in_local_cmd++;
+            if (g_set_local_ctx_fn) g_set_local_ctx_fn(1);
+        }
         int st = task_step(co, 0, &wait);
+        if (lctx) {
+            if (--g_in_local_cmd == 0 && g_set_local_ctx_fn) g_set_local_ctx_fn(0);
+        }
         // task_step may have triggered wl_script_game_reset or mod reload (freeing t->ref).
         if (!t->used || t->co != co || t->ref != ref || t->seq != seq) continue;
         if (st == STEP_YIELD) { t->wake = now_ms + wait; continue; }
@@ -736,6 +869,47 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushstring(L, m->name);    lua_setfield(L, -2, "name");
     lua_pushstring(L, m->version); lua_setfield(L, -2, "version");
     lua_pushstring(L, m->dir);     lua_setfield(L, -2, "dir");
+    // MOD.settings = { <id> = value }: mod.json "settings" with the player's
+    // values from the Mods screen (modsettings.c). Changing one restarts the
+    // scripts through the hot reload, so a plain table is enough.
+    {
+        static WlSetting set[WL_MAX_SETTINGS];
+        int n = is_console ? 0 : wl_settings_load(m, set, WL_MAX_SETTINGS);
+        lua_createtable(L, 0, n);
+        for (int i = 0; i < n; i++) {
+            if (set[i].type == WL_SET_BOOL) lua_pushboolean(L, set[i].on);
+            else if (set[i].type == WL_SET_NUMBER) {
+                double v = set[i].num;   // whole numbers as Lua integers (50, not 50.0)
+                if (v == (double)(lua_Integer)v) lua_pushinteger(L, (lua_Integer)v);
+                else lua_pushnumber(L, v);
+            }
+            else lua_pushstring(L, set[i].choices[set[i].choice]);
+            lua_setfield(L, -2, set[i].id);
+        }
+        lua_setfield(L, -2, "settings");
+    }
+    // MOD.civs = { civ ids of this mod's civilizations } from cache\civs.txt ("cid\tbase\tname\tmod\tfile...",
+    // written by the dat builder), so scripts can act only for players of their own civ.
+    {
+        lua_createtable(L, 4, 0);
+        int n = 0;
+        char path[MAX_PATH];
+        snprintf(path, sizeof path, "%s\\cache\\civs.txt", g_wl.root);
+        FILE *cf = is_console ? NULL : fopen(path, "rb");
+        if (cf) {
+            char line[512];
+            while (fgets(line, sizeof line, cf)) {
+                int cid = atoi(line);
+                char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+                char *t3 = t2 ? strchr(t2 + 1, '\t') : NULL, *t4 = t3 ? strchr(t3 + 1, '\t') : NULL;
+                if (!t3 || !t4 || cid <= 0) continue;
+                *t4 = 0;
+                if (strcmp(t3 + 1, m->id) == 0) { lua_pushinteger(L, cid); lua_rawseti(L, -2, ++n); }
+            }
+            fclose(cf);
+        }
+        lua_setfield(L, -2, "civs");
+    }
     lua_setfield(L, env, "MOD");
 
     // wl API (per mod so wl.log / wl.on know who is calling)
@@ -756,6 +930,8 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_local);    lua_setfield(L, -2, "raw_local");
     lua_pushcfunction(L, api_raw_count);    lua_setfield(L, -2, "raw_player_count");
     lua_pushcfunction(L, api_raw_resource); lua_setfield(L, -2, "raw_resource");
+    PUSH_MOD_CFUNC(L, api_raw_resolve_resource, m->id); lua_setfield(L, -2, "raw_resolve_resource");
+    lua_pushcfunction(L, api_raw_resources); lua_setfield(L, -2, "raw_resources");
     lua_pushcfunction(L, api_raw_is_enemy); lua_setfield(L, -2, "raw_is_enemy");
     lua_pushcfunction(L, api_raw_units);    lua_setfield(L, -2, "raw_units");
     lua_pushboolean(L, is_dev);
@@ -763,6 +939,7 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_selected); lua_setfield(L, -2, "raw_selected");
     lua_pushcfunction(L, api_raw_researched); lua_setfield(L, -2, "raw_researched");
     lua_pushcfunction(L, api_raw_time);     lua_setfield(L, -2, "raw_time");
+    lua_pushcfunction(L, api_raw_mode);     lua_setfield(L, -2, "raw_mode");
     lua_pushcfunction(L, api_raw_is_multiplayer); lua_setfield(L, -2, "raw_is_multiplayer");
     lua_pushcfunction(L, api_raw_cheats_enabled); lua_setfield(L, -2, "raw_cheats_enabled");
     lua_pushstring(L, m->id);
@@ -775,7 +952,10 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushinteger(L, (lua_Integer)gen);
     lua_pushcclosure(L, api_raw_ui_text, 1);    lua_setfield(L, -2, "raw_ui_text");
     PUSH_MOD_CFUNC(L, api_raw_set_cond, m->id); lua_setfield(L, -2, "raw_set_cond");
+    PUSH_MOD_CFUNC(L, api_raw_add_command, m->id); lua_setfield(L, -2, "raw_add_command");
+    PUSH_MOD_CFUNC(L, api_raw_remove_command, m->id); lua_setfield(L, -2, "raw_remove_command");
     lua_pushcfunction(L, api_raw_unit_by_id); lua_setfield(L, -2, "raw_unit_by_id");
+    lua_pushcfunction(L, api_raw_player_civ); lua_setfield(L, -2, "raw_player_civ");
     lua_pushcfunction(L, api_reload);       lua_setfield(L, -2, "reload");
     lua_pushcfunction(L, api_reload_mods);  lua_setfield(L, -2, "reload_mods");
     if (is_base) {
@@ -805,6 +985,33 @@ static int api_raw_resource(lua_State *L) {
     else lua_pushnil(L);
     return 1;
 }
+static int api_raw_resolve_resource(lua_State *L) {
+    const char *mod = lua_tostring(L, lua_upvalueindex(1));
+    const char *key = luaL_checkstring(L, 1);
+    int id = (g_game && g_game->resource_resolve) ? g_game->resource_resolve(key, mod) : -1;
+    if (id >= 0) lua_pushinteger(L, id);
+    else lua_pushnil(L);
+    return 1;
+}
+static int api_raw_resources(lua_State *L) {
+    int n = 0;
+    const WlResourceDef *list = (g_game && g_game->resources_list) ? g_game->resources_list(&n) : NULL;
+    lua_createtable(L, n, 0);
+    for (int i = 0; i < n; i++) {
+        lua_createtable(L, 0, 9);
+        lua_pushinteger(L, list[i].id);          lua_setfield(L, -2, "id");
+        lua_pushstring(L, list[i].mod);          lua_setfield(L, -2, "mod");
+        lua_pushstring(L, list[i].key);          lua_setfield(L, -2, "key");
+        lua_pushstring(L, list[i].name);         lua_setfield(L, -2, "name");
+        lua_pushstring(L, list[i].icon_rel);     lua_setfield(L, -2, "icon");
+        lua_pushnumber(L, list[i].start);        lua_setfield(L, -2, "start");
+        lua_pushnumber(L, list[i].max);          lua_setfield(L, -2, "max");
+        lua_pushboolean(L, list[i].show != 0);   lua_setfield(L, -2, "show");
+        lua_pushstring(L, list[i].description);  lua_setfield(L, -2, "description");
+        lua_rawseti(L, -2, i + 1);
+    }
+    return 1;
+}
 static int api_raw_is_enemy(lua_State *L) {
     lua_pushboolean(L, g_game && g_game->is_enemy((int)luaL_checkinteger(L, 1), (int)luaL_checkinteger(L, 2)));
     return 1;
@@ -825,8 +1032,11 @@ static void push_units(lua_State *L, const WlUnitInfo *buf, int n) {
     }
 }
 static WlUnitInfo g_ubuf[2048];
+// wl.raw_units(pid [, type]): the player's units (first 2048), or every unit of one type.
 static int api_raw_units(lua_State *L) {
-    int n = g_game ? g_game->units((int)luaL_checkinteger(L, 1), g_ubuf, 2048) : 0;
+    int pid = (int)luaL_checkinteger(L, 1), n = 0;
+    if (!lua_isnoneornil(L, 2)) n = (g_game && g_game->units_of_type) ? g_game->units_of_type(pid, (int)luaL_checkinteger(L, 2), g_ubuf, 2048) : 0;
+    else n = g_game ? g_game->units(pid, g_ubuf, 2048) : 0;
     push_units(L, g_ubuf, n);
     return 1;
 }
@@ -898,6 +1108,13 @@ static int lookup_unit_by_id(int id, WlUnitInfo *out) {
     return found;
 }
 
+// wl.raw_player_civ(pid) -> civ id (1..31 game civs, 35+ mod civs) or nil
+static int api_raw_player_civ(lua_State *L) {
+    int c = (g_game && g_game->player_civ) ? g_game->player_civ((int)luaL_checkinteger(L, 1)) : -1;
+    if (c < 0) lua_pushnil(L); else lua_pushinteger(L, c);
+    return 1;
+}
+
 static int api_raw_unit_by_id(lua_State *L) {
     int id = (int)luaL_checkinteger(L, 1);
     WlUnitInfo u;
@@ -927,9 +1144,183 @@ static int api_raw_set_cond(lua_State *L) {
     lua_pop(L, 1);
     return 0;
 }
+
+static int api_raw_add_command(lua_State *L) {
+    const char *mod = lua_tostring(L, lua_upvalueindex(1));
+    luaL_checktype(L, 1, LUA_TTABLE);
+
+    lua_getfield(L, 1, "building");
+    if (!lua_isinteger(L, -1)) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: building must be an integer unit id"); }
+    int building = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    if (building < 0) return luaL_error(L, "Game.AddCommand: building must be >= 0");
+
+    lua_getfield(L, 1, "button");
+    if (!lua_isinteger(L, -1)) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: button must be an integer (1..15)"); }
+    int button = (int)lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    if (button < 1 || button > 15) return luaL_error(L, "Game.AddCommand: button must be 1..15");
+
+    char name[64];
+    lua_getfield(L, 1, "name");
+    const char *ns = (lua_type(L, -1) == LUA_TSTRING) ? lua_tostring(L, -1) : NULL;
+    if (!ns || !ns[0]) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: name must be a non-empty string"); }
+    snprintf(name, sizeof name, "%s", ns);
+    lua_pop(L, 1);
+
+    int icon = 32;
+    lua_getfield(L, 1, "icon");
+    if (!lua_isnil(L, -1)) {
+        if (lua_isinteger(L, -1)) {
+            icon = (int)lua_tointeger(L, -1);
+            if (icon < 0) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: icon must be >= 0"); }
+        } else if (lua_type(L, -1) == LUA_TSTRING) {
+            const char *iname = lua_tostring(L, -1);
+            int resolved = resolve_cmd_icon(mod, iname);
+            if (resolved >= 0) {
+                icon = resolved;
+            } else {
+                warn_unknown_cmd_icon_once(mod, iname);
+                icon = 32;
+            }
+        } else {
+            lua_pop(L, 1);
+            return luaL_error(L, "Game.AddCommand: icon must be an integer or icon name");
+        }
+    }
+    lua_pop(L, 1);
+
+    char text[256];
+    lua_getfield(L, 1, "text");
+    if (lua_isnil(L, -1)) {
+        snprintf(text, sizeof text, "%s", name);
+    } else if (lua_type(L, -1) == LUA_TSTRING) {
+        snprintf(text, sizeof text, "%s", lua_tostring(L, -1));
+    } else {
+        lua_pop(L, 1);
+        return luaL_error(L, "Game.AddCommand: text must be a string");
+    }
+    lua_pop(L, 1);
+
+    char help[1024];
+    lua_getfield(L, 1, "help");
+    if (lua_isnil(L, -1)) {
+        help[0] = '\0';
+    } else if (lua_type(L, -1) == LUA_TSTRING) {
+        snprintf(help, sizeof help, "%s", lua_tostring(L, -1));
+    } else {
+        lua_pop(L, 1);
+        return luaL_error(L, "Game.AddCommand: help must be a string");
+    }
+    lua_pop(L, 1);
+
+    int civ = -1;
+    lua_getfield(L, 1, "civ");
+    if (!lua_isnil(L, -1)) {
+        if (!lua_isinteger(L, -1)) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: civ must be an integer (-1 for any)"); }
+        civ = (int)lua_tointeger(L, -1);
+        if (civ < -1) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: civ must be -1 or >= 0"); }
+    }
+    lua_pop(L, 1);
+
+    int page = 1;
+    lua_getfield(L, 1, "page");
+    if (!lua_isnil(L, -1)) {
+        if (!lua_isinteger(L, -1)) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: page must be an integer >= 1"); }
+        page = (int)lua_tointeger(L, -1);
+        if (page < 1) { lua_pop(L, 1); return luaL_error(L, "Game.AddCommand: page must be >= 1"); }
+    }
+    lua_pop(L, 1);
+
+    char cond_name[64];
+    lua_getfield(L, 1, "condition");
+    if (lua_isnil(L, -1)) {
+        snprintf(cond_name, sizeof cond_name, "%s", name);
+    } else if (lua_isboolean(L, -1) && !lua_toboolean(L, -1)) {
+        cond_name[0] = '\0';
+    } else if (lua_type(L, -1) == LUA_TSTRING) {
+        snprintf(cond_name, sizeof cond_name, "%s", lua_tostring(L, -1));
+    } else {
+        lua_pop(L, 1);
+        return luaL_error(L, "Game.AddCommand: condition must be a string or false");
+    }
+    lua_pop(L, 1);
+
+    char cond_action[16];
+    lua_getfield(L, 1, "condition_action");
+    if (lua_isnil(L, -1)) {
+        snprintf(cond_action, sizeof cond_action, "disable");
+    } else if (lua_type(L, -1) == LUA_TSTRING) {
+        const char *ca = lua_tostring(L, -1);
+        if (strcmp(ca, "disable") != 0 && strcmp(ca, "hide") != 0) {
+            lua_pop(L, 1);
+            return luaL_error(L, "Game.AddCommand: condition_action must be 'disable' or 'hide'");
+        }
+        snprintf(cond_action, sizeof cond_action, "%s", ca);
+    } else {
+        lua_pop(L, 1);
+        return luaL_error(L, "Game.AddCommand: condition_action must be 'disable' or 'hide'");
+    }
+    lua_pop(L, 1);
+
+    int slot = -1;
+    for (int i = 0; i < WL_MAX_RT_CMDS; i++) {
+        if (g_rt_cmds[i].used && strcmp(g_rt_cmds[i].mod, mod) == 0 && strcmp(g_rt_cmds[i].name, name) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        for (int i = 0; i < WL_MAX_RT_CMDS; i++) {
+            if (!g_rt_cmds[i].used) { slot = i; break; }
+        }
+    }
+    if (slot < 0) return luaL_error(L, "Game.AddCommand: too many runtime commands (%d at most)", WL_MAX_RT_CMDS);
+
+    WlRuntimeCmd *rc = &g_rt_cmds[slot];
+    rc->used = 1;
+    rc->civ = civ;
+    rc->building = building;
+    rc->page = page;
+    rc->button = button;
+    rc->icon = icon;
+    rc->help_sid = WL_RT_CMD_SID_BASE + slot;
+    rc->gen = ++g_rt_cmd_gen;
+    snprintf(rc->name, sizeof rc->name, "%s", name);
+    snprintf(rc->cond_action, sizeof rc->cond_action, "%s", cond_action);
+    snprintf(rc->cond_name, sizeof rc->cond_name, "%s", cond_name);
+    snprintf(rc->mod, sizeof rc->mod, "%s", mod);
+
+    if (g_rt_cmd_str_fn) g_rt_cmd_str_fn(slot, text, help);
+    if (g_in_game && g_buildpage_refresh_fn) g_buildpage_refresh_fn();
+
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int api_raw_remove_command(lua_State *L) {
+    const char *mod = lua_tostring(L, lua_upvalueindex(1));
+    const char *name = luaL_checkstring(L, 1);
+    int removed = 0;
+    for (int i = 0; i < WL_MAX_RT_CMDS; i++) {
+        if (g_rt_cmds[i].used && strcmp(g_rt_cmds[i].mod, mod) == 0 && strcmp(g_rt_cmds[i].name, name) == 0) {
+            g_rt_cmds[i].used = 0;
+            if (g_rt_cmd_str_fn) g_rt_cmd_str_fn(i, NULL, NULL);
+            removed = 1;
+        }
+    }
+    if (removed && g_in_game && g_buildpage_refresh_fn) g_buildpage_refresh_fn();
+    lua_pushboolean(L, removed);
+    return 1;
+}
 static int api_raw_time(lua_State *L) {
     double t = (g_game && g_game->game_time) ? g_game->game_time() : -1.0;
     if (t < 0) lua_pushnil(L); else lua_pushnumber(L, t);
+    return 1;
+}
+static int api_raw_mode(lua_State *L) {
+    const char *m = (g_game && g_game->game_mode) ? g_game->game_mode() : NULL;
+    if (m && m[0]) lua_pushstring(L, m); else lua_pushnil(L);
     return 1;
 }
 static int api_raw_is_multiplayer(lua_State *L) {
@@ -954,19 +1345,32 @@ static int api_raw_cmd(lua_State *L) {
         return luaL_error(L, "DevPanel actions are disabled in multiplayer unless cheats are enabled");
     const char *what = luaL_checkstring(L, 1);
     int rc = -1;
-    if (!g_game || !g_game->add_resource) return luaL_error(L, "game commands are not available here");
+    if (!g_game) return luaL_error(L, "game commands are not available here");
     if (is_dev && g_set_dev_ctx) g_set_dev_ctx(1);
-    if (strcmp(what, "resource") == 0)
+    if (strcmp(what, "resource") == 0 && g_game->add_resource)
         rc = g_game->add_resource((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3), (float)luaL_checknumber(L, 4));
-    else if (strcmp(what, "research") == 0)
+    else if (strcmp(what, "set_resource") == 0 && g_game->set_resource)
+        rc = g_game->set_resource((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3), (float)luaL_checknumber(L, 4));
+    else if (strcmp(what, "research") == 0 && g_game->research)
         rc = g_game->research((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3));
-    else if (strcmp(what, "spawn") == 0)
+    else if (strcmp(what, "spawn") == 0 && g_game->spawn)
         rc = g_game->spawn((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3),
                            (float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5));
     else if (strcmp(what, "age") == 0 && g_game->set_age)
         rc = g_game->set_age((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3));
-    else if (strcmp(what, "delete") == 0)
+    else if (strcmp(what, "delete") == 0 && g_game->delete_unit)
         rc = g_game->delete_unit((int)luaL_checkinteger(L, 2));
+    else if (strcmp(what, "spawn_neutral") == 0 && g_game->spawn_neutral)
+        rc = g_game->spawn_neutral((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3),
+                                   (float)luaL_checknumber(L, 4), (float)luaL_checknumber(L, 5));
+    else if (strcmp(what, "attack") == 0 && g_game->attack_unit)
+        rc = g_game->attack_unit((int)luaL_checkinteger(L, 2), (int)luaL_checkinteger(L, 3));
+    else if (strcmp(what, "move") == 0 && g_game->move_unit)
+        rc = g_game->move_unit((int)luaL_checkinteger(L, 2), (float)luaL_checknumber(L, 3), (float)luaL_checknumber(L, 4));
+    else if (strcmp(what, "win") == 0 && g_game->win_player)
+        rc = g_game->win_player((int)luaL_checkinteger(L, 2), lua_toboolean(L, 3));
+    else if (strcmp(what, "defeat") == 0 && g_game->defeat_player)
+        rc = g_game->defeat_player((int)luaL_checkinteger(L, 2));
     else {
         if (is_dev && g_set_dev_ctx) g_set_dev_ctx(0);
         return luaL_error(L, "unknown command %s", what);
@@ -1119,6 +1523,17 @@ static const char k_prelude[] =
 "end\n"
 "local AGES = { [0] = 'Dark', 'Feudal', 'Castle', 'Imperial' }\n"
 "local RES = { Food = 0, Wood = 1, Stone = 2, Gold = 3 }\n"
+"local RES_LO = { food = 0, wood = 1, stone = 2, gold = 3 }\n"
+"local function resolve_res(name)\n"
+"  if math.type(name) == 'integer' and name >= 0 then return name end\n"
+"  if type(name) == 'string' then\n"
+"    local r = RES[name] or RES_LO[name:lower()]\n"
+"    if r ~= nil then return r end\n"
+"    r = wl.raw_resolve_resource(name)\n"
+"    if r ~= nil then return r end\n"
+"  end\n"
+"  error('unknown resource: ' .. tostring(name), 3)\n"
+"end\n"
 "local CLASS = { Archer = 0, Trade = 2, Building = 3, Villager = 4, Infantry = 6, Cavalry = 12,\n"
 "  Siege = 13, Monk = 18, Transport = 20, FishingShip = 21, Warship = 22, Wall = 27,\n"
 "  CavalryArcher = 36, MonkWithRelic = 43 }\n"
@@ -1130,6 +1545,7 @@ static const char k_prelude[] =
 "  if r then return wl.raw_resource(p.Id, r) end\n"
 "  if k == 'Age' then local a = wl.raw_resource(p.Id, 6); return a and math.floor(a) end\n"
 "  if k == 'AgeName' then local a = wl.raw_resource(p.Id, 6); return a and AGES[math.floor(a)] end\n"
+"  if k == 'Civ' then return wl.raw_player_civ(p.Id) end\n"
 "  if k == 'Population' then local v = wl.raw_resource(p.Id, 11); return v and math.floor(v) end\n"
 "  if k == 'IsLocal' then return p.Id == wl.raw_local() end\n"
 "  return Player[k]\n"
@@ -1139,15 +1555,19 @@ static const char k_prelude[] =
 "-- p:Units() all, p:Units('Monk') by class name, p:Units(function(u) ... end) custom filter\n"
 "-- Game commands (sent as game commands, so every player sees the same result; true when this\n"
 "-- machine sent it, false when another player's machine does):\n"
-"function Player:AddResource(name, amount)\n"
-"  local r = RES[name]; if not r then error('unknown resource: ' .. tostring(name), 2) end\n"
-"  return wl.raw_cmd('resource', self.Id, r, amount) end\n"
+"function Player:GetResource(name) return wl.raw_resource(self.Id, resolve_res(name)) end\n"
+"function Player:AddResource(name, amount) return wl.raw_cmd('resource', self.Id, resolve_res(name), amount) end\n"
+"function Player:SetResource(name, amount) return wl.raw_cmd('set_resource', self.Id, resolve_res(name), amount) end\n"
 "function Player:AddFood(n) return wl.raw_cmd('resource', self.Id, 0, n) end\n"
 "function Player:AddWood(n) return wl.raw_cmd('resource', self.Id, 1, n) end\n"
 "function Player:AddStone(n) return wl.raw_cmd('resource', self.Id, 2, n) end\n"
 "function Player:AddGold(n) return wl.raw_cmd('resource', self.Id, 3, n) end\n"
 "function Player:Research(techId) return wl.raw_cmd('research', self.Id, techId) end\n"
-"function Player:CreateUnit(unitId, x, y) return wl.raw_cmd('spawn', self.Id, unitId, x, y) end\n"
+"-- p:CreateUnit(unitId, x, y [, { Capturable = false }]): Capturable = false keeps a Gaia unit Gaia's\n"
+"-- when players see it (the game gives seen Gaia units to the first player; gamecmd.c)\n"
+"function Player:CreateUnit(unitId, x, y, opts)\n"
+"  if type(opts) == 'table' and opts.Capturable == false then return wl.raw_cmd('spawn_neutral', self.Id, unitId, x, y) end\n"
+"  return wl.raw_cmd('spawn', self.Id, unitId, x, y) end\n"
 "-- p:SetAge(2) or p:SetAge('Castle'): up = age techs researched; down = age value lowered and the\n"
 "-- age-up techs researchable again (what earlier techs unlocked stays)\n"
 "function Player:SetAge(age)\n"
@@ -1157,10 +1577,25 @@ static const char k_prelude[] =
 "  if math.type(age) ~= 'integer' or age < 0 or age > 3 then error('SetAge: 0..3 or Dark/Feudal/Castle/Imperial', 2) end\n"
 "  return wl.raw_cmd('age', self.Id, age)\n"
 "end\n"
+"function Player:Win(team) return wl.raw_cmd('win', self.Id, team and true or false) end\n"
+"function Player:Defeat() return wl.raw_cmd('defeat', self.Id) end\n"
 "local Unit = {}\n"
 "Unit.__index = Unit\n"
 "Unit.__tostring = function(u) return 'Unit ' .. u.Id end\n"
 "function Unit:Delete() return wl.raw_cmd('delete', self.Id) end\n"
+"-- unit:MoveTo(x, y): walk to a map tile (the game's move command, sent like the other commands)\n"
+"function Unit:MoveTo(x, y) return wl.raw_cmd('move', self.Id, x, y) end\n"
+"-- unit:Attack(target): attack a unit or building (a unit table or an id; the game's order command)\n"
+"function Unit:Attack(t) return wl.raw_cmd('attack', self.Id, type(t) == 'table' and t.Id or t) end\n"
+"-- p:UnitsOfType(typeId): every unit of one type (also Gaia's: Game.Player(0))\n"
+"function Player:UnitsOfType(t)\n"
+"  local out = {}\n"
+"  for _, u in ipairs(wl.raw_units(self.Id, t)) do\n"
+"    out[#out + 1] = setmetatable({ Id = u.id, X = u.x, Y = u.y, Class = u.class, ClassName = CLASS_NAME[u.class],\n"
+"      IsBuilding = u.building, Built = u.building and u.ready, Type = u.type, Owner = self }, Unit)\n"
+"  end\n"
+"  return out\n"
+"end\n"
 "function Player:Units(filter)\n"
 "  local want = type(filter) == 'string' and CLASS[filter]\n"
 "  if type(filter) == 'string' and not want then error('unknown unit class: ' .. filter, 2) end\n"
@@ -1194,6 +1629,8 @@ static const char k_prelude[] =
 "function Game.Player(id) return player(id) end\n"
 "function Game.Players() local t = {}\n"
 "  for i = 1, wl.raw_player_count() - 1 do t[#t + 1] = player(i) end; return t end\n"
+"function Game.Resources() return wl.raw_resources() end\n"
+"function Game.Mode() return wl.raw_mode() end\n"
 "function Game.OnStart(fn) return on('game_start', fn) end\n"
 "-- Game.OnCommand(name, fn(building)): a Lua button of a mod building (unique_building commands)\n"
 "function Game.OnCommand(name, fn)\n"
@@ -1217,6 +1654,12 @@ static const char k_prelude[] =
 "    end\n"
 "    return fn(b)\n"
 "  end)\n"
+"end\n"
+"function Game.AddCommand(spec)\n"
+"  return wl.raw_add_command(spec)\n"
+"end\n"
+"function Game.RemoveCommand(name)\n"
+"  return wl.raw_remove_command(name)\n"
 "end\n"
 "function Game.OnSecond(fn) return on('every_second', fn) end\n"
 "-- Polled events (checked once a second from the game's frame; reading only, MP safe):\n"
@@ -2033,6 +2476,7 @@ static void unload_mod(lua_State *L, const char *mod_id) {
     if (!L || !mod_id || !mod_id[0]) return;
     unload_mod_handlers(L, mod_id);
     unload_mod_conditions(L, mod_id);
+    unload_mod_rt_cmds(mod_id);
     for (int i = 0; i < WL_MAX_TIMERS; i++)
         if (g_timers[i].used && strcmp(g_timers[i].mod, mod_id) == 0) free_timer(&g_timers[i]);
     for (int i = 0; i < WL_MAX_ASKS; i++)
@@ -2078,6 +2522,7 @@ static int reload_mod_at(int idx, int notify, char *err_out, size_t err_cap) {
     int rc = run_mod_main(g_L, m, idx, raw_err, sizeof raw_err);
     if (rc == LOAD_MISSING) {
         g_watch[idx].loaded = 0;
+        if (g_in_game && g_buildpage_refresh_fn) g_buildpage_refresh_fn();
         if (was_loaded) {
             wl_log("[lua:%s] scripts\\main.lua missing, mod unloaded", m->id);
             if (notify) {
@@ -2094,6 +2539,7 @@ static int reload_mod_at(int idx, int notify, char *err_out, size_t err_cap) {
         unload_mod(g_L, m->id);
         lua_gc(g_L, LUA_GCCOLLECT, 0);
         g_watch[idx].loaded = 0;
+        if (g_in_game && g_buildpage_refresh_fn) g_buildpage_refresh_fn();
         wl_log("[lua:%s] reload failed: %s", m->id, raw_err);
         char serr[180];
         short_lua_err(raw_err, serr, sizeof serr);
@@ -2106,8 +2552,12 @@ static int reload_mod_at(int idx, int notify, char *err_out, size_t err_cap) {
 
     g_watch[idx].loaded = 1;
     wl_log("[lua:%s] reloaded", m->id);
-    // Mid-game reload: run this mod's Game.OnStart handlers so match-start timers and UI work.
-    if (g_in_game) dispatch_filtered("game_start", m->id, 0, 0);
+    // Mid-game reload: run this mod's Game.OnStart handlers so match-start timers and UI work,
+    // and refresh any open building command panel in case buttons changed or were removed.
+    if (g_in_game) {
+        dispatch_filtered("game_start", m->id, 0, 0);
+        if (g_buildpage_refresh_fn) g_buildpage_refresh_fn();
+    }
     if (notify) {
         char msg[160];
         snprintf(msg, sizeof msg, "Reloaded %s", m->id);
@@ -2245,9 +2695,10 @@ void wl_script_restart(void) {
     }
     if (g_depth > 0) {
         // Inside an active Lua pcall (e.g. wl.reload_mods()): keep g_L alive,
-        // unload every old mod's handlers/UI/timers/conditions, then load all enabled mods.
+        // unload every old mod's handlers/UI/timers/conditions/runtime commands, then load all enabled mods.
         lua_State *L = g_L;
         wl_script_game_reset(g_now);
+        clear_all_rt_cmds();
         while (g_ui_owned_count > 0) {
             int id = g_ui_owned[0].id;
             if (g_ui && g_ui->destroy) g_ui->destroy(id);
@@ -2276,8 +2727,9 @@ void wl_script_restart(void) {
         return;
     }
 
-    // Outside Lua: tear down all UI widgets, timers, and the Lua VM completely, then re-init.
+    // Outside Lua: tear down all UI widgets, timers, runtime commands, and the Lua VM completely, then re-init.
     wl_script_game_reset(0);
+    clear_all_rt_cmds();
     while (g_ui_owned_count > 0) {
         int id = g_ui_owned[0].id;
         if (g_ui && g_ui->destroy) g_ui->destroy(id);
@@ -2503,11 +2955,13 @@ void wl_script_event(const char *name) {
     dispatch_filtered(name, NULL, 0, 0);
 }
 void wl_script_event_int(const char *name, int arg) { dispatch_filtered(name, NULL, 1, arg); }
-// Mod building Lua button pressed (buildpage.c): handlers of Game.OnCommand(name, fn).
+// Building Lua button pressed (buildpage.c): handlers of Game.OnCommand(name, fn).
 void wl_script_command(const char *name, int unit_id) {
     char ev[96];
     snprintf(ev, sizeof ev, "cmd:%s", name ? name : "");
+    g_in_local_cmd++;
     dispatch_filtered(ev, NULL, 1, unit_id);
+    g_in_local_cmd--;
 }
 
 // Evaluates a condition registered via Game.CommandCondition(name, fn).

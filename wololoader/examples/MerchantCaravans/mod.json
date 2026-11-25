@@ -1,0 +1,13 @@
+{
+  "name": "Merchant Caravans",
+  "version": "2.0",
+  "author": "Wololoader",
+  "description": "A merchant's trade cart travels from town to town every few minutes. Select it while one of your units is near and press Trade to get resources. Example of mod settings and Lua: how often merchants come, what they bring and how much, on the Mods screen (Settings).",
+  "settings": [
+    { "id": "minutes", "name": "Minutes between merchants", "type": "number", "min": 1, "max": 10, "step": 1, "default": 3 },
+    { "id": "amount", "name": "Resources per trade", "type": "number", "min": 20, "max": 300, "step": 10, "default": 60 },
+    { "id": "resource", "name": "Merchants trade", "type": "choice", "choices": ["Gold", "Food", "Wood", "Stone"], "default": "Gold" },
+    { "id": "grow", "name": "Better trades in later ages", "type": "bool", "default": true },
+    { "id": "announce", "name": "Announce new merchants", "type": "bool", "default": true }
+  ]
+}

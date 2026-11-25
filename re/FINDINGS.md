@@ -398,3 +398,48 @@ AoE2 HD 5.8 does not keep `empires2_x2_p1.dat` loaded at the Main Menu: `Game::c
 | `0x4636f0` | `ResourceManager::load_package` | `__thiscall(0xada190, const char *name, int flag)`, `ret 8` (`0x463c6d`), `BYTE` | Prologue `55 8b ec 6a ff 68 ee c1 90 00`. Scans DRS folder via `0x823d60` (`FindFirstFileA` -> `files.c` hooks). Called with `flag=0` for `sounds`/`graphics`/`interface` in `0x62ce60`. |
 
 Implementation: `wololoader/src/hotreload.c`, `wololoader/src/hotreload_core.h`, `wololoader/src/civs.c`, `wololoader/src/files.c`, `wololoader/src/autobuild.c`, `wololoader/src/basemod.c`, `wololoader/src/iconmerge.c`, `wololoader/src/script.c`, `wololoader/src/ui_mods.c`, `wololoader/src/ui_hub.c`, `wololoader/src/menu.c`.
+
+## Move command (2026-11-25, static analysis; used by Unit:MoveTo, gamecmd.c wl_cmd_move)
+
+- Builder `0x8097d0` (`__thiscall`, sends with `0x80ef70`): packet `{u8 3, u8 player, 2 pad, i32 target id
+  (-1 = none), u8 unit count, 3 pad, f32 x @0xc, f32 y @0x10, i32 unit ids @0x14}`, size `0x14 + 4 * count`.
+  Verified stores: `0x80986a movb $0x3,(%esi)`, `0x80987c` player byte, `0x8098a4` x, `0x8098b1` y, `0x8098ae` count.
+  For a computer player's units the builder writes player 0 (`0x80988f call 0x74e020` is_computer, `0x80989b`).
+- Executor: `0x813460` default -> `0x809fe0` switch case 3 -> `0x80bdd0`. The unit list reader `0x80dad0`
+  takes the ids from the packet when the player byte is 0 (logs "Units defined inside command with
+  offset"), so Gaia units can be moved the same way. Unit id = `[unit+8]` (the builder reads it there).
+- Not yet verified in game.
+
+## Game mode table relocation & Win/Defeat (`gamemodes.c`, `gamecmd.c`, verified in disassembly 2026-11-25)
+
+All addresses, raw bytes, calling conventions, `ret N` sizes, and return values below were verified directly against `AoK HD.exe` 5.8 (`i686-w64-mingw32-objdump` + full-binary PE scan) and `re/out/decompiled.c`.
+
+### 1. Static `RefPtr<GameMode>[12]` table (`0xaf28dc..0xaf290b`)
+- Relocated in `DllMain` (before `.CRT$XCU` `0x41e400` runs) to `g_mode_table[64]` (`WL_MODE_CAP = 64 = 0x40`, fits both signed `imm8` in `6a XX` <= 127 and `uint8` savegame/replay serialization `0x697800`/`0x68df70` <= 255).
+- Adjacent globals `0xaf28d0..0xaf28d8` (`std::vector<RefPtr<Difficulty>>`) and `0xaf290c..0xaf2914` (`std::vector<pair<int,float>>` game speeds, ctor `0x41e4c0` / `0x41e4df`) are unrelated and untouched.
+- Exhaustive 48 patched instructions (0 references outside `.text`):
+  - **Lifecycle (8)**: `0x41e42c` (`6a 0c`), `0x41e430` (`68 dc 28 af 00`), `0x93ee75` (`6a 0c`), `0x93ee79` (`68 dc 28 af 00`), `0x9a847e` (`6a 0c`), `0x9a8482` (`68 dc 28 af 00`), `0x60a243` (`bf 0c 00 00 00`), `0x60a248` (`be dc 28 af 00`).
+  - **Per-slot init read/write pairs in `0x608bf0` (24)**: slots `0..11` (`8b 0d <slot>` / `89 35 <slot>`, `disp32` at `+2`) at `0x608d5c`/`0x608d70`, `0x608f1b`/`0x608f2f`, `0x60910e`/`0x609122`, `0x6092c1`/`0x6092d5`, `0x609470`/`0x609484`, `0x6095f0`/`0x609604`, `0x6097c7`/`0x6097db`, `0x609977`/`0x60998b`, `0x609b22`/`0x609b36`, `0x609d18`/`0x609d2c`, `0x609ee4`/`0x609ef8`, `0x60a0f6`/`0x60a10a`.
+  - **Indexed table reads (15, `disp32` at `+3`)**: `0x522757`, `0x567281`, `0x5b6a90`, `0x5df7e2`, `0x60d00d`, `0x60dddd`, `0x60f0aa`, `0x60f3a0`, `0x6133fe`, `0x64b6ab`, `0x65b67d`, `0x70252e`, `0x76a75b`, `0x7d347f`, `0x7d3529`.
+  - **Direct slot-5 (Campaign) read (1, `disp32` at `+2`)**: `0x7311b9` (`8b 0d f0 28 af 00`, `mov 0xaf28f0, %ecx` in `0x730600`) -> `&g_mode_table[5]`.
+
+### 2. Hooked & called functions for `GameMode` (`0x5c` bytes, vtable `0x9cc924`)
+
+| Address | Function | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `0x608bf0` | `GameMode::init` | `__cdecl(void *out)`, `ret` (`0x60a1f2`), returns `out` (`mov %edi,%eax`) | Prologue (5 B): `55 8b ec 6a ff`. Called from `0x81b0a4` (`push %esi; call 0x608bf0; add $4,%esp`). Post-hook constructs custom modes `12..` with `refcount (+4) = 1`. |
+| `0x608a30` | `GameMode::ctor` | `__thiscall(this, id, is_scen, f40, is_rm, elo, sp_vic*, mp_vic*, name*, tip*)`, `ret 0x24` (`0x608b33`), returns `this` | Prologue (10 B): `55 8b ec 6a ff 68 da ed 93 00`. Sets `refcount = 0`; caller must set `*(int*)(obj+4) = 1`. Deep-copies victory `std::vector<int>` via `0x608980` and `LocalizedString` via `0x432970`. |
+| `0x60f2f0` | `GameSettings::validate` | `__thiscall(settings)`, `ret` (`0x60f845`), `void` | Prologue (5 B): `55 8b ec 6a ff`. Reads `table[settings+0xac]` unchecked at `0x60f3a0`; pre-hook clamps invalid/unloaded mode IDs to `0`. |
+| `0x6133c0` | `GameSettings::set_game_mode` | `__thiscall(settings, int mode)`, `ret 4` (`0x613472`), `void` | Prologue (5 B): `55 8b ec 6a ff`. Reads `table[mode]->+0x34` at `0x6133fe`; pre-hook clamps invalid/unloaded mode IDs to `0` (protects savegame/replay load `0x68df70`). |
+| `0x64b659` | `call 0x426d40` in `GameSetupScreen::init_controls` (`0x64a670`) | `__cdecl(void *ref_ptr)`, `ret`, returns `Dropdown*` | Original 5 B: `e8 e2 b6 dd ff` (`call 0x426d40`, whose body is `55 8b ec 8b 45 08 5d c3`). Runs right after Sudden Death and right before the dropdown tooltip loop (`0x64b661..0x64b810`), which reads `g_mode_table[id]->tooltip` (`+0x20`). |
+| `0x47b690` | `Dropdown::add_item` | `__thiscall(dd, const char *text, int id)`, `ret 8` (`0x47b6fc`), `void` | Prologue (10 B): `55 8b ec 6a ff 68 58 06 91 00`. Appends mode display name and numeric ID to `[screen+0x6f4]`. |
+
+### 3. Lockstep `Player:Win` / `Player:Defeat` (`gamecmd.c`)
+
+| Address | Function | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `0x750580` | `RGE_Player::loss_if_game_on` | `__thiscall(player)`, `ret` (`0x75058d`), `void` | Full body (14 B): `80 79 35 00 75 07 8b 01 6a 02 ff 50 04 c3`. If `[player+0x35] == 0`, calls `player->vtable[1](2)` (`TRIBE_Player::set_game_status`, `0x748a40`). Invoked by marked `0x05` packet `WL_MARK_DEFEAT` (`0x5d`). |
+| `0x7558a0` | `RGE_Player::win_game_now` | `__thiscall(player)`, `ret` (`0x7558ad`), `void` | Full body (14 B): `80 79 35 00 75 07 8b 01 6a 01 ff 50 04 c3`. If `[player+0x35] == 0`, calls `player->vtable[1](1)`. On same tick `0x72be70` sets `world+0x78 = 1` and defeats remaining players. Invoked by `WL_MARK_WIN` (`0x5e`, `team=0`). |
+| `0x7558b0` | `TRIBE_Player::win_game_now_team` | `__thiscall(player)`, `ret` (`0x755954`), `void` | Prologue (14 B): `55 8b ec 51 53 56 57 8b d9 e8 e2 ff ff ff`. Calls `0x7558a0` on `this` and mutually allied players with `[+0xf8] != 0`, and `0x750580` on all others. Invoked by `WL_MARK_WIN` (`0x5e`, `team=1`). |
+
+Implementation: `wololoader/src/gamemodes.c`, `wololoader/src/civs.c`, `wololoader/src/gamecmd.c`, `wololoader/src/gameapi.c`, `wololoader/src/script.c`, `wololoader/src/ui_mods.c`. Not yet verified in-game.

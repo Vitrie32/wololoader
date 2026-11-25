@@ -104,6 +104,8 @@ Every mod must include a `mod.json` file at its root.
 | `author` | string | `""` | Author name or handle. |
 | `description` | string | `""` | Short description of what the mod provides. |
 | `enabled` | boolean | `true` | When `false`, Wololoader skips loading this mod, and its civs and assets are excluded from the game. |
+| `settings` | array | none | Options the player changes on the Mods screen (**Settings** button); see [Mod settings](#mod-settings). |
+| `game_modes` | array | none | Custom lobby game modes added to the Game Mode dropdown (IDs 12..63); see [Custom Game Modes](#custom-game-modes). |
 
 ### Example `mod.json`
 
@@ -116,6 +118,36 @@ Every mod must include a `mod.json` file at its root.
   "enabled": true
 }
 ```
+
+### Mod settings
+
+A mod can declare options in `mod.json`. The player changes them on the Mods screen (select the mod, **Settings**); your Lua reads them from `MOD.settings`.
+
+```json
+"settings": [
+  { "id": "extra_pop", "name": "Extra population", "type": "number", "min": 0, "max": 100, "step": 5, "default": 0 },
+  { "id": "fast_vills", "name": "Fast villagers", "type": "bool", "default": true },
+  { "id": "mode", "name": "Difficulty", "type": "choice", "choices": ["Easy", "Normal", "Hard"], "default": "Normal" }
+]
+```
+
+| Key | Description |
+|---|---|
+| `id` | Name in `MOD.settings` (letters, digits, `_`). |
+| `name` | Text shown on the Mods screen. |
+| `type` | `bool`, `number` (with `min`, `max`, `step`) or `choice` (with `choices`). |
+| `default` | Value until the player changes it. |
+
+```lua
+if MOD.settings.fast_vills then
+  -- ...
+end
+wl.log("difficulty", MOD.settings.mode, "extra pop", MOD.settings.extra_pop)
+```
+
+- The player's values are saved in `wololoader/settings/<mod folder>.json`, outside the mod folder, so a Mod Hub update keeps them.
+- A change applies when the player leaves the Mods screen or presses **Reload Mods** (the mod's scripts restart). No game restart.
+- Settings are part of the multiplayer mod check: all players need the same values.
 
 ---
 
@@ -776,11 +808,15 @@ The building goes into a free unit slot (1400 down, the castle unique units coun
 
 - `train`: a unit trained here. The game allows one training building per unit, so this is a copy of the unit (same name unless you give `name`/`help`; `units` overrides fields). Effects by unit class, such as monk technologies, apply to the copy too.
 - `research`: a new technology researched here: `name`, `help`, `cost` (up to 3 of food/wood/stone/gold), `time` in seconds, `effects` (same format as civ `effects`), `age` (default: the building's age), `icon` (technology icon number), `copy_from` (technology whose other fields are kept, default 22 Loom).
-- `lua`: a button that runs the mod's Lua code: `Game.OnCommand("Bless", function(building) ... end)`. `icon` is a frame of the command icon sheet 50721 (or an icon you added). It runs only for the player who pressed it; send game commands (`AddGold`, `CreateUnit` ...) from it as usual.
+- `lua`: a button that runs the mod's Lua code: `Game.OnCommand("Bless", function(building) ... end)`. `icon` is a frame number of the command icon sheet `50721.slp` (default `32`) or the name of a custom PNG icon in `<mod>/icons/commands/<name>.png` (e.g. `"icon": "trade"`). It runs only for the player who pressed it; send game commands (`AddGold`, `CreateUnit` ...) from it as usual.
 
 **Finding it in game:** mod buildings have their own villager page. Open it with the **Mod Buildings** button (hammer with the Wololoader shield) on the villager's panel, or with the next-page button (economy -> military -> mod buildings). They use unit slots 1400 down to 1300.
 
-**Extra icons:** a mod can add icons to the game's icon sheets. Put single-frame SLPs in `<mod>/icons/<sheet>/<name>.slp`, where `<sheet>` is `50721` for command buttons or `buildings` for building icons (added to all four culture sheets). They get the numbers after the game's own frames, in mod order and then file-name order.
+**Extra icons:** a mod can add icons to the game's icon sheets:
+- **Command button PNGs (recommended):** drop PNG files of any size into `<mod>/icons/commands/<name>.png`. At startup (and Level 2 main-menu reload), Wololoader scales each PNG to `50721.slp`'s frame size (`36x36`), encodes it as a 32-bit SLP frame, appends it to the merged `50721.slp`, and writes `<mod>\t<name>\t<frame>` to `wololoader/cache/cmdicons.txt`. Reference them by name (e.g. `icon = "trade"`) in `Game.AddCommand` or civ JSON `lua` commands.
+- **Raw SLP frames:** put single-frame SLPs in `<mod>/icons/<sheet>/<name>.slp`, where `<sheet>` is `50721` for command buttons, `buildings` for building icons (added to all four culture sheets `50705..50708`), or `units` (`50730`). They get deterministic indices after the game's own frames, in sorted mod-id and file-name order.
+
+PNG command icons are kept in full 32-bit colour with per-pixel alpha (no palette quantization or colour loss); player colour is not applied to them. If an icon needs dynamic player-colour remapping, provide a palette-indexed `.slp` frame in `<mod>/icons/<sheet>/<name>.slp` instead.
 
 **Making the picture:** `wololoader/art/buildings/abbey.py` (Blender) shows the pipeline the original game art used. It builds a 3D model, renders it with the game's 2:1 camera (one tile = 96 px wide, sun from the left) at double size with CC0 Poly Haven textures. `to_palette.py` then shrinks it, draws contour lines from a normals pass and maps it to the game palette, with magenta = player colour. `to_slp.py` writes the SLP using `wololoader/tools/slpwrite.py`. Run `blender -b -P abbey.py -- OUT`, then `python3 to_palette.py OUT 50500.bina OUT/abbey` and `python3 to_slp.py OUT abbey 15001.slp`.
 
@@ -829,7 +865,9 @@ Wololoader includes a transparent file-system virtualization hook in `files.c`.
 Any file placed under your mod's `resources/` folder overrides the corresponding file in `<game>/resources/`.
 - The directory path inside `resources/` must mirror the game's path (case-insensitive).
 - **Zero modification to game files**: Files are redirected on the fly in memory when the game calls `CreateFileA`/`W`.
-- **Conflict Resolution**: If multiple enabled mods override the same file, the mod whose folder name comes later alphabetically takes precedence.
+- **Conflict Resolution**: If multiple enabled mods override the same file, the mod that comes later in the mods list (normally the folder name, alphabetically) takes precedence.
+- The Mods screen marks such mods with **(!)** and names the other mod and which one wins on the **Conflicts** line. Two mods that `extend` the same game civilization are reported there too.
+- **New sprites never clash.** A sprite you add as `resources/_common/drs/graphics/<id>.slp` with an id the game does not use is yours. If another enabled mod ships the same id, Wololoader gives one of the two copies a free id (90000 and up) when it loads and changes the `"slp"` values in that mod's civ files to match. The first mod by folder name keeps its id. You do not have to coordinate ids with other modders; the log names every renumbered sprite. Replacing a sprite the game already has is an override, and the rule above applies.
 
 ### New Maps and AI Scripts
 
@@ -880,19 +918,20 @@ The game's text system uses **UTF-8**. Save your JSON files as UTF-8; Wololoader
 ## Wololoader Base (built-in features)
 
 Wololoader's own gameplay and UI features come as a normal mod, `mods/WololoaderBase`, so they can be
-switched off like any other mod on the Mods screen (restart the game after a change). Single features can
-be turned off in its `mod.json`:
+switched off like any other mod on the Mods screen. Single features are its [mod settings](#mod-settings):
+select **Wololoader Base** on the Mods screen and press **Settings**.
 
-```json
-"features": {
-  "popcap_1000": true,     // population limit option 1000
-  "selection_250": true,   // select up to 250 units (orders, circles, the +N slot)
-  "borderless": true,      // borderless fullscreen instead of exclusive fullscreen (Alt+Tab works)
-  "formations_tab": true   // Formations button in the military command page, opens the game's formations page
-}
-```
+| Setting | What it does |
+|---|---|
+| Population cap 1000 | population limit option 1000 (restart) |
+| Select up to 250 units | orders, circles and the +N slot for 250 units (restart) |
+| Borderless window | borderless fullscreen instead of exclusive fullscreen, Alt+Tab works (restart) |
+| Formations tab | Formations button in the military command page (restart) |
+| Monks convert nearby enemies | idle monks start converting enemies in range (off by default) |
+| Dev Panel and Lua console | the Dev Panel and Ctrl+Shift+C console (multiplayer: only with cheats on) |
 
-If the folder is missing (older installs) every feature is on. Installing never overwrites this file.
+An older `mod.json` with only a `"features"` object gets the settings list added once at start, with its
+values kept. If the folder is missing (older installs) every feature is on. Installing never overwrites this file.
 Multiplayer: everyone in a game should use the same settings.
 
 ## 11. Multiplayer and Vanilla Mode
@@ -1005,12 +1044,18 @@ Every script also gets a simple high-level API, written on top of `wl.*` (which 
 | Name | What it is |
 |---|---|
 | `Game.LocalPlayer`, `Game.Players()`, `Game.Player(id)` | players |
-| `Game.OnCommand(name, fn(building))` | a Lua button of a mod building was pressed (see unique_building `commands`) |
+| `Game.OnCommand(name, fn(building))` | a Lua button of a building was pressed (from `unique_building` `commands` or `Game.AddCommand`) |
+| `Game.AddCommand(spec)` | register a runtime Lua command button on any building (including vanilla Market, Town Center, etc.); returns `true` (see below) |
+| `Game.RemoveCommand(name)` | remove a runtime command button registered by this mod; returns `true` if removed |
+| `Game.CommandCondition(name, fn(building))` | control whether a command button is enabled/visible (return truthy to allow, falsy to disable or hide) |
 | `Game.Time`, `Game.Selected()` | game time in seconds (stops while paused); the units you have selected (first 60) |
-| Player | `.Id`, `.IsLocal`, `.Food`, `.Wood`, `.Stone`, `.Gold`, `.Age` (0..3), `.AgeName` ("Dark".."Imperial"), `.Population`, `:IsEnemy(other)`, `:Units(filter)` |
+| Player | `.Id`, `.IsLocal`, `.Food`, `.Wood`, `.Stone`, `.Gold`, `.Age` (0..3), `.AgeName` ("Dark".."Imperial"), `.Population`, `.Civ` (civ id: 1..31 game civs, 35+ mod civs), `:IsEnemy(other)`, `:Units(filter)`, `:UnitsOfType(id)` (every unit of one type; `Game.Player(0)` is Gaia) |
 | `p:Units()` / `p:Units("Monk")` / `p:Units(function(u) ... end)` | units; class names: Archer, Trade, Building, Villager, Infantry, Cavalry, Siege, Monk, Transport, FishingShip, Warship, Wall, CavalryArcher, MonkWithRelic |
-| Unit | `.Id`, `.X`, `.Y`, `.Type` (dat unit id), `.Class`, `.ClassName`, `.IsBuilding`, `.Built` (a finished building, not a foundation), `.Owner`, `:Delete()` |
-| `p:AddGold(n)`, `p:AddFood(n)`, `p:AddWood(n)`, `p:AddStone(n)`, `p:AddResource("Gold", n)` | give (or take, with a negative n) resources |
+| Unit | `.Id`, `.X`, `.Y`, `.Type` (dat unit id), `.Class`, `.ClassName`, `.IsBuilding`, `.Built` (a finished building, not a foundation), `.Owner`, `:Delete()`, `:MoveTo(x, y)` (walk to a map tile; works for Gaia units too) |
+| `p:AddGold(n)`, `p:AddFood(n)`, `p:AddWood(n)`, `p:AddStone(n)`, `p:AddResource(res, n)`, `p:SetResource(res, n)`, `p:GetResource(res)` | read, add (or subtract), or set vanilla or custom resources by key/name or numeric id (multiplayer-safe lockstep commands) |
+| `Game.Resources()` | list all custom resources declared by enabled mods (`{ id, mod, key, name, icon, start, max, show, description }`) |
+| `Game.Mode()` | key (`"id"`) of the active custom lobby game mode, or `nil` for vanilla modes |
+| `p:Win([team])`, `p:Defeat()` | mark a player (`1..8`) as winner (`team = true` also awards mutual allies with allied victory) or defeated immediately via lockstep commands |
 | `p:CreateUnit(unitId, x, y)` | create a unit (dat unit id, e.g. 125 Monk, 4 Archer) at tile x, y |
 | `p:Research(techId)` | finish a technology instantly (skipped if already researched) |
 | `p:SetAge(age)` | `0`..`3` or `"Dark"`..`"Imperial"`. Up: the age-up techs are researched. Down: the age goes back and the age-ups can be researched again; units, buildings and bonuses already unlocked stay (the game cannot undo tech effects) |
@@ -1024,7 +1069,40 @@ Every script also gets a simple high-level API, written on top of `wl.*` (which 
 | `Sound.Play(name)` | `Chat`, `CantDo`, `Tribute`, `Attack`, `TownBell`, `TownRecall`, `Objective`, `Relic` |
 | `Time.Wait(s)`, `Time.After(s, fn)`, `Time.Every(s, fn)`, `Time.Cancel(h)` | timers in game seconds: they stop while the game is paused (F3, F10 menu) and follow the game speed (`Time.Wait` only inside events/timers) |
 
+`MOD.civs` lists the civ ids of your mod's own civilizations. Mod scripts run in every game, so a civ mod should check it, e.g. `if Game.LocalPlayer.Civ == MOD.civs[1] then ... end`.
+
+
 Reading players and units never changes the game, so it is multiplayer safe. Examples: `examples/Monklanians/scripts/main.lua`, and `examples/DevPanel` (a testing panel: resources, ages, spawning, cloning, deleting).
+
+**Building command buttons (`Game.AddCommand`).** A script can attach custom Lua command buttons to any owned, finished building — including vanilla buildings like the Market (`84`) or Town Center (`109`) — without touching `.dat` files:
+
+```lua
+Game.AddCommand({
+    building = 84,           -- Market (109 = Town Center)
+    button = 10,             -- 1..15 (3x5 grid); 10 is free on Market, 4 is always free on TC
+    icon = "trade",          -- PNG name in <mod>/icons/commands/<name>.png, or frame number in 50721.slp (default 32)
+    text = "Trade",          -- tooltip title (default = name)
+    help = "Swap 100 food for 50 gold.",
+    name = "Trade",          -- command name for Game.OnCommand
+    civ = -1,                -- -1 = any civ (default), or a specific civ id
+    condition = "Trade",     -- Game.CommandCondition name (default = name; false to disable)
+    condition_action = "disable", -- "disable" (default) or "hide"
+})
+
+Game.CommandCondition("Trade", function(building)
+    return building.Owner.Food >= 100
+end)
+
+Game.OnCommand("Trade", function(building)
+    building.Owner:AddFood(-100)
+    building.Owner:AddGold(50)
+end)
+```
+
+- **Parameters**: `building` (required integer unit id), `button` (required integer `1..15`; slot `15` is available on single-page buildings unless protected), `name` (required non-empty string), `icon` (optional integer frame in `50721.slp` or string name of a PNG in `<mod>/icons/commands/<name>.png` owned by the calling mod; default `32`, unknown names log once and fall back to `32`), `text` (optional string, default `name`), `help` (optional string, default `""`), `civ` (optional integer, default `-1` for any civilization), `page` (optional integer `>= 1`, default `1`), `condition` (optional string or `false`, default `name`), `condition_action` (`"disable"` default, or `"hide"`). Calling `Game.AddCommand` again with the same `name` from the same mod updates the button in place.
+- **Removing**: `Game.RemoveCommand(name)` removes a command registered by your mod (returns `true` if removed, `false` otherwise). Commands belong to the mod that registered them and are removed automatically on mod unload, hot reload, or full script restart. Adding, updating, or removing a command mid-game refreshes an already-open building panel immediately.
+- **Free slots & protected built-ins**: On the Market (`84`), `button = 10` (and `15` on a 1-page panel) is free; slots `6` and `11` hold the `"Sell"` and `"Buy"` labels and are protected. On the Town Center (`109`), `button = 4` is always free (`2, 3, 12, 13, 14` are free in normal games); `5` (Gather Point), `9` (Back to Work), `10` (Ungarrison), and `15` (Town Bell) are protected and never overwritten.
+- **Multiplayer**: Clicks run `Game.OnCommand` only on the clicking player's machine. Always apply gameplay changes through lockstep game commands (`AddGold`, `CreateUnit`, `Delete`, `MoveTo`, etc.) targeting `building.Owner` / `Game.LocalPlayer` rather than mutating shared Lua state directly.
 
 **On-screen UI.** Frames, labels and buttons are drawn over the game every frame; the game keeps running and you click them while playing. Create them once (at the top of `main.lua`) and change their properties later:
 
@@ -1265,7 +1343,7 @@ Scriptorium includes a **Test it** button on each civilization row and in the ci
 
 Wololoader automatically watches `<mod>/scripts/*.lua` (including subfolders) for every enabled mod while a game is running (checked about once per second with a 250 ms debounce so half-written saves are not loaded):
 
-- **Clean per-mod reset**: Only the changed mod is unloaded and re-run in a fresh sandbox with a cleared `require` cache. Everything that mod registered is removed first: event handlers (`Game.On*`, `wl.on`), `Game.CommandCondition`, timers (`Time.After`/`Every`), waiting coroutines and `UI.Ask` callbacks, UI elements (frames, labels, buttons, text boxes, hotkeys), and counters. Other mods are untouched.
+- **Clean per-mod reset**: Only the changed mod is unloaded and re-run in a fresh sandbox with a cleared `require` cache. Everything that mod registered is removed first: event handlers (`Game.On*`, `wl.on`), `Game.AddCommand` buttons, `Game.CommandCondition`, timers (`Time.After`/`Every`), waiting coroutines and `UI.Ask` callbacks, UI elements (frames, labels, buttons, text boxes, hotkeys), and counters. Other mods are untouched.
 - **Mid-game `Game.OnStart`**: When a mod reloads while a match is already in progress, its `Game.OnStart` handlers run again right after `main.lua` succeeds so match-start timers and UI setup work without restarting the match.
 - **Errors**: On a syntax or runtime error, the mod stays unloaded, the full error is written to `wololoader.log`, and a short in-game notification (`Reload failed: <mod>: <error>`) is shown; on success, `Reloaded <mod>` is shown.
 - **Manual reload**: Run `reload("<mod>")` or `reload()` (all changed mods) in the Dev Console, or call `wl.reload("<mod>")` / `wl.reload()` from Lua.
@@ -1300,6 +1378,117 @@ Wololoader applies content-mod changes **without restarting the game** whenever 
   - **Vanilla Mode** (on/off).
   - **Wololoader Base** binary engine patches applied at startup (`popcap_1000`, `selection_250`, `borderless`, `formations_tab`). When any of these change, Wololoader reports `Restart required for: ...` on the Mods screen and Main Menu label.
 - **Error recovery**: If a mod fails validation during reload, Wololoader logs the error, clears the broken cache so the game stays playable with the original `.dat`, and shows the error on the Mods screen.
+
+---
+
+## Custom Resources
+
+Mods can declare any number of custom resources (assigned deterministic numeric IDs from `211` up to `32766`) that work natively with unit/building/tech costs, refunds, tech effects, savegames, Lua scripts, tooltips, and the top HUD bar.
+
+### 1. Declaring resources in `mod.json`
+
+Add a `"resources"` array to `mod.json` (no civilization JSON is required):
+
+```json
+{
+  "name": "Faith and Relics",
+  "version": "1.0",
+  "author": "Wololoader",
+  "resources": [
+    {
+      "id": "faith",
+      "name": "Faith",
+      "icon": "icons/faith.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "description": "Generated by Monks (+1 per Monk every 10 seconds)."
+    }
+  ]
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `id` | *(required)* | Short key (no `:`, tab, or newline; must not conflict with `food`/`wood`/`stone`/`gold` or numbers). |
+| `name` | `id` | Display name shown in tooltips, `"Not enough <Name>."` messages, and the `"Show all"` panel. |
+| `icon` | `""` | PNG path relative to the mod folder (e.g. `icons/faith.png`, drawn at 16x16 in the top bar and 18x18 in the panel). |
+| `start` | `0` | Starting amount given to every civilization (including Gaia). |
+| `max` | `0` | Optional cap (`0` = no cap). Enforced deterministically on additions and `SetResource`. |
+| `show` | `true` | Whether to show the resource inline in the top resource bar (`false` keeps it in the `"Show all"` panel only). |
+| `description` | `""` | Optional tooltip text when hovering the resource in the top bar. |
+
+IDs are assigned deterministically in sorted enabled-mod folder order, then declaration order, starting at `211`. The builder grows `civ.resources` identically on every civilization and writes `wololoader/cache/resources.txt` for the DLL.
+
+### 2. Using custom resources in Civ JSON
+
+Custom resources can be referenced by key (`"faith"`), qualified key (`"FaithAndRelics:faith"`), or numeric ID (`211`) in:
+
+- **Starting resources**: `"resources": { "faith": 50 }`
+- **Unit, building, and tech costs** (in `units.<id>.cost`, `custom_units[].cost`, `unique_unit.units.cost`, `unique_unit.elite_cost`, `unique_building.units.cost`, `unique_building.commands[].research.cost`):
+  - Array form: `"cost": [ { "resource": "food", "amount": 50 }, { "resource": "faith", "amount": 25 } ]` (optional `"enabled": 0` for non-consumed prerequisites on units)
+  - Object form: `"cost": { "food": 50, "faith": 25 }`
+- **Effects** (`effects`, `team_bonus_effects`, research `effects`): `"a"` (or `"resource"`) accepts keys, e.g. `{ "type": 1, "resource": "faith", "b": 1, "d": 25 }`.
+
+Command panel and Tech Tree `<cost>` tooltips expand custom costs automatically (e.g. `Cost: 50 Food, 25 Faith`), and missing-resource clicks show `"Not enough <Name>."`.
+
+### 3. Lua API & HUD
+
+- `p:GetResource("faith")` — returns the player's current amount (accepts keys, vanilla names, or numeric IDs).
+- `p:AddResource("faith", 10)` / `p:SetResource("faith", 100)` — multiplayer-safe lockstep game commands (12-byte marked `0x05` packets with `int16` resource ID).
+- `Game.Resources()` — returns an array of `{ id, mod, key, name, icon, start, max, show, description }`.
+- **HUD**: Visible custom resources are drawn in the top bar right of the vanilla resources using the game's font and colours. When they do not all fit (or hidden resources exist), a `"+N"` / `"All"` button opens a scrollable panel listing every custom resource (closed by clicking the button again, clicking `X`, or pressing `Esc`).
+
+See `wololoader/examples/FaithAndRelics/` for a complete working example.
+
+---
+
+## Custom Game Modes
+
+Mods can add custom game modes directly to the lobby **Game Mode** dropdown (alongside Random Map, Regicide, Death Match, etc.). Wololoader relocates the game's 12-slot `GameMode` table to a 64-slot table (custom IDs `12..63`, assigned deterministically in sorted enabled-mod folder order then declaration order). Custom modes behave like Random Map by default (standard map generation, starting resources, victory dropdown, savegames, and native multiplayer packet `0x5a` sync), while your Lua script implements the mode's rules.
+
+### 1. Declaring game modes in `mod.json`
+
+Add a `"game_modes"` array to `mod.json`:
+
+```json
+{
+  "name": "Last Town Standing",
+  "version": "1.0",
+  "author": "Wololoader",
+  "game_modes": [
+    {
+      "id": "last_town_standing",
+      "name": "Last Town Standing",
+      "description": "Protect your Town Centers! Lose all of them and you are defeated at once.",
+      "script_event": true
+    }
+  ]
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `id` | *(required)* | Unique mode key returned by `Game.Mode()` in Lua (e.g. `"battle_royale"`). |
+| `name` | `id` | Display name shown in the lobby Game Mode dropdown, Objectives dialog, and Mods screen. |
+| `description` | `""` | Hover tooltip shown in the lobby Game Mode dropdown. |
+| `script_event` | `true` | Marks the mode as script-driven (check `Game.Mode()` in `Game.OnStart`). |
+
+*(Custom game modes are loaded at startup before the game initializes its mode table; toggling a mod that adds game modes requires restarting the game. If a player disables a mode mod whose ID was saved in their profile or a savegame, Wololoader automatically falls back to Random Map.)*
+
+### 2. Scripting mode rules in Lua
+
+Check `Game.Mode()` inside `Game.OnStart`, and use `p:Defeat()` / `p:Win([team])` to end players or matches deterministically in both single-player and multiplayer:
+
+```lua
+local active = false
+Game.OnStart(function()
+    active = (Game.Mode() == "last_town_standing")
+end)
+```
+
+See `wololoader/examples/LastTownStanding/` for a complete working example.
+
 
 
 

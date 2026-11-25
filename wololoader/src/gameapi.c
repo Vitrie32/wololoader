@@ -44,7 +44,10 @@ static int ga_count(void) { int n; ptab(&n); return n; }
 static int ga_resource(int pid, int res, float *out) {
     void *p = player(pid);
     float *arr = p ? (float *)RDP(p, 0x3c) : NULL;
-    if (!arr || res < 0 || res > 255) return 0;
+    // [player+0x38] = live num_attributes (WorldPlayerBase::ctor 0x74c420,
+    // verified in re/out/decompiled.c). Supports all custom resources 211..32766.
+    int count = p ? (int)RD32(p, 0x38) : 0;
+    if (!arr || res < 0 || res >= count) return 0;
     *out = arr[res];
     return 1;
 }
@@ -82,6 +85,20 @@ static int ga_units(int pid, WlUnitInfo *out, int max) {
     return n;
 }
 
+// Like ga_units but only units of one type, looking at the whole list (Gaia has thousands of
+// trees and mines, so the first 2048 of ga_units may not reach a unit created later).
+static int ga_units_of_type(int pid, int type, WlUnitInfo *out, int max) {
+    void *p = player(pid);
+    char *list = p ? (char *)RDP(p, 0x18) : NULL;
+    if (!list) return 0;
+    void **u = (void **)RDP(list, 4);
+    int count = (int)RD32(list, 8), n = 0;
+    WlUnitInfo tmp;
+    for (int i = 0; i < count && n < max; i++)
+        if (unit_info(u[i], &tmp) && tmp.type == type) out[n++] = tmp;
+    return n;
+}
+
 // Selection of the local player: player+0x160 selected[60] unit pointers, count int at +0x254
 // (overflow.c PLAYER_SEL / PLAYER_CNT; the units beyond 60 of selection_250 are not included).
 static int ga_selected(WlUnitInfo *out, int max) {
@@ -114,6 +131,19 @@ static int ga_researched(int pid, short *out, int max) {
     return n;
 }
 
+static const char *ga_mode(void) {
+    return wl_gamemode_current_key();
+}
+
+// Civ id: [[player+0x1ae4]+8] (the civ object of the player; buildpage.c get_player_civ reads it
+// for the command panel, where the mod buttons per civ are verified in game).
+static int ga_player_civ(int pid) {
+    void *p = player(pid);
+    BYTE *civ = p ? (BYTE *)RDP(p, 0x1ae4) : NULL;
+    return civ ? *(int *)(civ + 8) : -1;
+}
+
 static const WlGameApi k_api = { ga_local, ga_count, ga_resource, ga_is_enemy, ga_units,
-    wl_cmd_add_resource, wl_cmd_research, wl_cmd_spawn, wl_cmd_delete, ga_selected, ga_time, wl_cmd_set_age, ga_researched };
+    wl_cmd_add_resource, wl_cmd_research, wl_cmd_spawn, wl_cmd_delete, ga_selected, ga_time, wl_cmd_set_age, ga_researched, wl_cmd_move, ga_units_of_type, wl_cmd_spawn_neutral,
+    wl_cmd_set_resource, wl_resources_list, wl_resource_resolve, ga_mode, wl_cmd_win, wl_cmd_defeat, ga_player_civ, wl_cmd_attack };
 const WlGameApi *wl_game_api(void) { return &k_api; }

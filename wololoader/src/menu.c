@@ -70,6 +70,7 @@ static void *__fastcall hook_mainmenu_ctor(void *self, void *edx, void *a, void 
     if (!g_wl_vanilla && g_wl_build_error[0])
         snprintf(g_label, sizeof g_label, "Wololoader v%s - mod build error (see Mods)", WOLOLOADER_VERSION);
     add_label(self);
+    wl_mods_check_updates();   // background thread: Mod Hub versions for the Mods screen badges
     return r;
 }
 

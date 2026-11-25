@@ -94,6 +94,10 @@ static int get_player_civ(void *player) {
     return civ_obj ? *(int *)(civ_obj + 8) : -1;
 }
 
+static int civ_matches(int want, int actual) {
+    return want < 0 || want == actual;
+}
+
 // Active building command-page filter context (set during bldg_panel_hook -> o_bldg_panel).
 static int g_bldg_active_page = 1;
 static void *g_bldg_last_unit = NULL;
@@ -110,7 +114,7 @@ static int filter_bldg_item(const char *kind, int target_id) {
     const WlBuildingCmd *bcmds = wl_building_commands(&nb);
     const WlBuildingCmd *matched = NULL;
     for (int i = 0; i < nb; i++) {
-        if (bcmds[i].building == g_filter_bldg && bcmds[i].civ == g_filter_civ &&
+        if (bcmds[i].building == g_filter_bldg && civ_matches(bcmds[i].civ, g_filter_civ) &&
             strcmp(bcmds[i].type, kind) == 0 && bcmds[i].target_id == target_id) {
             matched = &bcmds[i];
             break;
@@ -237,6 +241,8 @@ void wl_buildpage_open(void *screen) {
 #define WL_BLDG_NEXTPAGE_CMD 201
 // Disjoint from WL_MODS_CMD (200), WL_BLDG_NEXTPAGE_CMD (201), and game commands (1..0xb7).
 #define WL_LUA_CMD 210
+// Runtime Lua commands (Game.AddCommand): 350..413, disjoint from WL_LUA_CMD (210..337).
+#define WL_RT_LUA_CMD 350
 #define WL_MODS_HELP 28490
 #define WL_NEXTPAGE_HELP 28491
 
@@ -262,6 +268,21 @@ typedef void (__thiscall *BldgPanel_t)(void *screen);
 typedef void (__thiscall *FinalizeVisibility_t)(void *screen);
 static BldgPanel_t o_bldg_panel;
 static const DWORD ADDR_FINALIZE_VISIBILITY = 0x006bf840;
+static const DWORD ADDR_REFRESH_PANEL = 0x006c6490;
+static int g_refresh_ok;
+static int g_in_bldg_panel;
+
+// Refresh the active GameScreen command panel after runtime Game.AddCommand /
+// Game.RemoveCommand or mid-game hot reload. 0x6c6490 (__thiscall(screen), plain ret)
+// dereferences 0x540c90([0xaf2c58]) + 0x15c unchecked, so we guard all three pointers.
+void wl_buildpage_refresh(void) {
+    if (!g_refresh_ok || g_in_bldg_panel) return;
+    void *screen = *(void **)0xaf3d90;
+    void *game = *(void **)0xaf2c58;
+    if (!screen || !game) return;
+    if (!((LocalPlayer_t)0x540c90)(game)) return;
+    ((Page_t)ADDR_REFRESH_PANEL)(screen);
+}
 
 static void set_button_visible(void *btn, int visible) {
     if (!btn) return;
@@ -293,48 +314,104 @@ static int button_action(void *btn) {
 }
 
 // Guard built-in building buttons added by 0x6bb100:
-// Gather Point = slot 4, action 0x33 (0x6bbd99); Ungarrison ("Unload") = slot 9, action 0x4e (0x6bbecc).
-static int is_protected_builtin(int slot, void *btn) {
+// - Market (84) slots 5 and 10 carry the "Sell" ([screen+0xbd0]) and "Buy" ([screen+0xbd4])
+//   TextPanels even though [btn+0x720] == 0 (0x6bbfaa, 0x6bc1bd).
+// - Gather Point = slot 4, action 0x33 (0x6bbd99).
+// - TC Back to Work = slot 8, action 0xab (0x6bbf35).
+// - Ungarrison ("Unload") = slot 9, action 0x4e (0x6bbecc) / 0x4d.
+// - TC Ring Town Bell = slot 14, action 0xa3 (0x6bc43d).
+static int is_protected_builtin(int bldg_id, int slot, void *btn) {
+    if (bldg_id == 84 && (slot == 5 || slot == 10)) return 1;
     if (!btn || *(int *)((char *)btn + 0x720) == 0) return 0;
     int act = button_action(btn);
     if (slot == 4 && act == 0x33) return 1;
+    if (slot == 8 && act == 0xab) return 1;
     if (slot == 9 && (act == 0x4e || act == 0x4d)) return 1;
+    if (slot == 14 && act == 0xa3) return 1;
     return 0;
 }
 
-// Inspect pages that have at least one command for (civ, bldg).
-// Outputs lowest page (first_page), highest page (max_page), and count of distinct pages (num_pages).
-static int scan_bldg_pages(const WlBuildingCmd *bcmds, int nb, int civ, int bldg,
+// Inspect pages that have at least one static (bcmds) or runtime (rcmds) command for (civ, bldg).
+// Outputs static count, runtime count, lowest page, highest page, and distinct page count.
+static int scan_bldg_pages(const WlBuildingCmd *bcmds, int nb,
+                           const WlRuntimeCmd *rcmds, int nr,
+                           int civ, int bldg,
+                           int *out_bldg_cnt, int *out_rt_cnt,
                            int *out_first, int *out_max, int *out_num_pages) {
-    int count = 0, first_page = 0, max_page = 0;
+    int bldg_cnt = 0, rt_cnt = 0, first_page = 0, max_page = 0;
     for (int i = 0; i < nb; i++) {
-        if (bcmds[i].building == bldg && bcmds[i].civ == civ) {
+        if (bcmds[i].building == bldg && civ_matches(bcmds[i].civ, civ)) {
             int p = bcmds[i].page >= 1 ? bcmds[i].page : 1;
-            count++;
+            bldg_cnt++;
             if (first_page == 0 || p < first_page) first_page = p;
             if (p > max_page) max_page = p;
         }
     }
-    int num_pages = 0;
-    for (int p = first_page; p > 0 && p <= max_page; p++) {
-        for (int i = 0; i < nb; i++) {
-            if (bcmds[i].building == bldg && bcmds[i].civ == civ && bcmds[i].page == p) {
-                num_pages++;
-                break;
-            }
+    for (int i = 0; i < nr; i++) {
+        if (!rcmds[i].used) continue;
+        if (rcmds[i].building == bldg && civ_matches(rcmds[i].civ, civ)) {
+            int p = rcmds[i].page >= 1 ? rcmds[i].page : 1;
+            rt_cnt++;
+            if (first_page == 0 || p < first_page) first_page = p;
+            if (p > max_page) max_page = p;
         }
     }
+    // A vanilla building with runtime commands on page > 1 still has its vanilla page 1.
+    if (bldg_cnt == 0 && rt_cnt > 0 && max_page > 1 && first_page > 1) first_page = 1;
+    int num_pages = 0;
+    for (int p = first_page; p > 0 && p <= max_page; p++) {
+        int found = (p == 1 && bldg_cnt == 0 && rt_cnt > 0 && max_page > 1);
+        for (int i = 0; !found && i < nb; i++) {
+            int cp = bcmds[i].page >= 1 ? bcmds[i].page : 1;
+            if (bcmds[i].building == bldg && civ_matches(bcmds[i].civ, civ) && cp == p) found = 1;
+        }
+        for (int i = 0; !found && i < nr; i++) {
+            if (!rcmds[i].used) continue;
+            int cp = rcmds[i].page >= 1 ? rcmds[i].page : 1;
+            if (rcmds[i].building == bldg && civ_matches(rcmds[i].civ, civ) && cp == p) found = 1;
+        }
+        if (found) num_pages++;
+    }
+    if (out_bldg_cnt) *out_bldg_cnt = bldg_cnt;
+    if (out_rt_cnt) *out_rt_cnt = rt_cnt;
     if (out_first) *out_first = first_page > 0 ? first_page : 1;
     if (out_max) *out_max = max_page > 0 ? max_page : 1;
     if (out_num_pages) *out_num_pages = num_pages;
-    return count;
+    return bldg_cnt + rt_cnt;
 }
 
-static int page_has_commands(const WlBuildingCmd *bcmds, int nb, int civ, int bldg, int page) {
+static int page_has_commands(const WlBuildingCmd *bcmds, int nb,
+                             const WlRuntimeCmd *rcmds, int nr,
+                             int civ, int bldg, int page, int bldg_cnt, int rt_cnt) {
+    if (page == 1 && bldg_cnt == 0 && rt_cnt > 0) return 1;
     for (int i = 0; i < nb; i++) {
-        if (bcmds[i].building == bldg && bcmds[i].civ == civ && bcmds[i].page == page) return 1;
+        int cp = bcmds[i].page >= 1 ? bcmds[i].page : 1;
+        if (bcmds[i].building == bldg && civ_matches(bcmds[i].civ, civ) && cp == page) return 1;
+    }
+    for (int i = 0; i < nr; i++) {
+        if (!rcmds[i].used) continue;
+        int cp = rcmds[i].page >= 1 ? rcmds[i].page : 1;
+        if (rcmds[i].building == bldg && civ_matches(rcmds[i].civ, civ) && cp == page) return 1;
     }
     return 0;
+}
+
+// Re-verify on click that the selected unit is still an owned, finished building
+// matching the expected master id, civ, and condition (guards against stale buttons
+// or hotkeys after conversion / selection switch).
+static int validate_cmd_unit(void *screen, int want_bldg, int want_civ,
+                             const char *cond_name, int *out_unit_id) {
+    BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
+    void *game = *(void **)0xaf2c58;
+    void *me = game ? ((LocalPlayer_t)0x540c90)(game) : NULL;
+    if (!unit || !me || *(void **)(unit + 0x10) != me || unit[0x4c] != 2) return 0;
+    BYTE *master = *(BYTE **)(unit + 0xc);
+    if (!master || master[4] != 80 || *(short *)(master + 0x10) != want_bldg) return 0;
+    if (!civ_matches(want_civ, get_player_civ(me))) return 0;
+    int unit_id = (int)*(DWORD *)(unit + 8);
+    if (cond_name && cond_name[0] && !wl_script_eval_condition(cond_name, unit_id)) return 0;
+    if (out_unit_id) *out_unit_id = unit_id;
+    return 1;
 }
 
 static void __fastcall bldg_panel_hook(void *screen, void *edx) {
@@ -343,30 +420,35 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
     BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
     void *game = *(void **)0xaf2c58;
     void *me = game ? ((LocalPlayer_t)0x540c90)(game) : NULL;
-    int nb = 0;
+    int nb = 0, nr = 0;
     const WlBuildingCmd *bcmds = wl_building_commands(&nb);
+    const WlRuntimeCmd *rcmds = wl_rt_commands(&nr);
 
     int id = -1, civ = -1, unit_id = -1;
-    int count = 0, first_page = 1, max_page = 1, num_pages = 0;
-    if (nb > 0 && unit && me && *(void **)(unit + 0x10) == me && unit[0x4c] == 2) {
+    int count = 0, bldg_cnt = 0, rt_cnt = 0, first_page = 1, max_page = 1, num_pages = 0;
+    if ((nb > 0 || nr > 0) && unit && me && *(void **)(unit + 0x10) == me && unit[0x4c] == 2) {
         BYTE *master = *(BYTE **)(unit + 0xc);
         if (master && master[4] == 80) {
             id = *(short *)(master + 0x10);
             civ = get_player_civ(me);
             unit_id = (int)*(DWORD *)(unit + 8);
-            count = scan_bldg_pages(bcmds, nb, civ, id, &first_page, &max_page, &num_pages);
+            count = scan_bldg_pages(bcmds, nb, rcmds, nr, civ, id,
+                                    &bldg_cnt, &rt_cnt, &first_page, &max_page, &num_pages);
         }
     }
 
+    g_in_bldg_panel++;
     if (count > 0) {
         if (unit != g_bldg_last_unit || unit_id != g_bldg_last_unit_id) {
             g_bldg_last_unit = unit;
             g_bldg_last_unit_id = unit_id;
             g_bldg_active_page = first_page;
-        } else if (!page_has_commands(bcmds, nb, civ, id, g_bldg_active_page)) {
+        } else if (!page_has_commands(bcmds, nb, rcmds, nr, civ, id, g_bldg_active_page, bldg_cnt, rt_cnt)) {
             g_bldg_active_page = first_page;
         }
-        g_filter_active = 1;
+        // If only single-page runtime commands match a vanilla building (bldg_cnt == 0),
+        // leave g_filter_active = 0 so vanilla train/research loops run untouched.
+        g_filter_active = (bldg_cnt > 0 || num_pages > 1) ? 1 : 0;
         g_filter_civ = civ;
         g_filter_bldg = id;
         g_filter_unit_id = unit_id;
@@ -378,7 +460,10 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
     o_bldg_panel(screen);
 
     g_filter_active = 0;
-    if (count == 0) return;
+    if (count == 0) {
+        g_in_bldg_panel--;
+        return;
+    }
 
     void **buttons = (void **)((char *)screen + 0xb14);
     AddButton_t add = (AddButton_t)0x6c9200;
@@ -388,9 +473,9 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
     // 0x6bb100 already filtered train/research commands at the source (0x6bb507/0x6bb703)
     // and called 0x6bf840. Now add active-page Lua buttons, apply disable/hide conditions
     // only to slots that were actually populated, and add Next Page when >1 page exists.
-    for (int i = 0; i < nb; i++) {
+    for (int i = 0; bldg_cnt > 0 && i < nb; i++) {
         const WlBuildingCmd *bc = &bcmds[i];
-        if (bc->building != id || bc->civ != civ || bc->page != g_bldg_active_page) continue;
+        if (bc->building != id || !civ_matches(bc->civ, civ) || bc->page != g_bldg_active_page) continue;
         if (bc->button < 1 || bc->button > 14) continue;
         int slot = bc->button - 1;
 
@@ -401,17 +486,17 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
 
         if (strcmp(bc->type, "lua") == 0) {
             if (!is_avail && strcmp(bc->cond_action, "hide") == 0) continue;
-            if (is_protected_builtin(slot, buttons[slot])) continue;
+            if (is_protected_builtin(id, slot, buttons[slot])) continue;
             add(screen, sheet, (DWORD)slot, (DWORD)bc->icon, (DWORD)(WL_LUA_CMD + i), 0,
                 1, (DWORD)bc->help, 0xad0380, 0, 0, (DWORD)-1, 0, 0, 0, 0, 0);
             need_finalize = 1;
-            if (!is_avail && strcmp(bc->cond_action, "disable") == 0 && buttons[slot]) {
-                set_button_disabled(buttons[slot], 1);
+            if (buttons[slot]) {
+                set_button_disabled(buttons[slot], (!is_avail && strcmp(bc->cond_action, "disable") == 0) ? 1 : 0);
             }
         } else {
             // Never force visibility on a slot 0x6bb100 did not populate ([btn+0x720] == 0).
             if (!buttons[slot] || *(int *)((char *)buttons[slot] + 0x720) == 0) continue;
-            if (is_protected_builtin(slot, buttons[slot])) continue;
+            if (is_protected_builtin(id, slot, buttons[slot])) continue;
             if (!is_avail) {
                 if (strcmp(bc->cond_action, "hide") == 0) {
                     set_button_visible(buttons[slot], 0);
@@ -420,6 +505,31 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
                     set_button_disabled(buttons[slot], 1);
                 }
             }
+        }
+    }
+
+    int max_rt_btn = num_pages > 1 ? 14 : 15;
+    for (int i = 0; rt_cnt > 0 && i < nr; i++) {
+        const WlRuntimeCmd *rc = &rcmds[i];
+        if (!rc->used) continue;
+        int rpage = rc->page >= 1 ? rc->page : 1;
+        if (rc->building != id || !civ_matches(rc->civ, civ) || rpage != g_bldg_active_page) continue;
+        if (rc->button < 1 || rc->button > max_rt_btn) continue;
+        int slot = rc->button - 1;
+
+        int is_avail = 1;
+        if (rc->cond_name[0]) {
+            is_avail = wl_script_eval_condition(rc->cond_name, unit_id);
+        }
+        if (!is_avail && strcmp(rc->cond_action, "hide") == 0) continue;
+        if (is_protected_builtin(id, slot, buttons[slot])) continue;
+        // Pass rc->gen as sub_id (z) so 0x6c9200 does not early-return at 0x6c92dd
+        // when a hot-reloaded script updates text/help with the same cmd and icon.
+        add(screen, sheet, (DWORD)slot, (DWORD)rc->icon, (DWORD)(WL_RT_LUA_CMD + i), rc->gen,
+            1, (DWORD)rc->help_sid, 0xad0380, 0, 0, (DWORD)-1, 0, 0, 0, 0, 0);
+        need_finalize = 1;
+        if (buttons[slot]) {
+            set_button_disabled(buttons[slot], (!is_avail && strcmp(rc->cond_action, "disable") == 0) ? 1 : 0);
         }
     }
 
@@ -433,6 +543,7 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
         ((FinalizeVisibility_t)ADDR_FINALIZE_VISIBILITY)(screen);
     }
     wl_script_cond_end_refresh();
+    g_in_bldg_panel--;
 }
 
 static void __fastcall command_hook(void *screen, void *edx, int cmd, int a, int b) {
@@ -447,13 +558,18 @@ static void __fastcall command_hook(void *screen, void *edx, int cmd, int a, int
             if (master) {
                 int id = *(short *)(master + 0x10);
                 int civ = get_player_civ(me);
-                int nb = 0;
+                int nb = 0, nr = 0;
                 const WlBuildingCmd *bcmds = wl_building_commands(&nb);
-                int first_page = 1, max_page = 1, num_pages = 0;
-                if (scan_bldg_pages(bcmds, nb, civ, id, &first_page, &max_page, &num_pages) > 0) {
+                const WlRuntimeCmd *rcmds = wl_rt_commands(&nr);
+                int bldg_cnt = 0, rt_cnt = 0, first_page = 1, max_page = 1, num_pages = 0;
+                if (scan_bldg_pages(bcmds, nb, rcmds, nr, civ, id,
+                                    &bldg_cnt, &rt_cnt, &first_page, &max_page, &num_pages) > 0) {
                     int next_page = 0;
                     for (int p = g_bldg_active_page + 1; p <= max_page; p++) {
-                        if (page_has_commands(bcmds, nb, civ, id, p)) { next_page = p; break; }
+                        if (page_has_commands(bcmds, nb, rcmds, nr, civ, id, p, bldg_cnt, rt_cnt)) {
+                            next_page = p;
+                            break;
+                        }
                     }
                     if (next_page == 0) next_page = first_page;
                     g_bldg_active_page = next_page;
@@ -467,10 +583,26 @@ static void __fastcall command_hook(void *screen, void *edx, int cmd, int a, int
         int nb = 0;
         const WlBuildingCmd *bcmds = wl_building_commands(&nb);
         int idx = cmd - WL_LUA_CMD;
-        BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
-        if (idx < nb && unit && strcmp(bcmds[idx].type, "lua") == 0) {
+        int unit_id = -1;
+        if (idx < nb && strcmp(bcmds[idx].type, "lua") == 0 &&
+            validate_cmd_unit(screen, bcmds[idx].building, bcmds[idx].civ, bcmds[idx].cond_name, &unit_id)) {
             wl_cmd_set_local_ctx(1);
-            wl_script_command(bcmds[idx].name, (int)*(DWORD *)(unit + 8));
+            wl_script_command(bcmds[idx].name, unit_id);
+            wl_cmd_set_local_ctx(0);
+        }
+        return;
+    }
+    if (cmd >= WL_RT_LUA_CMD && cmd < WL_RT_LUA_CMD + WL_MAX_RT_CMDS) {
+        int nr = 0;
+        const WlRuntimeCmd *rcmds = wl_rt_commands(&nr);
+        int idx = cmd - WL_RT_LUA_CMD;
+        int unit_id = -1;
+        if (idx < nr && rcmds[idx].used &&
+            validate_cmd_unit(screen, rcmds[idx].building, rcmds[idx].civ, rcmds[idx].cond_name, &unit_id)) {
+            char name[64];
+            lstrcpynA(name, rcmds[idx].name, sizeof name);
+            wl_cmd_set_local_ctx(1);
+            wl_script_command(name, unit_id);
             wl_cmd_set_local_ctx(0);
         }
         return;
@@ -524,5 +656,12 @@ void wl_install_buildpage(void) {
     ok = ok && (o_command = (Command_t)wl_hook(0x6bfc40, command_hook, 5)) != NULL;
     // Stolen 5 bytes at 0x6bb100: 55 8b ec 6a ff (push ebp; mov ebp,esp; push -1)
     ok = ok && (o_bldg_panel = (BldgPanel_t)wl_hook(0x6bb100, bldg_panel_hook, 5)) != NULL;
+    // Verified prologue at 0x6c6490 (refresh active command panel):
+    // push esi; mov esi,ecx; mov ecx,[0xaf2c58]; call 0x540c90
+    static const BYTE b_refresh[] = { 0x56, 0x8b, 0xf1, 0x8b, 0x0d, 0x58, 0x2c, 0xaf, 0x00, 0xe8, 0xf2, 0xa7, 0xe7, 0xff };
+    g_refresh_ok = (memcmp((void *)ADDR_REFRESH_PANEL, b_refresh, sizeof b_refresh) == 0);
+    if (!g_refresh_ok) wl_log("buildpage: unexpected bytes at 0x6c6490, live panel refresh disabled");
+    wl_script_set_buildpage_refresh(wl_buildpage_refresh);
+    wl_script_set_local_ctx_fn(wl_cmd_set_local_ctx);
     wl_log("buildpage: mod buildings page %s", ok ? "installed" : "FAILED");
 }

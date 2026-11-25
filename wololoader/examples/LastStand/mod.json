@@ -1,0 +1,81 @@
+{
+  "name": "Last Stand",
+  "version": "2.0",
+  "author": "Wololoader",
+  "description": "Co-op zombies-style survival mode. Every player, computer players included, defends one shared Castle against the Horde: endless rounds of Gaia raiders that spawn all around your bases and march on your buildings. Earn Points from kills and survived rounds, then spend them at the Castle on Mystery Boxes, perks (Juggernaut, Speed Cola, Pack-a-Punch), mercenaries, towers and supplies.",
+  "enabled": true,
+  "resources": [
+    {
+      "id": "wave",
+      "name": "Round",
+      "icon": "icons/wave.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "description": "The current round of the Horde in Last Stand."
+    },
+    {
+      "id": "next",
+      "name": "Next round",
+      "icon": "icons/next.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "description": "Seconds until the next round of the Horde starts (0 while a round is being fought)."
+    },
+    {
+      "id": "glory",
+      "name": "Points",
+      "icon": "icons/glory.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "description": "+10 for every Horde kill, +50 for every round survived. Spend them at the Castle: Mystery Box, perks, mercenaries, towers, supplies."
+    }
+  ],
+  "game_modes": [
+    {
+      "id": "last_stand",
+      "name": "Last Stand",
+      "description": "Co-op zombies-style survival! Everyone defends a shared Castle against rounds of the Horde that grow nastier every round. Spend Points at the Castle on the Mystery Box and perks. The Castle falls and it is over.",
+      "script_event": true,
+      "teams": "all"
+    }
+  ],
+  "settings": [
+    {
+      "id": "rounds",
+      "name": "Rounds to survive (0 = endless)",
+      "type": "number",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "default": 0
+    },
+    {
+      "id": "break_seconds",
+      "name": "Break between rounds (seconds)",
+      "type": "number",
+      "min": 5,
+      "max": 120,
+      "step": 5,
+      "default": 20
+    },
+    {
+      "id": "grace_seconds",
+      "name": "First break (seconds)",
+      "type": "number",
+      "min": 10,
+      "max": 300,
+      "step": 10,
+      "default": 90
+    },
+    {
+      "id": "difficulty",
+      "name": "Difficulty",
+      "type": "choice",
+      "choices": ["Easy", "Normal", "Hard", "Insane"],
+      "default": "Normal"
+    }
+  ]
+}

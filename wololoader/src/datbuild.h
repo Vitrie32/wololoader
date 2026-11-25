@@ -6,7 +6,7 @@
 // Builder output revision: part of the autobuild fingerprint (autobuild.c).
 // Bump it whenever wl_dat_build produces different bytes for the same mods,
 // so players' caches are rebuilt automatically.
-#define WL_BUILDER_REV "custom_units1"   // bump: custom_units + unit icon index resolution
+#define WL_BUILDER_REV "customres1"  // bump: custom resources in mod.json + cache/resources.txt
 
 typedef struct {
     int (*inflate_raw)(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len);
@@ -22,5 +22,12 @@ int wl_dat_build(const WlZlib *z,
                  const char *out_commands_txt,
                  char *err,
                  size_t errcap);
+
+// Automatic renumbering of new mod sprites (see datbuild.c). One entry per renumbered
+// sprite: <mods_dir>/<mod>/resources/_common/drs/graphics/<from>.slp is used as id <to>.
+#define WL_SLP_REMAP_FIRST 90000   // above every sprite id of the game (gamedata_x2 ends at 88713)
+typedef struct { char mod[256]; int from, to; } WlSlpRemap;
+// drs_dir: <game>/resources/_common/drs. *out is malloc'd (free it). 0 = ok, -1 = error.
+int wl_slp_remap_compute(const char *drs_dir, const char *mods_dir, WlSlpRemap **out, size_t *out_count);
 
 #endif // WL_DATBUILD_H

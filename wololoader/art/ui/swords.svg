@@ -1,8 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<g stroke-linecap="round" fill="none">
-<path d="M12 12 L50 50 M52 12 L14 50" stroke="#2b1807" stroke-width="10"/>
-<path d="M12 12 L50 50 M52 12 L14 50" stroke="#d8dce3" stroke-width="5"/>
-<path d="M22 46 L30 38 M42 46 L34 38" stroke="#2b1807" stroke-width="10"/>
-<path d="M22 46 L30 38 M42 46 L34 38" stroke="#c9a24a" stroke-width="5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#fbe7a4"/><stop offset="0.45" stop-color="#d9a441"/><stop offset="1" stop-color="#8a5a1c"/></linearGradient></defs><defs><linearGradient id="s" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f2f0ea"/><stop offset="1" stop-color="#8d8c88"/></linearGradient></defs>
+<g stroke-linecap="round">
+<path d="M10 8 L44 42 M54 8 L20 42" stroke="#2a1606" stroke-width="11"/>
+<path d="M10 8 L44 42 M54 8 L20 42" stroke="url(#s)" stroke-width="6"/>
+<path d="M38 48 L50 36 M26 48 L14 36" stroke="#2a1606" stroke-width="9"/>
+<path d="M38 48 L50 36 M26 48 L14 36" stroke="url(#g)" stroke-width="5"/>
+<path d="M46 46 L56 56 M18 46 L8 56" stroke="#2a1606" stroke-width="9"/>
+<path d="M46 46 L56 56 M18 46 L8 56" stroke="#8a5a1c" stroke-width="5"/>
 </g>
 </svg>

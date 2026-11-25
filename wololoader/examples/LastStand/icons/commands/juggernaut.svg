@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#4e3616"/><stop offset="100%" stop-color="#221608"/></linearGradient>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#fff099"/><stop offset="100%" stop-color="#d49419"/></linearGradient>
+    <linearGradient id="steel" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#dfe6ee"/><stop offset="100%" stop-color="#6b7785"/></linearGradient>
+    <linearGradient id="oak" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#c98b44"/><stop offset="100%" stop-color="#784618"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bg)" stroke="#160e05" stroke-width="1.8"/>
+  <rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+  <!-- heater shield -->
+  <path d="M18 5 L29 8.5 C29 18 25 25 18 31 C11 25 7 18 7 8.5 Z" fill="url(#steel)" stroke="#1b1106" stroke-width="1.6" stroke-linejoin="round"/>
+  <path d="M18 5 L29 8.5 C29 18 25 25 18 31 Z" fill="#3b4755" fill-opacity="0.35"/>
+  <path d="M18 8 L26.3 10.6 C26 17.6 23.2 22.8 18 27.6 C12.8 22.8 10 17.6 9.7 10.6 Z" fill="#a3201a" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round"/>
+  <!-- gold cross -->
+  <rect x="16.6" y="10.5" width="2.8" height="14" fill="url(#gold)" stroke="#1b1106" stroke-width="0.9"/>
+  <rect x="11.8" y="14.2" width="12.4" height="2.8" fill="url(#gold)" stroke="#1b1106" stroke-width="0.9"/>
+</svg>

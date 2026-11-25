@@ -1,7 +1,7 @@
 // Native test of src/script.c (Lua runtime) with the system gcc.
 // Build and run from wololoader/:
 //   mkdir -p $HOME/.cache/wl-test/lua_obj && for f in lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm lundump lvm lzio lauxlib lbaselib lcorolib lmathlib lstrlib ltablib lutf8lib; do gcc -O1 -w -c -o $HOME/.cache/wl-test/lua_obj/$f.o third_party/lua/src/$f.c; done
-//   gcc -O1 -Wall -Wextra -Wno-format-truncation -std=c11 -Itools/fake_windows -Isrc -Ithird_party/lua/src -o $HOME/.cache/wl-test/test_script tools/test_script.c src/script.c $HOME/.cache/wl-test/lua_obj/*.o -lm && $HOME/.cache/wl-test/test_script
+//   gcc -O1 -Wall -Wextra -Wno-format-truncation -std=c11 -Itools/fake_windows -Isrc -Ithird_party/lua/src -o $HOME/.cache/wl-test/test_script tools/test_script.c src/script.c src/modsettings.c src/json.c $HOME/.cache/wl-test/lua_obj/*.o -lm && $HOME/.cache/wl-test/test_script
 // Exit code 0 = all checks passed.
 #include "wololoader.h"
 #include <stdio.h>
@@ -107,7 +107,41 @@ static short g_ftech[8];
 static int g_nftech;
 static int fg_local(void) { return 1; }
 static int fg_count(void) { return 2; }
-static int fg_resource(int pid, int res, float *out) { (void)pid; *out = res == 6 ? 0.0f : 100.0f; return 1; }
+static WlResourceDef g_fres[2];
+static float g_fres_val[256];
+static int g_fres_add_id, g_fres_set_id;
+static float g_fres_add_amt, g_fres_set_val;
+static int fg_resource(int pid, int res, float *out) {
+    (void)pid;
+    if (res == 6) { *out = 0.0f; return 1; }
+    if (res >= 0 && res < 256) { *out = g_fres_val[res]; return 1; }
+    return 0;
+}
+static int fg_add_resource(int pid, int res, float amt) {
+    (void)pid;
+    if (res < 0 || res >= 256) return -1;
+    g_fres_add_id = res; g_fres_add_amt = amt;
+    g_fres_val[res] += amt;
+    return 1;
+}
+static int fg_set_resource(int pid, int res, float val) {
+    (void)pid;
+    if (res < 0 || res >= 256) return -1;
+    g_fres_set_id = res; g_fres_set_val = val;
+    g_fres_val[res] = val;
+    return 1;
+}
+static const WlResourceDef *fg_resources_list(int *out_count) {
+    *out_count = 2;
+    return g_fres;
+}
+static int fg_resource_resolve(const char *key, const char *prefer_mod) {
+    (void)prefer_mod;
+    for (int i = 0; i < 2; i++) {
+        if (strcmp(g_fres[i].key, key) == 0) return g_fres[i].id;
+    }
+    return -1;
+}
 static int fg_is_enemy(int a, int b) { (void)a; (void)b; return 0; }
 static int fg_units(int pid, WlUnitInfo *out, int max) {
     int n = 0;
@@ -119,12 +153,67 @@ static int fg_researched(int pid, short *out, int max) {
     for (int i = 0; i < g_nftech && n < max; i++) if (pid == 1) out[n++] = g_ftech[i];
     return n;
 }
+static const char *g_fmode;
+static int g_fwin_pid, g_fwin_team, g_fwin_calls;
+static int g_fdefeat_pid, g_fdefeat_calls;
+static const char *fg_game_mode(void) { return g_fmode; }
+static int fg_win_player(int pid, int team) {
+    if (pid <= 0) return -1;
+    g_fwin_pid = pid; g_fwin_team = team; g_fwin_calls++;
+    return 1;
+}
+static int fg_defeat_player(int pid) {
+    if (pid <= 0) return -1;
+    g_fdefeat_pid = pid; g_fdefeat_calls++;
+    return 1;
+}
 
 static int g_reload_mods_calls;
 static int fake_reload_mods(char *msg, size_t cap) {
     g_reload_mods_calls++;
     snprintf(msg, cap, "Mods reloaded (2 civs, 3 mods)");
     return 1;
+}
+
+static char g_rt_str_text[WL_MAX_RT_CMDS][128];
+static char g_rt_str_help[WL_MAX_RT_CMDS][256];
+static int g_rt_str_set[WL_MAX_RT_CMDS];
+static int g_bp_refresh_calls;
+static int g_local_ctx_state;
+static int g_local_ctx_on_calls;
+
+static void fake_rt_str(int slot, const char *text, const char *help) {
+    if (slot < 0 || slot >= WL_MAX_RT_CMDS) return;
+    if (text) {
+        g_rt_str_set[slot] = 1;
+        snprintf(g_rt_str_text[slot], sizeof g_rt_str_text[slot], "%s", text);
+        snprintf(g_rt_str_help[slot], sizeof g_rt_str_help[slot], "%s", help ? help : "");
+    } else {
+        g_rt_str_set[slot] = 0;
+        g_rt_str_text[slot][0] = 0;
+        g_rt_str_help[slot][0] = 0;
+    }
+}
+static void fake_bp_refresh(void) { g_bp_refresh_calls++; }
+static void fake_local_ctx(int on) {
+    g_local_ctx_state = on;
+    if (on) g_local_ctx_on_calls++;
+}
+
+static int find_rt_cmd(const char *mod, const char *name) {
+    int n = 0;
+    const WlRuntimeCmd *cmds = wl_rt_commands(&n);
+    for (int i = 0; i < n; i++) {
+        if (cmds[i].used && (!mod || strcmp(cmds[i].mod, mod) == 0) && strcmp(cmds[i].name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+static int count_rt_cmds(void) {
+    int n = 0, c = 0;
+    const WlRuntimeCmd *cmds = wl_rt_commands(&n);
+    for (int i = 0; i < n; i++) if (cmds[i].used) c++;
+    return c;
 }
 
 int main(void) {
@@ -298,6 +387,29 @@ int main(void) {
     FILE *of = fopen(outside, "wb");
     if (of) { fputs("wl.log('OUTSIDE RAN')\n", of); fclose(of); }
 
+    // Mod settings (modsettings.c): defaults from mod.json, the player's values from
+    // <root>\\settings\\<id>.json. The DLL's paths use '\\', which on Linux are plain
+    // characters of one file name, so the files are written with the same names.
+    write_mod(10, "setmod",
+        "local s = MOD.settings\n"
+        "wl.log('S', tostring(s.fast), s.pop, s.mode, tostring(s.missing), s.bad)\n");
+    snprintf(g_wl.root, sizeof g_wl.root, "%s", g_tmp);
+    {
+        char p[MAX_PATH + 64];
+        snprintf(p, sizeof p, "%s\\mod.json", g_wl.mods[10].dir);
+        FILE *f = fopen(p, "wb");
+        fputs("{\"name\":\"setmod\",\"settings\":["
+              "{\"id\":\"fast\",\"type\":\"bool\",\"default\":true},"
+              "{\"id\":\"pop\",\"type\":\"number\",\"min\":0,\"max\":50,\"step\":5,\"default\":10},"
+              "{\"id\":\"mode\",\"type\":\"choice\",\"choices\":[\"Easy\",\"Hard\"],\"default\":\"Easy\"},"
+              "{\"id\":\"bad\",\"type\":\"number\",\"min\":0,\"max\":5,\"default\":3}]}", f);
+        fclose(f);
+        snprintf(p, sizeof p, "%s\\settings\\setmod.json", g_tmp);
+        f = fopen(p, "wb");   // player: pop 999 is clamped to 50, mode Hard, bad gets a string (ignored)
+        fputs("{\"fast\": false, \"pop\": 999, \"mode\": \"Hard\", \"bad\": \"x\"}", f);
+        fclose(f);
+    }
+
     wl_script_event("game_start");  // before init: must be a harmless no-op
     static const WlUiApi fui = { fui_create, fui_destroy, fui_set, fui_text };
     wl_script_set_uikit(&fui);
@@ -322,6 +434,7 @@ int main(void) {
     wl_script_event("no_such_event");
 
     CHECK(has_line("[lua:good] hello\tgood\tName of good\t1.0\t" WOLOLOADER_VERSION));
+    CHECK(has_line("[lua:setmod] S\tfalse\t50\tHard\tnil\t3"));
     CHECK(has_line("[lua:good] via print\tnil\tnil\tnil\tnil\tnil\tnil"));
     CHECK(has_line("[lua:good] str\tABC\t2\t2\tfunction"));
     CHECK(has_line("[lua:bad] bad: global counter seen =\tnil"));
@@ -552,6 +665,251 @@ int main(void) {
     write_mod(0, "remod", "wl.log('REMOD_BOOT v2')\n");
     wl_script_restart();
     CHECK(has_line("[lua:remod] REMOD_BOOT v2"));
+
+    // ---- Game.AddCommand / Game.RemoveCommand / unload & restart cleanup --------------
+    printf("-- Game.AddCommand / RemoveCommand / unload cleanup\n");
+    wl_script_set_rt_cmd_string_fn(fake_rt_str);
+    wl_script_set_buildpage_refresh(fake_bp_refresh);
+    wl_script_set_local_ctx_fn(fake_local_ctx);
+    g_bp_refresh_calls = 0;
+    g_local_ctx_state = 0;
+    g_local_ctx_on_calls = 0;
+    write_mod(0, "rtcmdA",
+        "local ok = Game.AddCommand({ building = 84, button = 10, icon = 49, text = 'Trade', help = 'Swap goods', name = 'Trade' })\n"
+        "wl.log('RT_ADD_A', tostring(ok))\n"
+        "local cond_allow = false\n"
+        "Game.CommandCondition('Trade', function(b) wl.log('RT_COND', b.Id) return cond_allow end)\n"
+        "Game.OnCommand('Trade', function(b)\n"
+        "  wl.log('RT_CLICK_START', b.Id)\n"
+        "  Time.Wait(1)\n"
+        "  wl.log('RT_CLICK_RESUME', b.Id)\n"
+        "end)\n"
+        "wl.on('rt_allow', function() cond_allow = true end)\n"
+        "wl.on('rt_update', function()\n"
+        "  local r = Game.AddCommand({ building = 84, button = 10, icon = 50, text = 'Trade+', help = 'Updated', name = 'Trade', civ = 1, condition_action = 'hide' })\n"
+        "  wl.log('RT_UPD', tostring(r))\n"
+        "end)\n"
+        "wl.on('rt_bad', function()\n"
+        "  local ok1 = pcall(Game.AddCommand, { building = 84, button = 0, name = 'X' })\n"
+        "  local ok2 = pcall(Game.AddCommand, { building = 84, button = 16, name = 'X' })\n"
+        "  local ok3 = pcall(Game.AddCommand, { building = 84, button = 10, name = 'X', condition_action = 'bogus' })\n"
+        "  local ok4 = pcall(Game.AddCommand, { building = 84, button = 10, name = '' })\n"
+        "  wl.log('RT_BAD', tostring(ok1), tostring(ok2), tostring(ok3), tostring(ok4))\n"
+        "end)\n"
+        "wl.on('rt_rm_a', function()\n"
+        "  wl.log('RT_RM_A', tostring(Game.RemoveCommand('Trade')), tostring(Game.RemoveCommand('Trade')))\n"
+        "end)\n");
+    write_mod(1, "rtcmdB",
+        "Game.AddCommand({ building = 109, button = 4, icon = 32, text = 'Tax', help = 'Levy tax', name = 'Tax', condition = false })\n"
+        "wl.on('rt_steal', function() wl.log('RT_STEAL', tostring(Game.RemoveCommand('Trade'))) end)\n");
+    g_wl.listed_count = 2;
+    wl_script_restart();
+    CHECK(has_line("[lua:rtcmdA] RT_ADD_A\ttrue"));
+    CHECK(count_rt_cmds() == 2);
+    CHECK(g_bp_refresh_calls == 0);  // not in game yet
+    int idxA = find_rt_cmd("rtcmdA", "Trade");
+    int idxB = find_rt_cmd("rtcmdB", "Tax");
+    CHECK(idxA >= 0 && idxB >= 0 && idxA != idxB);
+    int nrt = 0;
+    const WlRuntimeCmd *rt = wl_rt_commands(&nrt);
+    CHECK(nrt == WL_MAX_RT_CMDS);
+    CHECK(rt[idxA].building == 84 && rt[idxA].button == 10 && rt[idxA].icon == 49 && rt[idxA].civ == -1 && rt[idxA].page == 1);
+    CHECK(strcmp(rt[idxA].cond_name, "Trade") == 0 && strcmp(rt[idxA].cond_action, "disable") == 0);
+    CHECK(rt[idxA].help_sid == WL_RT_CMD_SID_BASE + idxA && rt[idxA].gen >= 1);
+    CHECK(g_rt_str_set[idxA] && strcmp(g_rt_str_text[idxA], "Trade") == 0 && strcmp(g_rt_str_help[idxA], "Swap goods") == 0);
+    CHECK(rt[idxB].building == 109 && rt[idxB].button == 4 && rt[idxB].cond_name[0] == '\0');
+    DWORD gen1 = rt[idxA].gen;
+
+    // Enter game, verify condition, click + coroutine local_ctx, update in place, validation, isolation
+    wl_script_game_reset(1000);
+    wl_script_event("game_start");
+    CHECK(wl_script_eval_condition("Trade", 77) == 0);
+    wl_script_event("rt_allow");
+    CHECK(wl_script_eval_condition("Trade", 77) == 1);
+    wl_script_command("Trade", 77);
+    CHECK(has_line("[lua:rtcmdA] RT_CLICK_START\t77") && !has_line("[lua:rtcmdA] RT_CLICK_RESUME\t77"));
+    wl_script_frame(2500);
+    CHECK(has_line("[lua:rtcmdA] RT_CLICK_RESUME\t77") && g_local_ctx_on_calls == 1 && g_local_ctx_state == 0);
+
+    wl_script_event("rt_bad");
+    CHECK(has_line("[lua:rtcmdA] RT_BAD\tfalse\tfalse\tfalse\tfalse"));
+
+    // Cross-mod removal must be rejected
+    wl_script_event("rt_steal");
+    CHECK(has_line("[lua:rtcmdB] RT_STEAL\tfalse"));
+    CHECK(find_rt_cmd("rtcmdA", "Trade") == idxA);
+
+    // Update in place: same slot, higher gen, refreshes open panel while in game
+    int ref_before = g_bp_refresh_calls;
+    wl_script_event("rt_update");
+    CHECK(has_line("[lua:rtcmdA] RT_UPD\ttrue"));
+    CHECK(find_rt_cmd("rtcmdA", "Trade") == idxA && count_rt_cmds() == 2);
+    CHECK(rt[idxA].gen > gen1 && rt[idxA].icon == 50 && rt[idxA].civ == 1 && strcmp(rt[idxA].cond_action, "hide") == 0);
+    CHECK(strcmp(g_rt_str_text[idxA], "Trade+") == 0 && strcmp(g_rt_str_help[idxA], "Updated") == 0);
+    CHECK(g_bp_refresh_calls == ref_before + 1);
+    DWORD gen2 = rt[idxA].gen;
+
+    // Mod A removes its own command
+    wl_script_event("rt_rm_a");
+    CHECK(has_line("[lua:rtcmdA] RT_RM_A\ttrue\tfalse"));
+    CHECK(find_rt_cmd("rtcmdA", "Trade") < 0 && !g_rt_str_set[idxA] && count_rt_cmds() == 1);
+    CHECK(g_bp_refresh_calls == ref_before + 2);
+
+    // Re-register on hot reload, then unload via reload without command -> only mod A cleared, mod B stays
+    write_mod(0, "rtcmdA",
+        "Game.AddCommand({ building = 84, button = 10, icon = 49, text = 'Reloaded', help = 'V2', name = 'Trade' })\n");
+    CHECK(wl_script_reload_mod("rtcmdA", NULL, 0) == 1);
+    int idxA2 = find_rt_cmd("rtcmdA", "Trade");
+    CHECK(idxA2 >= 0 && rt[idxA2].gen > gen2 && count_rt_cmds() == 2);
+    CHECK(find_rt_cmd("rtcmdB", "Tax") == idxB);
+
+    // Hot reload mod A with no command -> mod A's command removed, mod B's preserved
+    write_mod(0, "rtcmdA", "wl.log('RT_A_EMPTY')\n");
+    CHECK(wl_script_reload_mod("rtcmdA", NULL, 0) == 1);
+    CHECK(find_rt_cmd("rtcmdA", "Trade") < 0 && !g_rt_str_set[idxA2]);
+    CHECK(find_rt_cmd("rtcmdB", "Tax") == idxB && count_rt_cmds() == 1);
+
+    // Full restart clears all runtime commands (including mod B when disabled/empty)
+    write_mod(1, "rtcmdB", "wl.log('RT_B_EMPTY')\n");
+    wl_script_restart();
+    CHECK(count_rt_cmds() == 0 && !g_rt_str_set[idxB]);
+
+    // ---- Custom PNG command icons (cache/cmdicons.txt & resolver callback) ------------
+    printf("-- custom PNG command icons\n");
+    {
+        char cdir[MAX_PATH + 32], cpath[MAX_PATH + 64];
+        snprintf(cdir, sizeof cdir, "%s/cache", g_wl.root);
+        mkdir(cdir, 0755);
+        snprintf(cpath, sizeof cpath, "%s/cmdicons.txt", cdir);
+        FILE *cf = fopen(cpath, "wb");
+        fputs("iconModA\ttrade\t71\n", cf);
+        fputs("iconModA\tcart\t72\n", cf);
+        fputs("iconModB\ttrade\t73\n", cf);
+        fclose(cf);
+    }
+    wl_script_set_cmd_icon_fn(NULL);   // exercise cache/cmdicons.txt fallback path
+    write_mod(0, "iconModA",
+        "Game.AddCommand({ building = 109, button = 4, icon = 'trade', name = 'CmdTrade' })\n"
+        "Game.AddCommand({ building = 109, button = 2, icon = 'CART.PNG', name = 'CmdCart' })\n"
+        "Game.AddCommand({ building = 109, button = 3, icon = 49, name = 'CmdNum' })\n"
+        "Game.AddCommand({ building = 109, button = 12, icon = 'missing_icon', name = 'CmdMiss1' })\n"
+        "Game.AddCommand({ building = 109, button = 13, icon = 'missing_icon', name = 'CmdMiss2' })\n"
+        "local bad_ok = pcall(Game.AddCommand, { building = 109, button = 14, icon = true, name = 'CmdBad' })\n"
+        "wl.log('ICON_BAD_TYPE', tostring(bad_ok))\n");
+    write_mod(1, "iconModB",
+        "Game.AddCommand({ building = 109, button = 4, icon = 'trade', name = 'CmdBTrade' })\n"
+        "Game.AddCommand({ building = 109, button = 2, icon = 'cart', name = 'CmdBCart' })\n"); // cart belongs to iconModA only
+    g_wl.listed_count = 2;
+    wl_script_restart();
+    {
+        int iTradeA = find_rt_cmd("iconModA", "CmdTrade");
+        int iCartA  = find_rt_cmd("iconModA", "CmdCart");
+        int iNumA   = find_rt_cmd("iconModA", "CmdNum");
+        int iMiss1  = find_rt_cmd("iconModA", "CmdMiss1");
+        int iMiss2  = find_rt_cmd("iconModA", "CmdMiss2");
+        int iTradeB = find_rt_cmd("iconModB", "CmdBTrade");
+        int iCartB  = find_rt_cmd("iconModB", "CmdBCart");
+        CHECK(iTradeA >= 0 && rt[iTradeA].icon == 71);
+        CHECK(iCartA >= 0 && rt[iCartA].icon == 72);
+        CHECK(iNumA >= 0 && rt[iNumA].icon == 49);
+        CHECK(iMiss1 >= 0 && rt[iMiss1].icon == 32);
+        CHECK(iMiss2 >= 0 && rt[iMiss2].icon == 32);
+        // Unknown icon name 'missing_icon' for iconModA must log ONCE even though used twice
+        CHECK(count_line("[lua:iconModA] Game.AddCommand: unknown command icon 'missing_icon'") == 1);
+        CHECK(has_line("[lua:iconModA] ICON_BAD_TYPE\tfalse"));
+        // Per-mod scoping: iconModB gets its own 'trade' (73), cannot resolve iconModA's 'cart' -> fallback 32
+        CHECK(iTradeB >= 0 && rt[iTradeB].icon == 73);
+        CHECK(iCartB >= 0 && rt[iCartB].icon == 32);
+        CHECK(count_line("[lua:iconModB] Game.AddCommand: unknown command icon 'cart'") == 1);
+    }
+
+    // ---- Custom resources: Game.Resources, Player:GetResource/AddResource/SetResource --
+    printf("-- custom resources\n");
+    memset(g_fres, 0, sizeof g_fres);
+    for (int i = 0; i < 256; i++) g_fres_val[i] = 100.0f;
+    g_fres[0].id = 211; snprintf(g_fres[0].mod, sizeof g_fres[0].mod, "FaithAndRelics");
+    snprintf(g_fres[0].key, sizeof g_fres[0].key, "faith");
+    snprintf(g_fres[0].name, sizeof g_fres[0].name, "Faith");
+    snprintf(g_fres[0].icon_rel, sizeof g_fres[0].icon_rel, "icons/faith.png");
+    g_fres[0].start = 10.0f; g_fres[0].max = 500.0f; g_fres[0].show = 1;
+    g_fres[1].id = 212; snprintf(g_fres[1].mod, sizeof g_fres[1].mod, "FaithAndRelics");
+    snprintf(g_fres[1].key, sizeof g_fres[1].key, "piety");
+    snprintf(g_fres[1].name, sizeof g_fres[1].name, "Piety");
+    g_fres[1].start = 0.0f; g_fres[1].max = 0.0f; g_fres[1].show = 0;
+    g_fres_val[211] = 10.0f;
+    g_fres_val[212] = 0.0f;
+
+    static WlGameApi rfg;
+    memset(&rfg, 0, sizeof rfg);
+    rfg.local_player = fg_local; rfg.player_count = fg_count; rfg.resource = fg_resource;
+    rfg.add_resource = fg_add_resource; rfg.set_resource = fg_set_resource;
+    rfg.resources_list = fg_resources_list; rfg.resource_resolve = fg_resource_resolve;
+    wl_script_set_game(&rfg);
+
+    write_mod(0, "restest",
+        "wl.on('t_res', function()\n"
+        "  local list = Game.Resources()\n"
+        "  wl.log('RES_LIST', #list, list[1].id, list[1].key, list[1].name, list[1].icon, list[1].max, tostring(list[1].show), tostring(list[2].show))\n"
+        "  local p = Game.LocalPlayer\n"
+        "  wl.log('RES_GET', p:GetResource('faith'), p:GetResource(211), p:GetResource('food'), p:GetResource('Gold'))\n"
+        "  local ok1 = p:AddResource('faith', 15)\n"
+        "  wl.log('RES_AFTER_ADD', tostring(ok1), p:GetResource('faith'))\n"
+        "  local ok2 = p:SetResource('faith', 42)\n"
+        "  wl.log('RES_AFTER_SET', tostring(ok2), p:GetResource('faith'))\n"
+        "  local ok_bad, err_bad = pcall(function() return p:GetResource('nope') end)\n"
+        "  wl.log('RES_BAD', tostring(ok_bad), tostring(err_bad))\n"
+        "end)\n");
+    g_wl.listed_count = 1;
+    wl_script_restart();
+    wl_script_event("t_res");
+    CHECK(has_line("[lua:restest] RES_LIST\t2\t211\tfaith\tFaith\ticons/faith.png\t500.0\ttrue\tfalse") ||
+          has_line("[lua:restest] RES_LIST\t2\t211\tfaith\tFaith\ticons/faith.png\t500\ttrue\tfalse"));
+    CHECK(has_line("[lua:restest] RES_GET\t10.0\t10.0\t100.0\t100.0") ||
+          has_line("[lua:restest] RES_GET\t10\t10\t100\t100"));
+    CHECK(g_fres_add_id == 211 && g_fres_add_amt == 15.0f);
+    CHECK(has_line("[lua:restest] RES_AFTER_ADD\ttrue\t25.0") ||
+          has_line("[lua:restest] RES_AFTER_ADD\ttrue\t25"));
+    CHECK(g_fres_set_id == 211 && g_fres_set_val == 42.0f);
+    CHECK(has_line("[lua:restest] RES_AFTER_SET\ttrue\t42.0") ||
+          has_line("[lua:restest] RES_AFTER_SET\ttrue\t42"));
+    CHECK(has_line("[lua:restest] RES_BAD\tfalse\t") && has_line("unknown resource: nope"));
+    wl_script_set_game(NULL);
+
+    // ---- Custom game modes: Game.Mode(), Player:Win([team]), Player:Defeat() ---------
+    printf("-- custom game modes & win/defeat\n");
+    static WlGameApi mfg;
+    memset(&mfg, 0, sizeof mfg);
+    mfg.local_player = fg_local; mfg.player_count = fg_count;
+    mfg.game_mode = fg_game_mode; mfg.win_player = fg_win_player; mfg.defeat_player = fg_defeat_player;
+    wl_script_set_game(&mfg);
+
+    g_fmode = NULL;
+    g_fwin_pid = g_fwin_team = g_fwin_calls = 0;
+    g_fdefeat_pid = g_fdefeat_calls = 0;
+    write_mod(0, "modetest",
+        "Game.OnStart(function()\n"
+        "  wl.log('GM_START', tostring(Game.Mode()))\n"
+        "end)\n"
+        "wl.on('gm_end', function()\n"
+        "  local ok1 = Game.Player(1):Defeat()\n"
+        "  local ok2 = Game.Player(1):Win()\n"
+        "  local ok3 = Game.Player(1):Win(true)\n"
+        "  local ok_gaia, err_gaia = pcall(function() return Game.Player(0):Defeat() end)\n"
+        "  wl.log('GM_CMD', tostring(ok1), tostring(ok2), tostring(ok3), tostring(ok_gaia), tostring(err_gaia))\n"
+        "end)\n");
+    g_wl.listed_count = 1;
+    wl_script_restart();
+    wl_script_event("game_start");
+    CHECK(has_line("[lua:modetest] GM_START\tnil"));
+    g_fmode = "last_town_standing";
+    wl_script_event("game_start");
+    CHECK(has_line("[lua:modetest] GM_START\tlast_town_standing"));
+    wl_script_event("gm_end");
+    CHECK(g_fdefeat_calls == 1 && g_fdefeat_pid == 1);
+    CHECK(g_fwin_calls == 2 && g_fwin_pid == 1 && g_fwin_team == 1);
+    CHECK(has_line("[lua:modetest] GM_CMD\ttrue\ttrue\ttrue\tfalse\t"));
+    wl_script_set_game(NULL);
+
     printf(g_fail ? "TEST FAILED\n" : "TEST PASSED\n");
     return g_fail;
 }

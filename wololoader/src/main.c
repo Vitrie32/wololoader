@@ -113,10 +113,14 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     // No wl_autobuild() here: see wl_civs_ensure() in civs.c (R6030 in DllMain).
     wl_install_file_hooks();
     wl_icons_build();      // mod icons appended to interface SLPs (redirects)
+    wl_script_set_cmd_icon_fn(wl_cmd_icon_index);
     wl_install_taunts();
     wl_install_civ_hooks();
-    wl_install_menu_hooks();
+    // Autostart first: it checks the original entry bytes of 0x655180 (GameSetupScreen::start_clicked),
+    // which gamemodes.c then hooks for one-team modes; its later calls go through that hook.
     wl_install_autostart();
+    wl_install_gamemodes();
+    wl_install_menu_hooks();
     wl_install_mods_screen();
     wl_install_history();
     wl_install_victory();
@@ -127,6 +131,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved) {
     if (wl_feature("formations_tab")) wl_install_formtab();
     wl_install_lua_game();
     wl_install_uikit();
+    wl_install_resources();
     wl_install_buildpage();
     wl_install_mp_guard();
     wl_install_mp_check();

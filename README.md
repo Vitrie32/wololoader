@@ -12,6 +12,12 @@ game and adds, without replacing the game's data files:
 - **Non-pausing on-screen UI** for mods: frames, labels, buttons, text boxes, images, hotkeys.
 - **Custom icons** and asset overrides (`<mod>/resources/...` replaces the game's files).
 - **Custom units** (`custom_units` in a civ file), civ victory sounds and history pages.
+- **Custom resources** declared by mods (Faith, Points, ...): costs, effects, gathering, Lua, and boxes in the top bar
+  that look like the game's own, with a "Show all" window when there are many.
+- **New lobby game modes** from mods (the game's mode list grows), with Lua rules, `Player:Win()` / `Defeat()` and
+  an all-players-one-team option.
+- **Buttons on the game's own buildings** from Lua (`Game.AddCommand`), with full-colour 32-bit PNG icons.
+- **Mod settings** on the Mods screen, mod conflict warnings, automatic renumbering of clashing sprites, update badges.
 - An in-game **Mods** screen: filters, details for every mod, turn mods on and off.
 - An in-game **Mod Hub**: browse, install, update and remove mods from
   [wololoader-mods](https://github.com/Vitrie32/wololoader-mods).
@@ -19,7 +25,7 @@ game and adds, without replacing the game's data files:
 - A **Lua console** (Ctrl+Shift+C) and Dev Panel in the Wololoader Base mod (multiplayer: only with cheats on).
 - **Scriptorium**, a mod editor (civs, scripts, node graphs, sprites, taunts), with a "Test it" button.
 
-One example mod comes with it: **Monklanians** (a custom civ with an Abbey). **Woodlanders** is in the Mod Hub.
+One example mod comes with it: **Monklanians** (a custom civ with an Abbey). More are in the Mod Hub: **Last Stand** (co-op zombie-style waves), **Age of Miracles**, **Merchant Caravans**, **Last Town Standing**, **Faith and Relics**, **Woodlanders**.
 
 ## Install
 

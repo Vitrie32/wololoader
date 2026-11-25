@@ -319,6 +319,62 @@ static WlBuildingCmd g_bcmds_bufs[2][WL_MAX_BLDG_CMDS];
 static int g_nbcmds_bufs[2];
 static int g_cmd_buf_idx;
 
+// Runtime Lua command tooltip strings (Game.AddCommand), served at
+// WL_RT_CMD_SID_BASE + slot (9100000..9100063, disjoint from STR_BASE..STR_BASE+99999
+// and CMD_SID_FIRST..CMD_SID_LAST). Protected by g_civs_cs. Replaced pointers are
+// parked in a retired ring rather than freed immediately so background-thread callers
+// of hook_string_lookup (0x448370) never see a freed string.
+#define RT_CMD_RETIRED_RING 256
+static char *g_rt_cmd_strs[WL_MAX_RT_CMDS];
+static char *g_rt_cmd_retired[RT_CMD_RETIRED_RING];
+static int g_rt_cmd_retired_idx;
+
+// Custom game mode display names and tooltips (gamemodes.c), served at
+// WL_MODE_SID_BASE + slot (9200000..9200103: slot = (id-12)*2 name, +1 tooltip).
+// Protected by g_civs_cs; replaced strings go to the retired ring for thread safety.
+static char *g_mode_strs[WL_MODE_MAX_CUSTOM * 2];
+
+void wl_civs_set_mode_string(int slot, const char *text) {
+    if (slot < 0 || slot >= WL_MODE_MAX_CUSTOM * 2) return;
+    char *fresh = text ? dup_str(text) : NULL;
+    civs_cs_init();
+    EnterCriticalSection(&g_civs_cs);
+    char *old = g_mode_strs[slot];
+    g_mode_strs[slot] = fresh;
+    if (old) {
+        free(g_rt_cmd_retired[g_rt_cmd_retired_idx]);
+        g_rt_cmd_retired[g_rt_cmd_retired_idx] = old;
+        g_rt_cmd_retired_idx = (g_rt_cmd_retired_idx + 1) % RT_CMD_RETIRED_RING;
+    }
+    LeaveCriticalSection(&g_civs_cs);
+}
+
+static void rt_cmd_set_string(int slot, const char *text, const char *help) {
+    if (slot < 0 || slot >= WL_MAX_RT_CMDS) return;
+    char *fresh = NULL;
+    if (text) {
+        const char *h = help ? help : "";
+        size_t need = 3 + strlen(text) + 5 + strlen(h) + 1;  // "<b>" + text + "<b> \n" + help + NUL
+        fresh = (char *)malloc(need);
+        if (fresh) {
+            // Same tooltip template as tools/build.py add_building_commands;
+            // sanitize_utf8 avoids hanging the game's UTF-8 decoder (0x444e40).
+            snprintf(fresh, need, "<b>%s<b> \n%s", text, h);
+            sanitize_utf8(fresh, need);
+        }
+    }
+    civs_cs_init();
+    EnterCriticalSection(&g_civs_cs);
+    char *old = g_rt_cmd_strs[slot];
+    g_rt_cmd_strs[slot] = fresh;
+    if (old) {
+        free(g_rt_cmd_retired[g_rt_cmd_retired_idx]);
+        g_rt_cmd_retired[g_rt_cmd_retired_idx] = old;
+        g_rt_cmd_retired_idx = (g_rt_cmd_retired_idx + 1) % RT_CMD_RETIRED_RING;
+    }
+    LeaveCriticalSection(&g_civs_cs);
+}
+
 const WlLuaButton *wl_lua_buttons(int *n) {
     civs_cs_init();
     EnterCriticalSection(&g_civs_cs);
@@ -789,7 +845,13 @@ static const char *__fastcall hook_string_lookup(void *table, void *edx, const c
         int n = atoi(key);
         const char *res = NULL;
         EnterCriticalSection(&g_civs_cs);
-        res = command_string_locked(n);
+        if (n >= WL_RT_CMD_SID_BASE && n < WL_RT_CMD_SID_BASE + WL_MAX_RT_CMDS) {
+            res = g_rt_cmd_strs[n - WL_RT_CMD_SID_BASE];
+        }
+        if (!res && n >= WL_MODE_SID_BASE && n < WL_MODE_SID_BASE + WL_MODE_MAX_CUSTOM * 2) {
+            res = g_mode_strs[n - WL_MODE_SID_BASE];
+        }
+        if (!res) res = command_string_locked(n);
         if (!res && ACTIVE_CIV_COUNT) {
             int un = n;
             // Custom unique unit strings: SID(slot) = 28500 + (civ_id - 35) * 20 + slot.
@@ -874,6 +936,7 @@ void wl_install_string_hook_only(void) {
 
 void wl_install_civ_hooks(void) {
     civs_cs_init();
+    wl_script_set_rt_cmd_string_fn(rt_cmd_set_string);
     // 55 8b ec 6a ff = push ebp; mov ebp,esp; push -1
     g_orig_lookup = (StringLookup_t)wl_hook(ADDR_STRING_LOOKUP, hook_string_lookup, 5);
     // Installed unconditionally: civs.txt is read later (wl_civs_ensure) and

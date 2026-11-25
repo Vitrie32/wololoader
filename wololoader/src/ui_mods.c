@@ -11,6 +11,8 @@
 // Addresses: AoK HD.exe 5.8, see re/FINDINGS.md ("Mods screen v2").
 #include "wololoader.h"
 #include "hubcore.h"
+#include "modsettings.h"
+#include "datbuild.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,7 +68,10 @@
 #define TEXT_W      (DET_W - 112)
 #define INFO_Y      196
 #define INFO_STEP   24
-#define DESC_Y      (INFO_Y + 4 * INFO_STEP + 12)  // 304
+#define INFO_LINES  6
+#define DESC_Y      (INFO_Y + INFO_LINES * INFO_STEP + 12)  // 352
+#define SET_ROWS    7       // settings view: rows per page
+#define SET_STEP    42
 #define ACTIONS_Y   518
 #define DESC_CHARS  96      // font 0xa is about 5 reference units per character
 #define INFO_CHARS  100
@@ -112,6 +117,18 @@ static int g_selected_mod = -1;      // index into g_wl.mods
 static int g_mods_dirty;             // 1 when mods changed on this screen or in Mod Hub
 static void *g_return_screen;        // set while the read-only lobby view is open
 static char g_note[600];             // message line under the detail pane
+static int g_settings_mode;          // detail pane shows the selected mod's settings
+static int g_set_page;
+
+// Settings of the selected mod (modsettings.c), loaded on every rebuild.
+static WlSetting g_set[WL_MAX_SETTINGS];
+static int g_set_count;
+
+// Conflicts between enabled mods, computed on every rebuild (compute_conflicts).
+static int g_conf_files[WL_MAX_MODS];    // resources\ files another enabled mod also ships
+static int g_conf_partner[WL_MAX_MODS];  // one of those other mods (mod index), -1 = none
+static int g_conf_extend[WL_MAX_MODS];   // base civ (1..31) that another mod also extends, 0 = none
+static int g_conf_extend_partner[WL_MAX_MODS];
 
 // ---- the current screen's panels ----
 static int g_view[WL_MAX_MODS];      // mod indices that pass the filter
@@ -128,12 +145,19 @@ static void *g_icon_toggle_on, *g_icon_toggle_off;
 static void *g_btn_mod_folder;       // detail: this mod's folder
 static void *g_btn_mod_edit;         // detail: Scriptorium on this mod
 static void *g_icon_mod_folder, *g_icon_mod_edit;
+static void *g_btn_settings;         // detail: opens the settings view
+static void *g_btn_update;           // detail: newer version in the Mod Hub
+static void *g_btn_set_done, *g_btn_set_defaults, *g_btn_set_prev, *g_btn_set_next;
+static void *g_set_btn[SET_ROWS];    // bool / choice: the value button; number: "+"
+static void *g_set_minus[SET_ROWS];  // number only
+static void *g_set_lbl[SET_ROWS];    // number only: the value
+static int g_set_row[SET_ROWS];      // setting index of each row, -1 = none
 
 static void *g_btn_vanilla, *g_btn_creator, *g_btn_open, *g_btn_back, *g_btn_hub, *g_btn_reload;
 static void *g_icon_vanilla, *g_icon_creator, *g_icon_folder, *g_icon_back;
 
 static void *g_lbl_ver_author, *g_lbl_state, *g_lbl_status, *g_lbl_note;
-static void *g_lbl_info[4];
+static void *g_lbl_info[INFO_LINES];
 
 // Static string buffers (the game keeps the pointers, they must outlive the call)
 static char g_row_texts[PAGE_SIZE][192];
@@ -142,7 +166,10 @@ static char g_page_text[32];
 static char g_status_text[128];
 static char g_default_icon[MAX_PATH];
 static char g_d_name[256], g_d_ver_author[256], g_d_state[96];
-static char g_d_info[4][512];
+static char g_d_info[INFO_LINES][512];
+static char g_set_names[SET_ROWS][96];
+static char g_set_vals[SET_ROWS][64];
+static char g_set_title[160];
 static char g_d_desc[1024];
 
 static void *create_screen(void);
@@ -336,8 +363,237 @@ static void append_part(char *out, size_t cap, const char *part) {
     snprintf(out + used, cap - used, "%s%s", used ? ", " : "", part);
 }
 
+// "Last Town Standing, Battle Royale" from mod.json "game_modes" array.
+static void read_game_modes(const WlMod *m, char *names, size_t cap) {
+    names[0] = 0;
+    char path[MAX_PATH], err[64] = "";
+    snprintf(path, sizeof path, "%s\\mod.json", m->dir);
+    char *text = wl_read_file(path, NULL);
+    if (!text) return;
+    WlJsonVal *root = wl_json_parse(text, err, sizeof err);
+    free(text);
+    if (!root) return;
+    const WlJsonVal *arr = wl_json_get(root, "game_modes");
+    size_t n = wl_json_len(arr);
+    for (size_t i = 0; i < n; i++) {
+        const WlJsonVal *it = wl_json_at(arr, i);
+        const char *name = wl_json_str(wl_json_get(it, "name"), NULL);
+        if (!name || !name[0]) name = wl_json_str(wl_json_get(it, "id"), NULL);
+        if (name && name[0]) append_part(names, cap, name);
+    }
+    wl_json_free(root);
+}
+
+// ---------------------------------------------------------------------------
+// Update badges: the Mod Hub index is fetched once in the background (started from the
+// main menu, wl_mods_check_updates) and compared with the installed versions.
+
+typedef struct { char id[64]; char version[32]; char requires[32]; } HubVer;
+static HubVer g_hubver[256];
+static volatile LONG g_hubver_n = -1;      // -1 not fetched yet, >= 0 entries available
+static volatile LONG g_hubver_busy;
+
+static DWORD WINAPI hubver_worker(LPVOID arg) {
+    (void)arg;
+    char url[HUB_PATH_CAP] = "", cfg[HUB_PATH_CAP] = "", err[256] = "";
+    int env = 0;
+    hub_resolve_index_url(g_wl.game_dir, url, sizeof url, cfg, sizeof cfg, &env);
+    WlJsonVal *root = hub_fetch_and_parse_index(url, err, sizeof err);
+    if (root) {
+        const WlJsonVal *mods = wl_json_get(root, "mods");
+        LONG n = 0;
+        for (size_t i = 0; mods && i < wl_json_len(mods) && n < 256; i++) {
+            const WlJsonVal *m = wl_json_at(mods, i);
+            const char *id = wl_json_str(wl_json_get(m, "id"), NULL);
+            if (!id) continue;
+            snprintf(g_hubver[n].id, sizeof g_hubver[n].id, "%s", id);
+            snprintf(g_hubver[n].version, sizeof g_hubver[n].version, "%s", wl_json_str(wl_json_get(m, "version"), ""));
+            snprintf(g_hubver[n].requires, sizeof g_hubver[n].requires, "%s", wl_json_str(wl_json_get(m, "requires_wololoader"), ""));
+            n++;
+        }
+        wl_json_free(root);
+        InterlockedExchange(&g_hubver_n, n);
+        wl_log("mods: update check: %ld mods in the Mod Hub", (long)n);
+    } else {
+        wl_log("mods: update check failed: %s", err);
+    }
+    InterlockedExchange(&g_hubver_busy, 0);
+    return 0;
+}
+
+void wl_mods_check_updates(void) {
+    if (g_wl_vanilla || g_hubver_n >= 0 || InterlockedExchange(&g_hubver_busy, 1)) return;
+    HANDLE h = CreateThread(NULL, 0, hubver_worker, NULL, 0, NULL);
+    if (h) CloseHandle(h); else InterlockedExchange(&g_hubver_busy, 0);
+}
+
+// The Hub's newer version of this mod that this Wololoader can install, or NULL.
+static const char *update_for(const WlMod *m) {
+    LONG n = g_hubver_n;
+    for (LONG i = 0; i < n; i++) {
+        if (_stricmp(g_hubver[i].id, m->id) != 0) continue;
+        if (hub_compare_versions(g_hubver[i].version, m->version) <= 0) return NULL;
+        if (g_hubver[i].requires[0] && hub_compare_versions(WOLOLOADER_VERSION, g_hubver[i].requires) < 0) return NULL;
+        return g_hubver[i].version;
+    }
+    return NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Conflicts between enabled mods: the same file under resources\ (only one mod's
+// copy is used) or the same game civilization changed with "extend".
+
+typedef struct { unsigned long long h; int mod; } ConfEntry;
+static ConfEntry *g_conf;
+static int g_conf_n, g_conf_cap;
+
+static void conf_add(unsigned long long h, int mod) {
+    if (g_conf_n == g_conf_cap) {
+        int cap = g_conf_cap ? g_conf_cap * 2 : 1024;
+        ConfEntry *n = realloc(g_conf, (size_t)cap * sizeof *n);
+        if (!n) return;
+        g_conf = n;
+        g_conf_cap = cap;
+    }
+    g_conf[g_conf_n].h = h;
+    g_conf[g_conf_n].mod = mod;
+    g_conf_n++;
+}
+
+// FNV-1a 64 of the lower-case path relative to the mod's resources folder.
+static unsigned long long path_hash(unsigned long long h, const char *s) {
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c == '/') c = '\\';
+        h = (h ^ c) * 1099511628211ULL;
+    }
+    return h;
+}
+
+// Sprites the loader renumbers itself (wl_slp_remap_compute): not a conflict.
+static WlSlpRemap *g_conf_remap;
+static size_t g_conf_remap_n;
+
+static int conf_renumbered(int mod, const char *rel, const char *name) {
+    if (_stricmp(rel, "_common\\drs\\graphics") != 0) return 0;
+    char *end;
+    long n = strtol(name, &end, 10);
+    if (end == name || _stricmp(end, ".slp") != 0) return 0;
+    for (size_t i = 0; i < g_conf_remap_n; i++)
+        if (g_conf_remap[i].from == n && _stricmp(g_conf_remap[i].mod, g_wl.mods[mod].id) == 0) return 1;
+    return 0;
+}
+
+static void conf_walk(const char *dir, const char *rel, unsigned long long prefix, int mod, int depth, int *budget) {
+    if (depth > 12 || *budget <= 0) return;
+    char pat[MAX_PATH];
+    snprintf(pat, sizeof pat, "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pat, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        unsigned long long ph = path_hash(prefix, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            char sub[MAX_PATH];
+            snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName);
+            char subrel[MAX_PATH];
+            snprintf(subrel, sizeof subrel, "%s%s%s", rel, rel[0] ? "\\" : "", fd.cFileName);
+            conf_walk(sub, subrel, path_hash(ph, "\\"), mod, depth + 1, budget);
+        } else if (conf_renumbered(mod, rel, fd.cFileName)) {
+            continue;
+        } else if ((*budget)-- > 0) {
+            conf_add(ph, mod);
+        }
+    } while (*budget > 0 && FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+static int cmp_conf(const void *a, const void *b) {
+    const ConfEntry *x = a, *y = b;
+    if (x->h != y->h) return x->h < y->h ? -1 : 1;
+    return x->mod - y->mod;
+}
+
+// Walking every mod's files on each row click would be slow under Wine, so the
+// result is kept until mods change (toggle, Mod Hub, Reload Mods, a new open).
+static int g_conf_valid;
+
+static void compute_conflicts(void) {
+    if (g_conf_valid) return;
+    g_conf_valid = 1;
+    g_conf_n = 0;
+    {
+        char drs[MAX_PATH], mdir[MAX_PATH];
+        snprintf(drs, sizeof drs, "%s\\resources\\_common\\drs", g_wl.game_dir);
+        snprintf(mdir, sizeof mdir, "%s\\mods", g_wl.root);
+        free(g_conf_remap);
+        g_conf_remap = NULL;
+        g_conf_remap_n = 0;
+        if (wl_slp_remap_compute(drs, mdir, &g_conf_remap, &g_conf_remap_n) != 0) { g_conf_remap = NULL; g_conf_remap_n = 0; }
+    }
+    int extend_by[32];                // base civ -> first enabled mod that extends it
+    for (int c = 0; c < 32; c++) extend_by[c] = -1;
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        g_conf_files[i] = 0;
+        g_conf_partner[i] = -1;
+        g_conf_extend[i] = 0;
+        g_conf_extend_partner[i] = -1;
+    }
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        const WlMod *m = &g_wl.mods[i];
+        if (!m->enabled) continue;
+        char dir[MAX_PATH];
+        snprintf(dir, sizeof dir, "%s\\resources", m->dir);
+        int budget = 20000;           // files per mod; a bigger mod is only partly checked
+        conf_walk(dir, "", 14695981039346656037ULL, i, 0, &budget);
+
+        snprintf(dir, sizeof dir, "%s\\civs\\*.json", m->dir);
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(dir, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            char path[MAX_PATH];
+            snprintf(path, sizeof path, "%s\\civs\\%s", m->dir, fd.cFileName);
+            size_t len = 0;
+            char *text = wl_read_file(path, &len);
+            if (!text) continue;
+            char err[64];
+            WlJsonVal *root = wl_json_parse(text, err, sizeof err);
+            free(text);
+            int base = root ? (int)wl_json_num(wl_json_get(root, "extend"), 0) : 0;
+            if (root) wl_json_free(root);
+            if (base < 1 || base > 31) continue;
+            int other = extend_by[base];
+            if (other < 0) { extend_by[base] = i; continue; }
+            if (other == i) continue;
+            g_conf_extend[i] = base;       g_conf_extend_partner[i] = other;
+            g_conf_extend[other] = base;   if (g_conf_extend_partner[other] < 0) g_conf_extend_partner[other] = i;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    if (g_conf_n > 1) qsort(g_conf, (size_t)g_conf_n, sizeof *g_conf, cmp_conf);
+    for (int a = 0; a < g_conf_n;) {
+        int b = a + 1;
+        while (b < g_conf_n && g_conf[b].h == g_conf[a].h) b++;
+        if (b - a > 1) {
+            for (int k = a; k < b; k++) {
+                int mod = g_conf[k].mod;
+                if (k > a && g_conf[k - 1].mod == mod) continue;   // same mod twice: not a conflict
+                int other = -1;
+                for (int j = a; j < b && other < 0; j++) if (g_conf[j].mod != mod) other = g_conf[j].mod;
+                if (other < 0) continue;
+                g_conf_files[mod]++;
+                if (g_conf_partner[mod] < 0) g_conf_partner[mod] = other;
+            }
+        }
+        a = b;
+    }
+}
+
 static void format_details(int idx) {
-    for (int i = 0; i < 4; i++) g_d_info[i][0] = 0;
+    for (int i = 0; i < INFO_LINES; i++) g_d_info[i][0] = 0;
     if (idx < 0 || idx >= g_wl.listed_count) {
         snprintf(g_d_name, sizeof g_d_name, "%s", g_wl.listed_count ? "No mods in this list" : "No mods installed");
         g_d_ver_author[0] = 0;
@@ -367,13 +623,23 @@ static void format_details(int idx) {
     else
         snprintf(g_d_state, sizeof g_d_state, "%s", m->enabled ? "On: loads in every game" : "Off: not loaded");
 
-    // Civilizations
+    // Civilizations & Game modes
+    int line = 0;
     char civs[400];
     int units = 0;
     read_civs(m, civs, sizeof civs, &units);
-    if (civs[0]) snprintf(g_d_info[0], sizeof g_d_info[0], "Civilizations: %s", civs);
-    else snprintf(g_d_info[0], sizeof g_d_info[0], "Civilizations: none");
-    clip(g_d_info[0], INFO_CHARS);
+    if (civs[0]) snprintf(g_d_info[line], sizeof g_d_info[0], "Civilizations: %s", civs);
+    else snprintf(g_d_info[line], sizeof g_d_info[0], "Civilizations: none");
+    clip(g_d_info[line], INFO_CHARS);
+    line++;
+
+    char modes[400];
+    read_game_modes(m, modes, sizeof modes);
+    if (modes[0] && line < INFO_LINES) {
+        snprintf(g_d_info[line], sizeof g_d_info[0], "Game modes: %s", modes);
+        clip(g_d_info[line], INFO_CHARS);
+        line++;
+    }
 
     // Contents
     char sub[MAX_PATH], part[64], contents[256] = "";
@@ -386,8 +652,9 @@ static void format_details(int idx) {
     if (res) { snprintf(part, sizeof part, "%d game file%s replaced", res, res == 1 ? "" : "s"); append_part(contents, sizeof contents, part); }
     snprintf(sub, sizeof sub, "%s\\history", m->dir);
     if (count_files(sub, 0)) append_part(contents, sizeof contents, "history pages");
-    snprintf(g_d_info[1], sizeof g_d_info[1], "Contents: %s", contents[0] ? contents : "settings only");
-    clip(g_d_info[1], INFO_CHARS);
+    snprintf(g_d_info[line], sizeof g_d_info[0], "Contents: %s", contents[0] ? contents : "settings only");
+    clip(g_d_info[line], INFO_CHARS);
+    line++;
 
     // Source: Mod Hub (.hub.json in the mod folder) or a local folder
     char mods_dir[MAX_PATH];
@@ -395,13 +662,37 @@ static void format_details(int idx) {
     HubLocalState st;
     memset(&st, 0, sizeof st);
     hub_inspect_local_mod(mods_dir, m->id, &st);
-    if (st.hub_managed)
-        snprintf(g_d_info[2], sizeof g_d_info[2], "Source: Mod Hub (updates and removal in Mod Hub)");
+    const char *upd = update_for(m);
+    if (upd)
+        snprintf(g_d_info[line], sizeof g_d_info[0], "Update: version %s is in the Mod Hub (press Update)", upd);
+    else if (st.hub_managed)
+        snprintf(g_d_info[line], sizeof g_d_info[0], "Source: Mod Hub (up to date)");
     else
-        snprintf(g_d_info[2], sizeof g_d_info[2], "Source: local folder");
+        snprintf(g_d_info[line], sizeof g_d_info[0], "Source: local folder");
+    line++;
 
-    snprintf(g_d_info[3], sizeof g_d_info[3], "Folder: wololoader\\mods\\%s", m->id);
-    clip(g_d_info[3], INFO_CHARS);
+    snprintf(g_d_info[line], sizeof g_d_info[0], "Folder: wololoader\\mods\\%s", m->id);
+    clip(g_d_info[line], INFO_CHARS);
+    line++;
+
+    // Conflicts with other enabled mods (compute_conflicts). For files the mod that
+    // comes later in the list wins (files.c tbl_put); the list is sorted by folder.
+    char conf[400] = "";
+    if (m->enabled && g_conf_files[idx] > 0 && g_conf_partner[idx] >= 0) {
+        int p = g_conf_partner[idx];
+        snprintf(part, sizeof part, "%d file%s", g_conf_files[idx], g_conf_files[idx] == 1 ? "" : "s");
+        size_t used = strlen(conf);
+        snprintf(conf + used, sizeof conf - used, "%s also in %s (%s wins)", part, g_wl.mods[p].name,
+                 p > idx ? g_wl.mods[p].name : m->name);
+    }
+    if (m->enabled && g_conf_extend[idx] > 0 && g_conf_extend_partner[idx] >= 0) {
+        size_t used = strlen(conf);
+        snprintf(conf + used, sizeof conf - used, "%scivilization %d also changed by %s",
+                 used ? "; " : "", g_conf_extend[idx], g_wl.mods[g_conf_extend_partner[idx]].name);
+    }
+    if (conf[0]) snprintf(g_d_info[line], sizeof g_d_info[0], "Conflicts: %s", conf);
+    else snprintf(g_d_info[line], sizeof g_d_info[0], "Conflicts: none");
+    clip(g_d_info[line], INFO_CHARS);
 
     if (m->description[0]) wrap_text(g_d_desc, sizeof g_d_desc, m->description, DESC_CHARS);
     else snprintf(g_d_desc, sizeof g_d_desc, "No description.");
@@ -416,7 +707,9 @@ static void format_row_text(int mod_idx, char *out, size_t cap) {
     char name[160];
     snprintf(name, sizeof name, "%s", m->name);
     clip(name, m->enabled ? 26 : 20);
-    snprintf(out, cap, "%s%s%s", mod_idx == g_selected_mod ? "> " : "", name, m->enabled ? "" : " (off)");
+    int conflict = m->enabled && (g_conf_files[mod_idx] > 0 || g_conf_extend[mod_idx] > 0);
+    snprintf(out, cap, "%s%s%s%s%s", mod_idx == g_selected_mod ? "> " : "", name,
+             m->enabled ? "" : " (off)", conflict ? " (!)" : "", update_for(m) ? " (new)" : "");
 }
 
 static void update_tabs(void) {
@@ -455,6 +748,7 @@ static void update_buttons(void) {
     panel_set_visible(g_icon_mod_folder, !ro && has_sel);
     panel_set_visible(g_btn_mod_edit, !ro && has_sel);
     panel_set_visible(g_icon_mod_edit, !ro && has_sel);
+    panel_set_visible(g_btn_settings, !ro && has_sel);
     void *change[] = { g_btn_vanilla, g_icon_vanilla, g_btn_creator, g_icon_creator,
                        g_btn_open, g_icon_folder, g_btn_hub, g_btn_reload };
     for (size_t i = 0; i < sizeof change / sizeof change[0]; i++) panel_set_visible(change[i], !ro);
@@ -519,6 +813,7 @@ static void toggle_selected(void) {
     }
     m->enabled = new_state;
     g_mods_dirty = 1;
+    g_conf_valid = 0;
     g_wl.mod_count = enabled_count();
     wl_log("mods: mod '%s' %s", m->id, new_state ? "enabled" : "disabled");
 
@@ -534,6 +829,21 @@ static void toggle_selected(void) {
         set_note("Saved. Binary patches need a restart; Back reloads the scripts.");
     else
         set_note("Saved. Press Back or Reload Mods to apply, no restart needed.");
+}
+
+// Writes the selected mod's settings; Back / Reload Mods then restarts its scripts.
+static void save_settings(void) {
+    if (g_selected_mod < 0) return;
+    const WlMod *m = &g_wl.mods[g_selected_mod];
+    if (wl_settings_save(m, g_set, g_set_count)) {
+        g_mods_dirty = 1;
+        wl_content_checksum_invalidate();   // settings are part of the multiplayer check
+        snprintf(g_note, sizeof g_note, "Saved. Press Back or Reload Mods to apply.");
+        wl_log("mods: settings of '%s' saved", m->id);
+    } else {
+        snprintf(g_note, sizeof g_note, "Could not save the settings (wololoader\\settings).");
+    }
+    panel_set_text(g_lbl_note, g_note);
 }
 
 static int __fastcall on_event(void *self, void *edx, void *panel, int code, int a, int b) {
@@ -562,6 +872,8 @@ static int __fastcall on_event(void *self, void *edx, void *panel, int code, int
         void *old = g_screen;
         g_screen = NULL;
         g_note[0] = 0;
+        g_settings_mode = 0;
+        g_conf_valid = 0;
         ((SetCurrentByName_t)ADDR_SET_CURRENT_BY_NAME)(*(void **)ADDR_SCREEN_MGR, "Main Menu");
         if (old) defer_delete_screen(old);
         return 1;
@@ -569,20 +881,21 @@ static int __fastcall on_event(void *self, void *edx, void *panel, int code, int
 
     for (int f = 0; f < FILTER_COUNT; f++) {
         if (panel == g_tab_btns[f]) {
-            if (g_filter != f) { g_filter = f; g_page = 0; g_selected_mod = -1; rebuild_screen(); }
+            if (g_filter != f) { g_filter = f; g_page = 0; g_selected_mod = -1; g_settings_mode = 0; rebuild_screen(); }
             return 1;
         }
     }
     if (panel == g_btn_prev || panel == g_btn_next) {
         int pages = g_view_count > 0 ? (g_view_count + PAGE_SIZE - 1) / PAGE_SIZE : 1;
         int np = g_page + (panel == g_btn_next ? 1 : -1);
-        if (np >= 0 && np < pages) { g_page = np; g_selected_mod = -1; rebuild_screen(); }
+        if (np >= 0 && np < pages) { g_page = np; g_selected_mod = -1; g_settings_mode = 0; rebuild_screen(); }
         return 1;
     }
     for (int r = 0; r < PAGE_SIZE; r++) {
         if (panel == g_row_btns[r] && g_row_mod[r] >= 0) {
             if (g_selected_mod != g_row_mod[r]) {
                 g_selected_mod = g_row_mod[r];
+                g_settings_mode = 0;
                 rebuild_screen();          // swaps the big icon and every detail line
             }
             return 1;
@@ -592,6 +905,33 @@ static int __fastcall on_event(void *self, void *edx, void *panel, int code, int
     if (ro) return 1;   // the change buttons are hidden in the lobby view; ignore them anyway
 
     if (panel == g_btn_toggle) { toggle_selected(); return 1; }
+    if (panel == g_btn_settings && g_btn_settings) { g_settings_mode = 1; g_set_page = 0; rebuild_screen(); return 1; }
+    if (panel == g_btn_set_done && g_btn_set_done) { g_settings_mode = 0; rebuild_screen(); return 1; }
+    if ((panel == g_btn_set_prev || panel == g_btn_set_next) && panel) {
+        g_set_page += panel == g_btn_set_next ? 1 : -1;
+        rebuild_screen();
+        return 1;
+    }
+    if (panel == g_btn_set_defaults && g_btn_set_defaults) {
+        for (int i = 0; i < g_set_count; i++) {
+            g_set[i].on = g_set[i].def_on;
+            g_set[i].num = g_set[i].def_num;
+            g_set[i].choice = g_set[i].def_choice;
+        }
+        save_settings();
+        rebuild_screen();
+        return 1;
+    }
+    for (int r = 0; r < SET_ROWS; r++) {
+        int si = g_set_row[r];
+        if (si < 0 || (panel != g_set_btn[r] && panel != g_set_minus[r])) continue;
+        wl_setting_step(&g_set[si], panel == g_set_minus[r] ? -1 : 1);
+        wl_setting_text(&g_set[si], g_set_vals[r], sizeof g_set_vals[r]);
+        if (g_set_lbl[r]) panel_set_text(g_set_lbl[r], g_set_vals[r]);
+        else button_set_text(g_set_btn[r], g_set_vals[r]);
+        save_settings();
+        return 1;
+    }
     if (panel == g_btn_mod_folder && g_selected_mod >= 0) {
         wl_open_folder(g_wl.mods[g_selected_mod].dir);
         return 1;
@@ -619,11 +959,12 @@ static int __fastcall on_event(void *self, void *edx, void *panel, int code, int
         char msg[512] = "";
         wl_hotreload_run(1, msg, sizeof msg);
         g_mods_dirty = 0;
+        g_conf_valid = 0;
         snprintf(g_note, sizeof g_note, "%s", msg);
         rebuild_screen();
         return 1;
     }
-    if (panel == g_btn_hub) { wl_hub_open(g_screen, 0); return 1; }
+    if (panel == g_btn_hub || (panel == g_btn_update && g_btn_update)) { wl_hub_open(g_screen, 0); return 1; }
     if (panel == g_btn_creator) {
         set_note(wl_launch_scriptorium() ? "Scriptorium opened. Press Reload Mods after saving."
                                          : "Scriptorium.exe not found in the wololoader folder.");
@@ -685,6 +1026,8 @@ static void *create_screen(void) {
              "%s\\resources\\_common\\textures\\ui\\tech-tree-icon.png", g_wl.game_dir);
 
     build_view();
+    compute_conflicts();
+    wl_mods_check_updates();
     int ro = g_return_screen != NULL;
     g_screen_ro = ro;
     int creator = has_scriptorium();
@@ -738,16 +1081,68 @@ static void *create_screen(void) {
     g_icon_toggle_off = ui_icon(s, "cross", TEXT_X + 10, HEAD_Y + 80, 22);
     g_lbl_state = add_label(s, "", TEXT_X + 162, HEAD_Y + 72, TEXT_W - 162, 38, 0xa, 0, 1, 0);
 
-    for (int i = 0; i < 4; i++)
-        g_lbl_info[i] = add_label(s, g_d_info[i], DET_X, INFO_Y + i * INFO_STEP, DET_W, 24, 0xa, 0, 0, 0);
-    add_label(s, g_d_desc, DET_X, DESC_Y, DET_W, ACTIONS_Y - DESC_Y - 8, 0xa, 0, 0, 0);
+    g_set_count = g_selected_mod >= 0 ? wl_settings_load(&g_wl.mods[g_selected_mod], g_set, WL_MAX_SETTINGS) : 0;
+    if (ro || g_set_count == 0) g_settings_mode = 0;
+    for (int i = 0; i < INFO_LINES; i++) g_lbl_info[i] = NULL;
+    for (int r = 0; r < SET_ROWS; r++) { g_set_btn[r] = g_set_minus[r] = g_set_lbl[r] = NULL; g_set_row[r] = -1; }
+    g_btn_mod_folder = g_icon_mod_folder = g_btn_mod_edit = g_icon_mod_edit = g_btn_settings = NULL;
+    g_btn_set_done = g_btn_set_defaults = g_btn_set_prev = g_btn_set_next = NULL;
 
-    g_btn_mod_folder = add_button(s, "Open Folder", DET_X, ACTIONS_Y, 180, 36);
-    g_icon_mod_folder = ui_icon(s, "folder", DET_X + 10, ACTIONS_Y + 7, 22);
-    g_btn_mod_edit = g_icon_mod_edit = NULL;
-    if (creator) {
-        g_btn_mod_edit = add_button(s, "Edit in Scriptorium", DET_X + 190, ACTIONS_Y, 230, 36);
-        g_icon_mod_edit = ui_icon(s, "quill", DET_X + 200, ACTIONS_Y + 7, 22);
+    if (g_settings_mode) {
+        // Settings view: one row per setting (name left, control right), pages of SET_ROWS.
+        int pages = (g_set_count + SET_ROWS - 1) / SET_ROWS;
+        if (g_set_page >= pages) g_set_page = pages - 1;
+        if (g_set_page < 0) g_set_page = 0;
+        if (pages > 1)
+            snprintf(g_set_title, sizeof g_set_title, "Settings (page %d / %d): saved at once", g_set_page + 1, pages);
+        else
+            snprintf(g_set_title, sizeof g_set_title, "Settings: saved at once, applied on Back or Reload Mods");
+        add_label(s, g_set_title, DET_X, INFO_Y - 8, DET_W, 24, 0xa, 0, 0, 0);
+        for (int r = 0; r < SET_ROWS; r++) {
+            int si = g_set_page * SET_ROWS + r;
+            if (si >= g_set_count) break;
+            g_set_row[r] = si;
+            int y = INFO_Y + 22 + r * SET_STEP;
+            snprintf(g_set_names[r], sizeof g_set_names[r], "%s", g_set[si].name);
+            clip(g_set_names[r], 52);
+            add_label(s, g_set_names[r], DET_X, y, 290, 34, 0xa, 0, 1, 0);
+            wl_setting_text(&g_set[si], g_set_vals[r], sizeof g_set_vals[r]);
+            if (g_set[si].type == WL_SET_NUMBER) {
+                g_set_minus[r] = add_button(s, "-", DET_X + 300, y, 50, 34);
+                g_set_lbl[r] = add_label(s, g_set_vals[r], DET_X + 355, y, 110, 34, 0xa, 1, 1, 0);
+                g_set_btn[r] = add_button(s, "+", DET_X + 470, y, 50, 34);
+            } else {
+                g_set_btn[r] = add_button(s, g_set_vals[r], DET_X + 300, y, 220, 34);
+            }
+        }
+        g_btn_set_done = add_button(s, "Done", DET_X, ACTIONS_Y, 150, 36);
+        g_icon_mod_folder = ui_icon(s, "back", DET_X + 12, ACTIONS_Y + 8, 20);
+        g_btn_set_defaults = add_button(s, "Defaults", DET_X + 160, ACTIONS_Y, 150, 36);
+        if (pages > 1) {
+            g_btn_set_prev = add_button(s, "<", DET_X + 410, ACTIONS_Y, 50, 36);
+            g_btn_set_next = add_button(s, ">", DET_X + 470, ACTIONS_Y, 50, 36);
+        }
+    } else {
+        for (int i = 0; i < INFO_LINES; i++)
+            g_lbl_info[i] = add_label(s, g_d_info[i], DET_X, INFO_Y + i * INFO_STEP, DET_W, 24, 0xa, 0, 0, 0);
+        add_label(s, g_d_desc, DET_X, DESC_Y, DET_W, ACTIONS_Y - DESC_Y - 8, 0xa, 0, 0, 0);
+
+        // Actions row, 530 wide: Open Folder 160 | Edit in Scriptorium 220 | Settings 130.
+        g_btn_mod_folder = add_button(s, "Open Folder", DET_X, ACTIONS_Y, 160, 36);
+        g_icon_mod_folder = ui_icon(s, "folder", DET_X + 10, ACTIONS_Y + 7, 22);
+        int ax = DET_X + 170;
+        if (creator) {
+            g_btn_mod_edit = add_button(s, "Edit in Scriptorium", ax, ACTIONS_Y, 220, 36);
+            g_icon_mod_edit = ui_icon(s, "quill", ax + 10, ACTIONS_Y + 7, 22);
+            ax += 230;
+        }
+        if (g_set_count > 0) { g_btn_settings = add_button(s, "Settings", ax, ACTIONS_Y, 130, 36); ax += 140; }
+        // Update: opens the Mod Hub, which installs the new version (and keeps a local copy in the trash).
+        g_btn_update = NULL;
+        if (g_selected_mod >= 0 && update_for(&g_wl.mods[g_selected_mod]) && !ro) {
+            if (ax + 110 > DET_X + DET_W) ax = DET_X + DET_W - 110;   // no room: covers the last button
+            g_btn_update = add_button(s, "Update", ax, ACTIONS_Y, 110, 36);
+        }
     }
 
     // Note line: build error, last reload result or the last action's message.
@@ -805,6 +1200,7 @@ void wl_mods_readonly_reset(void) {
 // Read-only view for the multiplayer lobby ("Active Mods" button, lobby.c).
 void wl_mods_open_readonly(void *return_screen) {
     g_return_screen = return_screen;
+    g_conf_valid = 0;
     g_filter = FILTER_ON;   // the lobby cares about what is loaded
     g_page = 0;
     g_note[0] = 0;
@@ -816,6 +1212,7 @@ void wl_mods_open_readonly(void *return_screen) {
 void wl_mods_return_from_hub(int mods_changed) {
     if (mods_changed) {
         g_mods_dirty = 1;
+        g_conf_valid = 0;
         wl_scan_mods();
         snprintf(g_note, sizeof g_note, "Mod Hub changes saved. Press Back or Reload Mods to apply.");
         rebuild_screen();

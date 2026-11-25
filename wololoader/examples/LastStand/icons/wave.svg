@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="bladeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f7fbff"/>
+      <stop offset="50%" stop-color="#b4c2d0"/>
+      <stop offset="100%" stop-color="#5d6c7a"/>
+    </linearGradient>
+    <linearGradient id="hornGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff0c4"/>
+      <stop offset="55%" stop-color="#d8a248"/>
+      <stop offset="100%" stop-color="#7a4c14"/>
+    </linearGradient>
+    <linearGradient id="goldTrim" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#9e6616"/>
+      <stop offset="50%" stop-color="#ffd966"/>
+      <stop offset="100%" stop-color="#7c4a0c"/>
+    </linearGradient>
+  </defs>
+  <!-- Crossed swords -->
+  <g stroke="#1b1108" stroke-width="1.3" stroke-linejoin="round">
+    <polygon points="4,4 7.5,3.5 24.5,22 22.5,24" fill="url(#bladeGrad)"/>
+    <polygon points="28,4 24.5,3.5 7.5,22 9.5,24" fill="url(#bladeGrad)"/>
+    <!-- Guards and grips -->
+    <line x1="20.5" y1="25.5" x2="26.5" y2="19.5" stroke="url(#goldTrim)" stroke-width="2.6" stroke-linecap="round"/>
+    <line x1="11.5" y1="25.5" x2="5.5" y2="19.5" stroke="url(#goldTrim)" stroke-width="2.6" stroke-linecap="round"/>
+    <line x1="24" y1="23.5" x2="28" y2="27.5" stroke="#5c1b14" stroke-width="2.4" stroke-linecap="round"/>
+    <line x1="8" y1="23.5" x2="4" y2="27.5" stroke="#5c1b14" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="28.5" cy="28" r="1.6" fill="#ffd966"/>
+    <circle cx="3.5" cy="28" r="1.6" fill="#ffd966"/>
+  </g>
+  <!-- War horn in foreground -->
+  <path d="M8.5 19.5 C10 25, 17 28, 24.5 22.5 L26.5 25 C17.5 31.2, 7.2 27.5, 6 20 Z"
+        fill="url(#hornGrad)" stroke="#1b1108" stroke-width="1.4" stroke-linejoin="round"/>
+  <!-- Horn rim & brass bands -->
+  <ellipse cx="25.6" cy="23.7" rx="1.7" ry="2.6" transform="rotate(-35 25.6 23.7)"
+           fill="#591812" stroke="#1b1108" stroke-width="1.2"/>
+  <path d="M12.5 23.2 L14.1 25.4" stroke="#ffd966" stroke-width="2" stroke-linecap="round"/>
+  <path d="M19.0 23.6 L20.4 26.2" stroke="#ffd966" stroke-width="2" stroke-linecap="round"/>
+</svg>

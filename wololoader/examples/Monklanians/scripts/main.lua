@@ -1,51 +1,52 @@
 -- Monklanians example script (Wololoader Lua API; see MODDING.md).
+-- Mod scripts run in every game, so everything here first checks that the local player
+-- plays the Monklanians: MOD.civs lists this mod's civ ids, Player.Civ is a player's civ.
 print("loaded " .. MOD.name .. " v" .. MOD.version)
+
+local function is_monklanian(p)
+    if not p then return false end
+    local civ = p.Civ
+    for _, c in ipairs(MOD.civs or {}) do
+        if c == civ then return true end
+    end
+    return false
+end
+
+local monkCounter = nil   -- "Monks: N" line, only for Monklanian players
 
 Game.OnStart(function()
     local me = Game.LocalPlayer
-    UI.Message("Monklanians: Wololo!")
-    Sound.Play("Objective")
-    UI.Chat("The monks are ready.", { From = "Abbot Wololo", Color = 2 })
-    print("start gold:", me.Gold, "age:", me.AgeName)
-
-    Time.Wait(5)
-    if UI.Ask("Bless your monks?") then
-        Sound.Play("TownBell")
-        UI.Chat("Then go, and convert them all! Take 100 gold and a new brother.", { From = "Abbot Wololo", Color = 2 })
-        me:AddGold(100)
-        -- A new monk (unit id 125) three tiles from the first building (the Town Center).
-        local tc = me:Units("Building")[1]
-        if tc then me:CreateUnit(125, tc.X + 3, tc.Y + 3) end
-    end
+    if not is_monklanian(me) then return end
+    UI.Chat("Wololo!", { From = "Monklanians", Color = 2 })
+    monkCounter = UI:CreateCounter("Monks: 0")
 end)
 
--- A counter line that shows how many monks the player has, updated every second.
-local monkCounter = UI:CreateCounter("Monks: 0")
+-- How many monks the player has, updated every second.
 Game.OnSecond(function()
     local me = Game.LocalPlayer
-    if me then monkCounter:SetText("Monks: " .. #me:Units("Monk")) end
+    if monkCounter and me then monkCounter:SetText("Monks: " .. #me:Units("Monk")) end
 end)
 
--- Announce when anyone reaches a new age, and celebrate new monks.
-Game.OnAgeUp(function(player, age)
-    UI.Chat("Player " .. player.Id .. " reached the " .. age .. " Age!", { From = "Abbot Wololo", Color = 2 })
-end)
+-- Celebrate new monks.
 Game.OnUnitCreated(function(unit)
-    if unit.ClassName == "Monk" and unit.Owner.IsLocal then UI.Message("A new monk joins the order.") end
+    if unit.ClassName == "Monk" and unit.Owner.IsLocal and is_monklanian(unit.Owner) then
+        UI.Chat("A new monk joins the order.", { From = "Abbey", Color = 2 })
+    end
 end)
 
 -- The Abbey (unit 1400, the first mod building slot) is finished.
 Game.OnBuildingDone(function(b)
     if b.Type == 1400 and b.Owner == Game.LocalPlayer then
-        UI.Message("The Abbey is finished: train monks and Abbots there.")
+        UI.Chat("The Abbey is finished: train monks and Abbots there.", { From = "Abbey", Color = 2 })
     end
 end)
 
 -- The Abbey's "Bless" button (unique_building commands, "lua": "Bless" in the civ JSON).
+-- Only Monklanians have the Abbey, so this needs no civ check.
 Game.OnCommand("Bless", function(abbey)
     local me = Game.LocalPlayer
     if me.Gold < 50 then
-        UI.Message("Not enough gold to bless (50).")
+        UI.Chat("Not enough gold to bless (50).", { From = "Abbey", Color = 2 })
         return
     end
     me:AddGold(-50)

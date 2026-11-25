@@ -656,11 +656,39 @@ int hub_url_to_local_path(const char *url, char *out, size_t cap) {
     return 1;
 }
 
+static int hub_fetch_stream_once(const char *url, size_t max_bytes, FILE *fp,
+                                 char **out_buf, size_t *out_len,
+                                 HubProgressFn progress_cb, void *progress_user,
+                                 const char *progress_mod_id,
+                                 char *err, size_t err_cap);
+
+// Network errors before any byte arrived (TLS handshake, connect) are retried twice: in the
+// game process a fetch failed once with WinHTTP 12157 while the same request from a separate
+// process under the same Proton worked (2026-11-25). Nothing has been written to fp then.
 int hub_fetch_stream(const char *url, size_t max_bytes, FILE *fp,
                      char **out_buf, size_t *out_len,
                      HubProgressFn progress_cb, void *progress_user,
                      const char *progress_mod_id,
                      char *err, size_t err_cap) {
+    int rc = -1;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (err && err_cap) err[0] = 0;
+        rc = hub_fetch_stream_once(url, max_bytes, fp, out_buf, out_len, progress_cb, progress_user,
+                                   progress_mod_id, err, err_cap);
+        if (rc == 0 || !err || (strncmp(err, "Network error", 13) != 0 && strncmp(err, "Could not connect", 17) != 0))
+            break;
+#ifdef _WIN32
+        Sleep(1000 * (attempt + 1));
+#endif
+    }
+    return rc;
+}
+
+static int hub_fetch_stream_once(const char *url, size_t max_bytes, FILE *fp,
+                                 char **out_buf, size_t *out_len,
+                                 HubProgressFn progress_cb, void *progress_user,
+                                 const char *progress_mod_id,
+                                 char *err, size_t err_cap) {
     if (out_buf) *out_buf = NULL;
     if (out_len) *out_len = 0;
     if (!url || !url[0]) {
@@ -761,6 +789,16 @@ int hub_fetch_stream(const char *url, size_t max_bytes, FILE *fp,
     }
 
     WinHttpSetTimeouts(hSession, 10000, 10000, 15000, 30000);
+    // Ask for TLS 1.2 and 1.3 explicitly. Without it WinHTTP under Wine/Proton offered no
+    // protocol GitHub accepts and every fetch failed with 12157 (ERROR_WINHTTP_SECURE_CHANNEL_ERROR),
+    // seen in game 2026-11-25. 0x800 = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2, 0x2000 = TLS1_3.
+    {
+        DWORD protos = 0x800 | 0x2000;
+        if (!WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protos, sizeof protos)) {
+            protos = 0x800;   // older WinHTTP without TLS 1.3
+            WinHttpSetOption(hSession, WINHTTP_OPTION_SECURE_PROTOCOLS, &protos, sizeof protos);
+        }
+    }
 
     HINTERNET hConnect = WinHttpConnect(hSession, whost, uc.nPort, 0);
     if (!hConnect) {

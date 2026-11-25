@@ -43,18 +43,31 @@
 
 #define RDP(p, o) (*(void **)((char *)(p) + (o)))
 #define RD32(p, o) (*(DWORD *)((char *)(p) + (o)))
-#define WL_MARK 0x57        /* 'W': add resource */
+#define WL_MARK 0x57        /* 'W': add vanilla resource (8-byte packet, res 0..3) */
 #define WL_MARK_TECH 0x58   /* 'X': complete tech */
 #define WL_MARK_AGE 0x59    /* 'Y': set age */
+#define WL_MARK_SPAWN_NC 0x5a  /* 'Z': create a unit that is never captured (see wl_cmd_spawn_neutral) */
+#define WL_MARK_RES16 0x5b     /* '[': add int16 resource (12-byte packet: i16 res @+4, f32 amount @+8) */
+#define WL_MARK_SETRES16 0x5c  /* '\': set int16 resource (12-byte packet: i16 res @+4, f32 val @+8) */
+#define WL_MARK_DEFEAT 0x5d    /* ']': defeat player via RGE_Player::loss_if_game_on (0x750580) */
+#define WL_MARK_WIN 0x5e       /* '^': win player via 0x7558a0 (solo) or 0x7558b0 (team) */
 
 typedef void *(__cdecl *Calloc_t)(size_t n, size_t size);
 typedef int (__thiscall *Send_t)(void *cmd, BYTE *pkt, int size, int player);
 typedef void (__thiscall *Exec_t)(void *proc, BYTE *pkt);
 typedef void (__thiscall *AddRes_t)(void *player, int res, float amount, int flag);
+// WorldPlayer::new_attribute_num (vtable +0x60, 0x744400, ret 0x8; verified via objdump)
+typedef void (__thiscall *SetRes_t)(void *player, int res, float val);
 typedef void (__thiscall *CompleteTech_t)(void *tech_tree, short tech);
 typedef void *(__thiscall *GetObj_t)(void *world, int id);
+// Verified in AoK HD.exe 5.8 disassembly (2026-11-25, re/FINDINGS.md):
+// - 0x750580 RGE_Player::loss_if_game_on: __thiscall(player), plain ret
+// - 0x7558a0 RGE_Player::win_game_now: __thiscall(player), plain ret
+// - 0x7558b0 TRIBE_Player::win_game_now_team: __thiscall(player), plain ret
+typedef void (__thiscall *VoidPlayer_t)(void *player);
 
 static Exec_t o_exec;
+static int g_win_defeat_ok;
 static int g_sent_this_second;
 static DWORD g_second;
 
@@ -109,23 +122,27 @@ static BYTE *begin(int pid, int size, void **w_out, int *rc) {
 // game's free for its calloc 0x8ea479 is not verified, and this only happens with a full queue).
 #define CMD_RATE 100
 #define CMD_QUEUE 4096
-static struct { BYTE *pkt; int size; } g_q[CMD_QUEUE];
+static struct { BYTE *pkt; int size; int sender; } g_q[CMD_QUEUE];
 static int g_qhead, g_qlen, g_qdropped;
 static void *g_qworld;
 
-static void send_now(void *w, BYTE *pkt, int size) {
-    ((Send_t)0x80ef70)(RDP(w, 0xc0), pkt, size, (int)RD32(w, 0x174));
+// sender < 0: the local player (most commands). The move builder 0x8097d0 passes the units' owner
+// instead (0x8098c6 mov 0x1adc(%eax)), so wl_cmd_move sends as the owner (Gaia = 0).
+static void send_now_as(void *w, BYTE *pkt, int size, int sender) {
+    ((Send_t)0x80ef70)(RDP(w, 0xc0), pkt, size, sender >= 0 ? sender : (int)RD32(w, 0x174));
 }
 static int rate_ok(void) {
     DWORD sec = GetTickCount() / 1000;
     if (sec != g_second) { g_second = sec; g_sent_this_second = 0; }
     return g_sent_this_second < CMD_RATE;
 }
-static int send_cmd(void *w, BYTE *pkt, int size) {
+static int send_cmd_as(void *w, BYTE *pkt, int size, int sender);
+static int send_cmd(void *w, BYTE *pkt, int size) { return send_cmd_as(w, pkt, size, -1); }
+static int send_cmd_as(void *w, BYTE *pkt, int size, int sender) {
     if (g_qworld != w) { g_qhead = g_qlen = 0; g_qworld = w; }
     if (g_qlen == 0 && rate_ok()) {
         g_sent_this_second++;
-        send_now(w, pkt, size);
+        send_now_as(w, pkt, size, sender);
         return 1;
     }
     if (g_qlen == CMD_QUEUE) {
@@ -135,6 +152,7 @@ static int send_cmd(void *w, BYTE *pkt, int size) {
     int k = (g_qhead + g_qlen++) % CMD_QUEUE;
     g_q[k].pkt = pkt;
     g_q[k].size = size;
+    g_q[k].sender = sender;
     return 1;
 }
 // From the game screen's frame (luagame.c): sends queued commands within the rate.
@@ -144,7 +162,7 @@ void wl_gamecmd_frame(void) {
     if (!w || w != g_qworld || !RDP(w, 0xc0)) { g_qhead = g_qlen = 0; g_qworld = NULL; return; }
     while (g_qlen && rate_ok()) {
         g_sent_this_second++;
-        send_now(w, g_q[g_qhead].pkt, g_q[g_qhead].size);
+        send_now_as(w, g_q[g_qhead].pkt, g_q[g_qhead].size, g_q[g_qhead].sender);
         g_qhead = (g_qhead + 1) % CMD_QUEUE;
         g_qlen--;
     }
@@ -153,12 +171,38 @@ void wl_gamecmd_frame(void) {
 
 int wl_cmd_add_resource(int pid, int res, float amount) {
     void *w; int rc;
-    if (res < 0 || res > 3) return -1;
-    BYTE *pkt = begin(pid, 8, &w, &rc);
+    if (res < 0 || res > WL_CUSTOM_RES_MAX) return -1;
+    if (res <= 3) {
+        BYTE *pkt = begin(pid, 8, &w, &rc);
+        if (!pkt) return rc;
+        pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = (BYTE)res; pkt[3] = WL_MARK;
+        memcpy(pkt + 4, &amount, 4);
+        return send_cmd(w, pkt, 8);
+    }
+    // Custom / extended resource ids (4..32766): validate against live [player+0x38]
+    // and transmit a 12-byte marked 0x05 packet with int16 resource id at +4.
+    void *w0 = world();
+    void *p = player_obj(w0, pid, NULL);
+    if (!p || res >= (int)RD32(p, 0x38)) return -1;
+    BYTE *pkt = begin(pid, 12, &w, &rc);
     if (!pkt) return rc;
-    pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = (BYTE)res; pkt[3] = WL_MARK;
-    memcpy(pkt + 4, &amount, 4);
-    return send_cmd(w, pkt, 8);
+    pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = 0; pkt[3] = WL_MARK_RES16;
+    *(short *)(pkt + 4) = (short)res;
+    memcpy(pkt + 8, &amount, 4);
+    return send_cmd(w, pkt, 12);
+}
+
+int wl_cmd_set_resource(int pid, int res, float amount) {
+    void *w0 = world();
+    void *p = player_obj(w0, pid, NULL);
+    if (!p || res < 0 || res > WL_CUSTOM_RES_MAX || res >= (int)RD32(p, 0x38)) return -1;
+    void *w; int rc;
+    BYTE *pkt = begin(pid, 12, &w, &rc);
+    if (!pkt) return rc;
+    pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = 0; pkt[3] = WL_MARK_SETRES16;
+    *(short *)(pkt + 4) = (short)res;
+    memcpy(pkt + 8, &amount, 4);
+    return send_cmd(w, pkt, 12);
 }
 
 int wl_cmd_research(int pid, int tech) {
@@ -185,6 +229,28 @@ int wl_cmd_set_age(int pid, int age) {
     BYTE *pkt = begin(pid, 8, &w, &rc);
     if (!pkt) return rc;
     pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = (BYTE)age; pkt[3] = WL_MARK_AGE;
+    return send_cmd(w, pkt, 8);
+}
+
+// Defeat player `pid` (1..8) deterministically on every machine via lockstep 0x05 packet.
+// Calls RGE_Player::loss_if_game_on (0x750580) in exec_wl.
+int wl_cmd_defeat(int pid) {
+    void *w; int rc;
+    if (!g_win_defeat_ok || pid <= 0) return -1;
+    BYTE *pkt = begin(pid, 8, &w, &rc);
+    if (!pkt) return rc;
+    pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = 0; pkt[3] = WL_MARK_DEFEAT;
+    return send_cmd(w, pkt, 8);
+}
+
+// Mark player `pid` (1..8) as winner deterministically via lockstep 0x05 packet.
+// team == 0: RGE_Player::win_game_now (0x7558a0); team != 0: TRIBE_Player::win_game_now_team (0x7558b0).
+int wl_cmd_win(int pid, int team) {
+    void *w; int rc;
+    if (!g_win_defeat_ok || pid <= 0) return -1;
+    BYTE *pkt = begin(pid, 8, &w, &rc);
+    if (!pkt) return rc;
+    pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = (BYTE)(team ? 1 : 0); pkt[3] = WL_MARK_WIN;
     return send_cmd(w, pkt, 8);
 }
 
@@ -240,9 +306,109 @@ int wl_cmd_delete(int unit_id) {
     return send_cmd(w, pkt, 12);
 }
 
+// Move: the game's own command 3 (builder 0x8097d0, executor 0x80bdd0 via 0x809fe0 case 3):
+// {u8 3, u8 player, 2 pad, i32 target id (-1 = none), u8 unit count, 3 pad, f32 x, f32 y,
+//  i32 unit ids[count]}, 0x14 + 4 * count bytes. The builder writes player 0 for a computer
+// player's units (0x8098a5..: is_computer -> puVar3[1] = 0); the unit list reader 0x80dad0
+// then takes the ids from the packet (log "Units defined inside command"), and does the same
+// for Gaia (player 0). Human players' units carry their player id (the reader also caches
+// them as that player's last commanded units). Sent by the machine that sends for the owner.
+int wl_cmd_move(int unit_id, float x, float y) {
+    void *w0 = world();
+    void *u = w0 ? ((GetObj_t)0x733bf0)(w0, unit_id) : NULL;
+    void *owner = u ? RDP(u, 0x10) : NULL;
+    if (!owner || x < 0 || y < 0 || x > 1000 || y > 1000) return -1;
+    int pid = (int)RD32(owner, 0x1adc);
+    void *w; int rc;
+    BYTE *pkt = begin(pid, 0x18, &w, &rc);
+    if (!pkt) return rc;
+    pkt[0] = 3;
+    pkt[1] = (BYTE)(pid == 0 || is_computer(owner) ? 0 : pid);
+    *(int *)(pkt + 4) = -1;
+    pkt[8] = 1;
+    memcpy(pkt + 0xc, &x, 4);
+    memcpy(pkt + 0x10, &y, 4);
+    *(int *)(pkt + 0x14) = unit_id;
+    return send_cmd_as(w, pkt, 0x18, pid);   // as the owner, like the builder (see send_now_as)
+}
+
+// A unit that stays its owner's (Gaia) when players see it. Gaia combat units get
+// [unit+0x194] = 1 when they are set up (TRIBE_Combat_Object::setup 0x8c9c20: 0x8c9ced / 0x8c9d09,
+// owner [+0x1adc] == 0 and master class [+0x16] not in an exempt list); RGE_Combat_Object::update
+// 0x5aa8a0 then gives the unit to the first human player who sees it (0x5aaaa2 cmpb $0x0,0x194;
+// 0x5aab57 call *0x50 changes the owner; 0x5aabbe clears the flag). Our marked packet creates the
+// unit on every machine in the same turn, exactly like the game's create executor 0x8161d0
+// (player vtable +0x98, __thiscall(type, x, y, z, 1), 0x816240), and clears the flag at once.
+// Packet {u8 5, u8 player, u8 0, u8 'Z', i16 type, 2 pad, f32 x, f32 y}, 16 bytes.
+int wl_cmd_spawn_neutral(int pid, int type, float x, float y) {
+    void *w0 = world();
+    void *p = player_obj(w0, pid, NULL);
+    if (!p || type < 0 || type >= (int)RD32(p, 0x10)) return -1;
+    void **masters = (void **)RDP(p, 0x14);
+    if (!masters || !masters[type]) return -1;
+    void *w; int rc;
+    BYTE *pkt = begin(pid, 16, &w, &rc);
+    if (!pkt) return rc;
+    pkt[0] = 0x05; pkt[1] = (BYTE)pid; pkt[2] = 0; pkt[3] = WL_MARK_SPAWN_NC;
+    *(short *)(pkt + 4) = (short)type;
+    memcpy(pkt + 8, &x, 4);
+    memcpy(pkt + 12, &y, 4);
+    return send_cmd(w, pkt, 16);
+}
+
+typedef void (__thiscall *CreateUnit_t)(void *player, int type, float x, float y, float z, int one);
+static void exec_spawn_neutral(void *p, int type, float x, float y) {
+    if (type < 0 || type >= (int)RD32(p, 0x10)) return;
+    void **masters = (void **)RDP(p, 0x14);
+    if (!masters || !masters[type]) return;
+    ((CreateUnit_t)(*(void ***)p)[0x98 / 4])(p, type, x, y, 0.0f, 1);
+    // The new unit is the newest of that type at that spot: player unit list [player+0x18],
+    // array [list+4], count [list+8] (gameapi.c ga_units).
+    char *list = (char *)RDP(p, 0x18);
+    if (!list) return;
+    void **u = (void **)RDP(list, 4);
+    int count = (int)RD32(list, 8);
+    for (int i = count - 1; i >= 0 && i >= count - 64; i--) {
+        char *x0 = (char *)u[i];
+        void *m = x0 ? RDP(x0, 0xc) : NULL;
+        if (!m || *(short *)((char *)m + 0x10) != type) continue;
+        float ux = *(float *)(x0 + 0x3c), uy = *(float *)(x0 + 0x40);
+        if (ux - x > 2 || x - ux > 2 || uy - y > 2 || y - uy > 2) continue;
+        if (x0[0x194]) { x0[0x194] = 0; wl_log("gamecmd: unit %d (type %d) will not be captured", (int)RD32(x0, 8), type); }
+        break;
+    }
+}
+
+// Attack ("order"): the game's command 0, same layout as move (builder 0x809900: 0x80999e movb $0x0,
+// target id = [target+8] at +4 (0x80998d..0x809998), count +8, x +0xc, y +0x10, ids +0x14; executor
+// 0x809fe0 case 0 -> 0x80c650). x/y = the target's position. Sent as the owner like move.
+int wl_cmd_attack(int unit_id, int target_id) {
+    void *w0 = world();
+    void *u = w0 ? ((GetObj_t)0x733bf0)(w0, unit_id) : NULL;
+    void *t = w0 ? ((GetObj_t)0x733bf0)(w0, target_id) : NULL;
+    void *owner = u ? RDP(u, 0x10) : NULL;
+    if (!owner || !t) return -1;
+    int pid = (int)RD32(owner, 0x1adc);
+    float x = *(float *)((char *)t + 0x3c), y = *(float *)((char *)t + 0x40);
+    void *w; int rc;
+    BYTE *pkt = begin(pid, 0x18, &w, &rc);
+    if (!pkt) return rc;
+    pkt[0] = 0;
+    pkt[1] = (BYTE)(pid == 0 || is_computer(owner) ? 0 : pid);
+    *(int *)(pkt + 4) = target_id;
+    pkt[8] = 1;
+    memcpy(pkt + 0xc, &x, 4);
+    memcpy(pkt + 0x10, &y, 4);
+    *(int *)(pkt + 0x14) = unit_id;
+    return send_cmd_as(w, pkt, 0x18, pid);
+}
+
 // Runs on EVERY machine when the turn executes the packet.
 static int exec_wl(BYTE *pkt) {
-    if (pkt[0] != 0x05 || (pkt[3] != WL_MARK && pkt[3] != WL_MARK_TECH && pkt[3] != WL_MARK_AGE)) return 0;
+    if (pkt[0] != 0x05 || (pkt[3] != WL_MARK && pkt[3] != WL_MARK_TECH && pkt[3] != WL_MARK_AGE &&
+                           pkt[3] != WL_MARK_SPAWN_NC && pkt[3] != WL_MARK_RES16 && pkt[3] != WL_MARK_SETRES16 &&
+                           pkt[3] != WL_MARK_DEFEAT && pkt[3] != WL_MARK_WIN))
+        return 0;
     void *p = player_obj(world(), pkt[1], NULL);
     if (!p) return 1;
     if (pkt[3] == WL_MARK) {
@@ -250,8 +416,42 @@ static int exec_wl(BYTE *pkt) {
         memcpy(&amount, pkt + 4, 4);
         AddRes_t add = (AddRes_t)(*(void ***)p)[0x64 / 4];
         add(p, pkt[2], amount, 0);
+    } else if (pkt[3] == WL_MARK_RES16) {
+        short res = *(short *)(pkt + 4);
+        int count = (int)RD32(p, 0x38);
+        if (res >= 0 && res < count) {
+            float amount;
+            memcpy(&amount, pkt + 8, 4);
+            AddRes_t add = (AddRes_t)(*(void ***)p)[0x64 / 4];
+            add(p, (int)res, amount, 0);
+        }
+    } else if (pkt[3] == WL_MARK_SETRES16) {
+        short res = *(short *)(pkt + 4);
+        int count = (int)RD32(p, 0x38);
+        if (res >= 0 && res < count) {
+            float val;
+            memcpy(&val, pkt + 8, 4);
+            if (res >= WL_CUSTOM_RES_FIRST) {
+                const WlResourceDef *def = wl_resource_by_id(res);
+                if (def && def->max > 0.0f && val > def->max) val = def->max;
+            }
+            SetRes_t set = (SetRes_t)(*(void ***)p)[0x60 / 4];
+            set(p, (int)res, val);
+        }
+    } else if (pkt[3] == WL_MARK_SPAWN_NC) {
+        float x, y;
+        memcpy(&x, pkt + 8, 4);
+        memcpy(&y, pkt + 12, 4);
+        exec_spawn_neutral(p, *(short *)(pkt + 4), x, y);
     } else if (pkt[3] == WL_MARK_AGE) {
         exec_set_age(p, pkt[2]);
+    } else if (pkt[3] == WL_MARK_DEFEAT) {
+        if (g_win_defeat_ok && pkt[1] > 0) ((VoidPlayer_t)0x750580)(p);
+    } else if (pkt[3] == WL_MARK_WIN) {
+        if (g_win_defeat_ok && pkt[1] > 0) {
+            if (pkt[2]) ((VoidPlayer_t)0x7558b0)(p);
+            else ((VoidPlayer_t)0x7558a0)(p);
+        }
     } else {
         void *tt = RDP(p, 0x1ae8);
         if (tt) ((CompleteTech_t)0x84d300)(tt, *(short *)(pkt + 4));
@@ -268,10 +468,18 @@ static void __fastcall exec_hook(void *proc, void *edx, BYTE *pkt) {
 
 void wl_install_gamecmd(void) {
     static const BYTE b_exec[] = { 0x55, 0x8b, 0xec, 0xa1, 0xb8, 0xef, 0xae, 0x00 };
+    static const BYTE b_loss[] = { 0x80, 0x79, 0x35, 0x00, 0x75, 0x07, 0x8b, 0x01, 0x6a, 0x02, 0xff, 0x50, 0x04, 0xc3 };
+    static const BYTE b_win[]  = { 0x80, 0x79, 0x35, 0x00, 0x75, 0x07, 0x8b, 0x01, 0x6a, 0x01, 0xff, 0x50, 0x04, 0xc3 };
+    static const BYTE b_wint[] = { 0x55, 0x8b, 0xec, 0x51, 0x53, 0x56, 0x57, 0x8b, 0xd9, 0xe8, 0xe2, 0xff, 0xff, 0xff };
     if (memcmp((const void *)0x813460, b_exec, sizeof b_exec) != 0) {
         wl_log("gamecmd: unexpected bytes at 0x813460, game commands off");
         return;
     }
+    g_win_defeat_ok = (memcmp((const void *)0x750580, b_loss, sizeof b_loss) == 0 &&
+                       memcmp((const void *)0x7558a0, b_win,  sizeof b_win)  == 0 &&
+                       memcmp((const void *)0x7558b0, b_wint, sizeof b_wint) == 0);
+    if (!g_win_defeat_ok) wl_log("gamecmd: unexpected bytes at 0x750580/0x7558a0/0x7558b0, Win/Defeat off");
     o_exec = (Exec_t)wl_hook(0x813460, exec_hook, 8);
-    wl_log("gamecmd: command executor hook %s", o_exec ? "installed" : "FAILED");
+    wl_log("gamecmd: command executor hook %s (win/defeat %s)",
+           o_exec ? "installed" : "FAILED", g_win_defeat_ok ? "ok" : "off");
 }

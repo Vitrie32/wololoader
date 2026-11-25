@@ -28,6 +28,8 @@ DAT_REL = os.path.join("resources", "_common", "dat", "empires2_x2_p1.dat")
 FIRST_RESERVED_ID = 32          # RANDOM / SPECTATOR / MIRROR are hard-coded in the exe
 NUM_RESERVED = 3
 CIV_NAME_BYTES = 20             # Civilization.name is a fixed char[20] (19 chars + NUL)
+CUSTOM_RES_FIRST = 211          # AoE2 HD 5.8 vanilla resource_count = 211 (indices 0..210)
+CUSTOM_RES_MAX = 32766          # engine reads resource_count as signed int16 (max 32767)
 
 
 class BuildError(Exception):
@@ -60,17 +62,238 @@ def make_effect_name(text, where):
     return raw.ljust(31, b"\0")
 
 
-def parse_effect_command(cmd_spec, where):
+def _is_plain_int_str(s):
+    if not isinstance(s, str) or not s:
+        return False
+    t = s[1:] if s[0] in "+-" else s
+    return bool(t) and t.isdigit() and t.isascii()
+
+
+def fmt_res_float(v):
+    f = float(v)
+    if f == 0.0:
+        return "0"
+    return "%.6g" % f
+
+
+def find_custom_resources(mods_dir):
+    """Discover custom resources from enabled mods' mod.json in deterministic order.
+
+    Order: enabled mods sorted by folder name, then declaration order within each mod.json.
+    IDs are assigned contiguously from CUSTOM_RES_FIRST (211) up to CUSTOM_RES_MAX (32766).
+    Mirrors wl_find_custom_resources in datbuild.c byte-for-byte.
+    """
+    out = []
+    if not os.path.isdir(mods_dir):
+        return out
+    vanilla_names = {"food", "wood", "stone", "gold"}
+    known_keys = {"id", "name", "icon", "start", "max", "show", "description"}
+    for mod in sorted(os.listdir(mods_dir)):
+        mdir = os.path.join(mods_dir, mod)
+        if not os.path.isdir(mdir):
+            continue
+        meta_path = os.path.join(mdir, "mod.json")
+        if not os.path.isfile(meta_path):
+            continue
+        meta = load_json(meta_path)
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("enabled", True) is False:
+            continue
+        res_list = meta.get("resources")
+        if res_list is None:
+            continue
+        if not isinstance(res_list, list):
+            raise BuildError("%s/mod.json: resources must be a list" % mod)
+        seen = set()
+        for k, r in enumerate(res_list):
+            w = "%s/mod.json resources[%d]" % (mod, k)
+            if not isinstance(r, dict):
+                raise BuildError("%s: must be an object" % w)
+            extra = {key for key in r if not key.startswith("_")} - known_keys
+            if extra:
+                raise BuildError("%s: unknown key(s) %s" % (w, sorted(extra)))
+            rkey = r.get("id")
+            if (not isinstance(rkey, str) or not rkey or len(rkey) > 64 or
+                    any(c in rkey for c in "\t\n\r:")):
+                raise BuildError("%s: id must be a non-empty string (max 64 chars, no ':'/tab/newline)" % w)
+            if rkey.lower() in vanilla_names or _is_plain_int_str(rkey):
+                raise BuildError("%s: id %r conflicts with vanilla/numeric resource ids" % (w, rkey))
+            if rkey in seen:
+                raise BuildError("%s: duplicate resource id %r in mod %s" % (w, rkey, mod))
+            seen.add(rkey)
+            rname = r.get("name", rkey)
+            if rname is None or rname == "":
+                rname = rkey
+            if not isinstance(rname, str) or len(rname) > 128 or any(c in rname for c in "\t\n\r"):
+                raise BuildError("%s: name must be a string (max 128 chars, no tab/newline)" % w)
+            ricon = r.get("icon", "")
+            if ricon is None:
+                ricon = ""
+            if (not isinstance(ricon, str) or len(ricon) > 256 or ".." in ricon or
+                    ricon.startswith("/") or ricon.startswith("\\") or
+                    (len(ricon) >= 2 and ricon[1] == ":") or
+                    any(c in ricon for c in "\t\n\r")):
+                raise BuildError("%s: icon must be a relative path inside the mod folder" % w)
+            rstart = r.get("start", 0)
+            if rstart is None:
+                rstart = 0
+            if isinstance(rstart, bool) or not isinstance(rstart, (int, float)):
+                raise BuildError("%s: start must be a number" % w)
+            rmax = r.get("max", 0)
+            if rmax is None:
+                rmax = 0
+            if isinstance(rmax, bool) or not isinstance(rmax, (int, float)) or rmax < 0:
+                raise BuildError("%s: max must be a number >= 0" % w)
+            rshow = r.get("show", True)
+            if rshow is None:
+                rshow = True
+            if not isinstance(rshow, bool):
+                raise BuildError("%s: show must be a boolean" % w)
+            rdesc = r.get("description", "")
+            if rdesc is None:
+                rdesc = ""
+            if not isinstance(rdesc, str):
+                raise BuildError("%s: description must be a string" % w)
+            rid = CUSTOM_RES_FIRST + len(out)
+            if rid > CUSTOM_RES_MAX:
+                raise BuildError("%s: too many custom resources (max id %d)" % (w, CUSTOM_RES_MAX))
+            out.append({
+                "id": rid, "mod": mod, "key": rkey, "name": rname, "icon": ricon,
+                "start": float(rstart), "max": float(rmax), "show": 1 if rshow else 0,
+                "description": rdesc,
+            })
+    return out
+
+
+def resolve_resource_id(ref, cur_mod, max_res, custom_res, where):
+    """Resolve a resource id (int, numeric string, vanilla name, 'key', or 'mod:key')."""
+    if isinstance(ref, bool):
+        raise BuildError("%s: invalid resource %r" % (where, ref))
+    if isinstance(ref, int):
+        if not 0 <= ref < max_res:
+            raise BuildError("%s: resource index %d out of range (0..%d)" % (where, ref, max_res - 1))
+        return ref
+    if not isinstance(ref, str) or not ref:
+        raise BuildError("%s: invalid resource %r" % (where, ref))
+    if ref in RES_IDS:
+        return RES_IDS[ref]
+    if ":" in ref:
+        m_part, k_part = ref.split(":", 1)
+        for r in custom_res:
+            if r["mod"] == m_part and r["key"] == k_part:
+                return r["id"]
+        raise BuildError("%s: unknown resource %r" % (where, ref))
+    for r in custom_res:
+        if r["mod"] == cur_mod and r["key"] == ref:
+            return r["id"]
+    for r in custom_res:
+        if r["key"] == ref:
+            return r["id"]
+    if _is_plain_int_str(ref):
+        v = int(ref)
+        if not 0 <= v < max_res:
+            raise BuildError("%s: resource index %s out of range (0..%d)" % (where, ref, max_res - 1))
+        return v
+    raise BuildError("%s: unknown resource %r" % (where, ref))
+
+
+def parse_cost_items(cost_spec, cur_mod, max_res, custom_res, where, allow_enabled=True):
+    """Parse cost as either dict ({'food': 50, 'faith': 25}) or array ([{'resource': 'faith', 'amount': 50}]).
+    Returns a list of up to 3 tuples (res_id, amount, enabled).
+    """
+    items = []
+    if isinstance(cost_spec, dict):
+        # Vanilla names first in canonical order (food, wood, stone, gold) for full backwards compatibility,
+        # then any custom/numeric keys sorted by resolved resource id ascending.
+        extra_resolved = []
+        for k, v in cost_spec.items():
+            rid = resolve_resource_id(k, cur_mod, max_res, custom_res, where)
+            if isinstance(v, bool) or not isinstance(v, int) or not 0 <= v <= 32767:
+                raise BuildError("%s: cost %s must be a whole number 0..32767" % (where, k))
+            if v > 0:
+                if k in RES_IDS:
+                    continue
+                extra_resolved.append((rid, v, 1))
+        for rname in ("food", "wood", "stone", "gold"):
+            if rname in cost_spec and cost_spec[rname] > 0:
+                items.append((RES_IDS[rname], int(cost_spec[rname]), 1))
+        extra_resolved.sort(key=lambda x: x[0])
+        items.extend(extra_resolved)
+    elif isinstance(cost_spec, list):
+        allowed = {"resource", "type", "amount", "enabled"} if allow_enabled else {"resource", "type", "amount"}
+        for idx, entry in enumerate(cost_spec):
+            ew = "%s cost[%d]" % (where, idx)
+            if not isinstance(entry, dict):
+                raise BuildError("%s: must be an object" % ew)
+            extra = set(entry) - allowed
+            if extra:
+                raise BuildError("%s: unknown key(s) %s" % (ew, sorted(extra)))
+            ref = entry.get("resource", entry.get("type"))
+            if ref is None:
+                raise BuildError("%s: missing 'resource'" % ew)
+            rid = resolve_resource_id(ref, cur_mod, max_res, custom_res, ew)
+            amt = entry.get("amount")
+            if isinstance(amt, bool) or not isinstance(amt, int) or not 0 <= amt <= 32767:
+                raise BuildError("%s: amount must be a whole number 0..32767" % ew)
+            en_raw = entry.get("enabled", 1) if allow_enabled else 1
+            if isinstance(en_raw, bool):
+                en = 1 if en_raw else 0
+            elif isinstance(en_raw, int) and en_raw in (0, 1):
+                en = en_raw
+            else:
+                raise BuildError("%s: enabled must be 0, 1, or boolean" % ew)
+            if amt > 0:
+                items.append((rid, amt, en))
+    else:
+        raise BuildError("%s: cost must be an object or array" % where)
+    if len(items) > 3:
+        raise BuildError("%s: cost has more than 3 resources" % where)
+    return items
+
+
+def apply_unit_cost(u, cost_spec, cur_mod, max_res, custom_res, where):
+    if getattr(u, "type", 0) not in (70, 80):
+        raise BuildError("%s: only creatable units and buildings (type 70/80) have cost" % where)
+    items = parse_cost_items(cost_spec, cur_mod, max_res, custom_res, where, allow_enabled=True)
+    has_pop_item = any(t == 4 for t, _, _ in items)
+    pop_cost = None if has_pop_item else next(
+        (copy.deepcopy(c) for c in u.resource_costs if c.type == 4 and c.enabled == 0), None)
+    if len(items) <= 2 and pop_cost is not None:
+        for i in range(2):
+            u.resource_costs[i] = (df.ResourceCost(type=items[i][0], amount=items[i][1], enabled=items[i][2])
+                                   if i < len(items) else df.ResourceCost(type=-1, amount=0, enabled=0))
+        u.resource_costs[2] = pop_cost
+    else:
+        for i in range(3):
+            u.resource_costs[i] = (df.ResourceCost(type=items[i][0], amount=items[i][1], enabled=items[i][2])
+                                   if i < len(items) else df.ResourceCost(type=-1, amount=0, enabled=0))
+
+
+def apply_research_cost(tech, cost_spec, cur_mod, max_res, custom_res, where):
+    items = parse_cost_items(cost_spec, cur_mod, max_res, custom_res, where, allow_enabled=False)
+    for i in range(3):
+        tech.resource_costs[i] = (df.ResearchResourceCost(type=items[i][0], amount=items[i][1], flag=1)
+                                  if i < len(items) else df.ResearchResourceCost(type=-1, amount=0, flag=0))
+
+
+def parse_effect_command(cmd_spec, where, cur_mod="", max_res=211, custom_res=None):
     if not isinstance(cmd_spec, dict):
         raise BuildError("%s: effect command must be a JSON object" % where)
     if "type" not in cmd_spec:
         raise BuildError("%s: effect command missing 'type'" % where)
     try:
         cmd_type = int(cmd_spec["type"])
-        a = int(cmd_spec.get("a", cmd_spec.get("unit", -1)))
+        a_raw = cmd_spec.get("a", cmd_spec.get("resource", cmd_spec.get("unit", -1)))
+        if isinstance(a_raw, str) and not _is_plain_int_str(a_raw):
+            a = resolve_resource_id(a_raw, cur_mod, max_res, custom_res or [], where)
+        else:
+            a = int(a_raw)
         b = int(cmd_spec.get("b", cmd_spec.get("class", cmd_spec.get("mode", -1))))
         c = int(cmd_spec.get("c", cmd_spec.get("attr", -1)))
         d = float(cmd_spec.get("d", cmd_spec.get("value", cmd_spec.get("amount", 0.0))))
+    except BuildError:
+        raise
     except (ValueError, TypeError) as e:
         raise BuildError("%s: invalid effect command field: %s" % (where, e))
     return df.EffectCommand(type=cmd_type, a=a, b=b, c=c, d=d)
@@ -122,6 +345,63 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+# ---- automatic renumbering of new mod sprites (mirrors wl_slp_remap_compute in datbuild.c) ----
+# Mods add sprites as <mod>/resources/_common/drs/graphics/<id>.slp. An id that no game file uses
+# is "new". When two enabled mods ship the same new id, the first mod (folder names in sorted
+# order) keeps it and every later one gets a free id from SLP_REMAP_FIRST up; the "slp" values in
+# that mod's civ files are changed to match, and files.c serves the file under the new id.
+# Ids the game already has are overrides of game sprites: those are never renumbered.
+SLP_REMAP_FIRST = 90000   # above every id in the game's drs folders (gamedata_x2 ends at 88713)
+SLP_REMAP = {}            # {from: to} of the mod whose civ file is being applied
+
+
+def _slp_ids(folder):
+    """Ids of the files named <digits>.slp in folder (any case for .slp)."""
+    out = set()
+    if os.path.isdir(folder):
+        for fn in os.listdir(folder):
+            stem, ext = fn[:-4], fn[-4:]
+            if ext.lower() == ".slp" and stem.isdigit() and stem.isascii() and len(stem) <= 9:
+                out.add(int(stem))
+    return out
+
+
+def slp_remap(game_dir, mods_dir):
+    """{mod folder: {from id: to id}} for the enabled mods that need renumbered sprites."""
+    drs = os.path.join(game_dir, "resources", "_common", "drs")
+    game = set()
+    if os.path.isdir(drs):
+        for sub in os.listdir(drs):
+            game |= _slp_ids(os.path.join(drs, sub))
+    mods = []
+    if os.path.isdir(mods_dir):
+        for mod in sorted(os.listdir(mods_dir)):
+            mdir = os.path.join(mods_dir, mod)
+            if not os.path.isdir(mdir):
+                continue
+            meta = os.path.join(mdir, "mod.json")
+            if os.path.isfile(meta) and load_json(meta).get("enabled", True) is False:
+                continue
+            mods.append((mod, _slp_ids(os.path.join(mdir, "resources", "_common", "drs", "graphics"))))
+    used = set(game)
+    for _, ids in mods:
+        used |= ids
+    owner, out, nxt = {}, {}, SLP_REMAP_FIRST
+    for mod, ids in mods:
+        for n in sorted(ids):
+            if n in game:
+                continue
+            if n not in owner:
+                owner[n] = mod
+                continue
+            while nxt in used:
+                nxt += 1
+            out.setdefault(mod, {})[n] = nxt
+            used.add(nxt)
+            print("sprite %d of %s is also in %s: renumbered to %d" % (n, mod, owner[n], nxt))
+    return out
+
+
 def add_graphic(dat, src, slp, frames, angles, where):
     """Appends a copy of graphic `src` drawing SLP `slp`; returns the new graphic id."""
     gfx = dat.graphics
@@ -165,6 +445,7 @@ def apply_graphics(dat, unit, spec, where):
         slp, frames, angles = v["slp"], v.get("frames"), v.get("angles")
         if not 0 < slp < 2 ** 31:
             raise BuildError("%s: slp must be a positive integer" % w)
+        slp = SLP_REMAP.get(slp, slp)
         if frames is not None and (not _is_int(frames) or not 1 <= frames <= 1000):
             raise BuildError("%s: frames must be 1..1000" % w)
         if angles is not None and (not _is_int(angles) or not 1 <= angles <= 64):
@@ -311,6 +592,10 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
         civ.name = make_name(spec["dat_name"], where)
         label = spec["dat_name"]
 
+    cur_mod = where.split("/", 1)[0]
+    custom_res = ext.get("custom_res", [])
+    max_res = len(civ.resources)
+
     if "unique_techs" in spec:
         ut = spec["unique_techs"]
         if not isinstance(ut, list) or len(ut) != 2:
@@ -351,7 +636,7 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
 
         if "effects" in spec:
             for idx, cmd_spec in enumerate(spec["effects"]):
-                cmd = parse_effect_command(cmd_spec, "%s effects[%d]" % (where, idx))
+                cmd = parse_effect_command(cmd_spec, "%s effects[%d]" % (where, idx), cur_mod, max_res, custom_res)
                 new_eff.commands.append(cmd)
 
         new_eff.effect_count = len(new_eff.commands)
@@ -370,7 +655,7 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
             tb_eff.commands = []
         tb_eff.name = make_effect_name(label + " Team Bonus", where)
         for idx, cmd_spec in enumerate(spec["team_bonus_effects"]):
-            cmd = parse_effect_command(cmd_spec, "%s team_bonus_effects[%d]" % (where, idx))
+            cmd = parse_effect_command(cmd_spec, "%s team_bonus_effects[%d]" % (where, idx), cur_mod, max_res, custom_res)
             tb_eff.commands.append(cmd)
         tb_eff.effect_count = len(tb_eff.commands)
         dat.effects.effects.append(tb_eff)
@@ -391,13 +676,12 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
         for field, value in fields.items():
             if field == "graphics":
                 apply_graphics(dat, civ.units[i], value, "%s unit %s" % (where, uid))
+            elif field == "cost":
+                apply_unit_cost(civ.units[i], value, cur_mod, max_res, custom_res, "%s unit %s" % (where, uid))
             else:
                 _set_field(civ.units[i], field, value, "%s unit %s" % (where, uid))
     for idx, value in spec.get("resources", {}).items():
-        i = int(idx)
-        if not 0 <= i < len(civ.resources):
-            raise BuildError("%s: resource index %s out of range (0..%d)"
-                             % (where, idx, len(civ.resources) - 1))
+        i = resolve_resource_id(idx, cur_mod, len(civ.resources), custom_res, where)
         civ.resources[i] = float(value)
 
     if "unique_unit" in spec:
@@ -529,28 +813,7 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
                     break
 
         elite_cost_spec = uu.get("elite_cost", {"food": 1000, "gold": 800})
-        if not isinstance(elite_cost_spec, dict):
-            raise BuildError("%s: unique_unit elite_cost must be an object" % where)
-        res_map = {"food": 0, "wood": 1, "stone": 2, "gold": 3}
-        extra_res = set(elite_cost_spec) - set(res_map)
-        if extra_res:
-            raise BuildError("%s: unknown elite_cost resource(s) %s" % (where, sorted(extra_res)))
-        cost_items = []
-        for rname in ("food", "wood", "stone", "gold"):
-            if rname in elite_cost_spec:
-                val = elite_cost_spec[rname]
-                if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 0:
-                    raise BuildError("%s: elite_cost %s must be a positive number" % (where, rname))
-                if val > 0:
-                    cost_items.append((res_map[rname], int(val)))
-        if len(cost_items) > 3:
-            raise BuildError("%s: unique_unit elite_cost has more than 3 non-zero costs" % where)
-        for slot in range(3):
-            if slot < len(cost_items):
-                elite_clone.resource_costs[slot] = df.ResearchResourceCost(
-                    type=cost_items[slot][0], amount=cost_items[slot][1], flag=1)
-            else:
-                elite_clone.resource_costs[slot] = df.ResearchResourceCost(type=-1, amount=0, flag=0)
+        apply_research_cost(elite_clone, elite_cost_spec, cur_mod, max_res, custom_res, "%s unique_unit elite_cost" % where)
 
         elite_time = uu.get("elite_time", 60)
         if isinstance(elite_time, bool) or not isinstance(elite_time, int) or elite_time < 0:
@@ -582,7 +845,10 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
             if not isinstance(uu["units"], dict):
                 raise BuildError("%s: unique_unit units must be an object" % where)
             for field, value in uu["units"].items():
-                _set_field(u_unit, field, value, "%s unit %d" % (where, U))
+                if field == "cost":
+                    apply_unit_cost(u_unit, value, cur_mod, max_res, custom_res, "%s unit %d" % (where, U))
+                else:
+                    _set_field(u_unit, field, value, "%s unit %d" % (where, U))
         if "graphics" in uu:
             apply_graphics(dat, u_unit, uu["graphics"], "%s unique_unit" % where)
         civ.units[U] = u_unit
@@ -605,12 +871,18 @@ def apply_civ_json(dat, spec, where, uu_k=0, ub_k=0, uu_total=0, ext=None):
         e_unit.name_length = len(e_unit_name)
         if "units" in uu:
             for field, value in uu["units"].items():
-                _set_field(e_unit, field, value, "%s unit %d" % (where, E))
+                if field == "cost":
+                    apply_unit_cost(e_unit, value, cur_mod, max_res, custom_res, "%s unit %d" % (where, E))
+                else:
+                    _set_field(e_unit, field, value, "%s unit %d" % (where, E))
         if "elite_units" in uu:
             if not isinstance(uu["elite_units"], dict):
                 raise BuildError("%s: unique_unit elite_units must be an object" % where)
             for field, value in uu["elite_units"].items():
-                _set_field(e_unit, field, value, "%s unit %d" % (where, E))
+                if field == "cost":
+                    apply_unit_cost(e_unit, value, cur_mod, max_res, custom_res, "%s unit %d" % (where, E))
+                else:
+                    _set_field(e_unit, field, value, "%s unit %d" % (where, E))
         if "elite_graphics" in uu or "graphics" in uu:
             apply_graphics(dat, e_unit, uu.get("elite_graphics", uu.get("graphics")), "%s unique_unit elite" % where)
         civ.units[E] = e_unit
@@ -734,6 +1006,7 @@ def add_unique_building(dat, civ, cid, ub, where, ub_k, uu_total, ext):
         slp = ub["slp"]
         if isinstance(slp, bool) or not isinstance(slp, int) or not 0 < slp < 2 ** 31:
             raise BuildError("%s: unique_building slp must be a positive integer" % where)
+        slp = SLP_REMAP.get(slp, slp)
         gsrc = b_unit.standing_graphic[0]
         gfx = dat.graphics
         if not 0 <= gsrc < len(gfx.ptrs) or gfx.graphics[gsrc] is None:
@@ -759,8 +1032,13 @@ def add_unique_building(dat, civ, cid, ub, where, ub_k, uu_total, ext):
     if "units" in ub:
         if not isinstance(ub["units"], dict):
             raise BuildError("%s: unique_building units must be an object" % where)
+        cur_mod_ub = where.split("/", 1)[0]
+        custom_res_ub = ext.get("custom_res", [])
         for field, value in ub["units"].items():
-            _set_field(b_unit, field, value, "%s unit %d" % (where, B))
+            if field == "cost":
+                apply_unit_cost(b_unit, value, cur_mod_ub, len(civ.resources), custom_res_ub, "%s unit %d" % (where, B))
+            else:
+                _set_field(b_unit, field, value, "%s unit %d" % (where, B))
     civ.units[B] = b_unit
     ext["slots"] = ub_k + 1
 
@@ -890,8 +1168,13 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
             if "units" in t:
                 if not isinstance(t["units"], dict):
                     raise BuildError("%s: train units must be an object" % w)
+                cur_mod_t = where.split("/", 1)[0]
+                custom_res_t = ext.get("custom_res", [])
                 for field, value in t["units"].items():
-                    _set_field(u, field, value, "%s unit %d" % (w, slot))
+                    if field == "cost":
+                        apply_unit_cost(u, value, cur_mod_t, len(civ.resources), custom_res_t, "%s unit %d" % (w, slot))
+                    else:
+                        _set_field(u, field, value, "%s unit %d" % (w, slot))
             if "graphics" in t:
                 apply_graphics(dat, u, t["graphics"], "%s unit %d" % (w, slot))
             civ.units[slot] = u
@@ -918,9 +1201,11 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
             effs = r.get("effects", [])
             if not isinstance(effs, list):
                 raise BuildError("%s: research effects must be a list" % w)
+            cur_mod_r = where.split("/", 1)[0]
+            custom_res_r = ext.get("custom_res", [])
             e = df.Effect()
             e.name = make_effect_name("WL UB tech %d.%d" % (cid, k), w)
-            e.commands = [parse_effect_command(x, w) for x in effs]
+            e.commands = [parse_effect_command(x, w, cur_mod_r, len(civ.resources), custom_res_r) for x in effs]
             e.effect_count = len(e.commands)
             dat.effects.effects.append(e)
             dat.effects.count = len(dat.effects.effects)
@@ -934,18 +1219,7 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
                 tech.required_techs[i] = -1
             tech.required_tech_count = 1
             cost = r.get("cost", {})
-            if not isinstance(cost, dict) or set(cost) - set(RES_IDS):
-                raise BuildError("%s: research cost must be an object with food/wood/stone/gold" % w)
-            items = [(RES_IDS[n], cost[n]) for n in ("food", "wood", "stone", "gold") if n in cost]
-            for n, v in items:
-                if isinstance(v, bool) or not isinstance(v, int) or v < 0:
-                    raise BuildError("%s: research cost values must be whole numbers >= 0" % w)
-            items = [(n, v) for n, v in items if v > 0]
-            if len(items) > 3:
-                raise BuildError("%s: research cost has more than 3 resources" % w)
-            for i in range(3):
-                tech.resource_costs[i] = (df.ResearchResourceCost(type=items[i][0], amount=items[i][1], flag=1)
-                                          if i < len(items) else df.ResearchResourceCost(type=-1, amount=0, flag=0))
+            apply_research_cost(tech, cost, cur_mod_r, len(civ.resources), custom_res_r, w)
             rt = r.get("time", 30)
             if isinstance(rt, bool) or not isinstance(rt, int) or rt < 0:
                 raise BuildError("%s: research time must be a whole number >= 0" % w)
@@ -974,9 +1248,8 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
             name = c["lua"]
             if not isinstance(name, str) or not name or "\t" in name or "\n" in name or "\r" in name:
                 raise BuildError("%s: lua must be a handler name" % w)
-            icon = c.get("icon", 32)
-            if isinstance(icon, bool) or not isinstance(icon, int):
-                raise BuildError("%s: lua icon must be a number (command icon frame)" % w)
+            cur_mod_l = where.split("/", 1)[0]
+            icon = resolve_cmd_icon(ext, cur_mod_l, c.get("icon", 32), w)
             text = c.get("text", name)
             hp = c.get("help", "")
             if not isinstance(text, str) or not isinstance(hp, str):
@@ -1015,6 +1288,7 @@ def load_json(path):
 
 BLDG_ICON_BASE = 55  # AoE2 HD 5.8 gamedata_x2/50706.slp frame count (0..54); matches iconmerge.c
 UNIT_ICON_BASE = 249  # AoE2 HD 5.8 gamedata_x2/50730.slp frame count (0..248); matches iconmerge.c
+CMD_ICON_BASE = 70  # AoE2 HD 5.8 interface/50721.slp frame count (0..69); matches iconmerge.c
 
 
 def _is_valid_1frame_slp(path):
@@ -1028,6 +1302,36 @@ def _is_valid_1frame_slp(path):
     fc = struct.unpack_from("<i", data, 4)[0]
     cmd, outl, _pal, _prop, _w, h = struct.unpack_from("<IIIIii", data, 32)
     return fc == 1 and cmd >= 64 and outl >= 64 and 0 < h <= 4096 and cmd + 4 * h <= len(data)
+
+
+def _is_valid_png(path):
+    try:
+        sz = os.path.getsize(path)
+        if sz < 33 or sz >= 16 * 1024 * 1024:
+            return False
+        with open(path, "rb") as f:
+            hdr = f.read(33)
+    except OSError:
+        return False
+    if len(hdr) < 33 or hdr[:8] != b"\x89PNG\r\n\x1a\n":
+        return False
+    clen = struct.unpack_from(">I", hdr, 8)[0]
+    if clen != 13 or hdr[12:16] != b"IHDR":
+        return False
+    w, h, bd, ct, comp, filt, il = struct.unpack_from(">IIBBBBB", hdr, 16)
+    if not (1 <= w <= 4096 and 1 <= h <= 4096):
+        return False
+    if comp != 0 or filt != 0 or il not in (0, 1):
+        return False
+    if ct == 0 and bd in (1, 2, 4, 8, 16):
+        return True
+    if ct == 2 and bd in (8, 16):
+        return True
+    if ct == 3 and bd in (1, 2, 4, 8):
+        return True
+    if ct in (4, 6) and bd in (8, 16):
+        return True
+    return False
 
 
 def find_icons(mods_dir, folder, base_idx):
@@ -1061,6 +1365,53 @@ def find_icons(mods_dir, folder, base_idx):
 
 def find_building_icons(mods_dir):
     return find_icons(mods_dir, "buildings", BLDG_ICON_BASE)
+
+
+def find_cmd_icons(mods_dir):
+    """Deterministic [(mod, stem, frame_index)] for icons/commands/*.png matching iconmerge.c and datbuild.c."""
+    slp_50721 = find_icons(mods_dir, "50721", CMD_ICON_BASE)
+    idx = CMD_ICON_BASE + len(slp_50721)
+    out = []
+    if not os.path.isdir(mods_dir):
+        return out
+    for mod in sorted(os.listdir(mods_dir)):
+        mdir = os.path.join(mods_dir, mod)
+        if not os.path.isdir(mdir):
+            continue
+        meta = os.path.join(mdir, "mod.json")
+        if os.path.isfile(meta) and load_json(meta).get("enabled", True) is False:
+            continue
+        idir = os.path.join(mdir, "icons", "commands")
+        if not os.path.isdir(idir):
+            continue
+        stems = []
+        for fn in os.listdir(idir):
+            p = os.path.join(idir, fn)
+            if fn.lower().endswith(".png") and os.path.isfile(p):
+                stems.append((fn[:-4], p))
+        stems.sort(key=lambda x: x[0])
+        for stem, p in stems:
+            if _is_valid_png(p):
+                out.append((mod, stem, idx))
+                idx += 1
+    return out
+
+
+def resolve_cmd_icon(ext, mod, icon, where):
+    if _is_int(icon):
+        return icon
+    if isinstance(icon, str):
+        s = icon
+        if s.lower().endswith(".png"):
+            s = s[:-4]
+        if not s or "/" in s or "\\" in s or ".." in s or "\t" in s or "\n" in s or "\r" in s:
+            raise BuildError("%s: invalid command icon name %r" % (where, icon))
+        stem = s.lower()
+        for m, st, idx in ext.get("cmd_icons", []):
+            if m == mod and st.lower() == stem:
+                return idx
+        raise BuildError("%s: command icon %r not found in icons/commands/" % (where, icon))
+    raise BuildError("%s: lua icon must be a number or command icon name" % where)
 
 
 def resolve_building_icon(ext, mod, icon):
@@ -1202,12 +1553,15 @@ def add_custom_units(dat, civ, cid, cu_list, ub_spec, ub_slot, where, uu_total, 
         u.name = un
         u.name_length = len(un)
 
+        custom_res_cu = ext.get("custom_res", [])
         if "units" in cu and cu["units"] is not None:
             if not isinstance(cu["units"], dict):
                 raise BuildError("%s: units must be an object" % w)
             for field, value in cu["units"].items():
                 if field == "graphics":
                     apply_graphics(dat, u, value, "%s unit %d" % (w, slot))
+                elif field == "cost":
+                    apply_unit_cost(u, value, cur_mod, len(civ.resources), custom_res_cu, "%s unit %d" % (w, slot))
                 else:
                     _set_field(u, field, value, "%s unit %d" % (w, slot))
 
@@ -1219,32 +1573,7 @@ def add_custom_units(dat, civ, cid, cu_list, ub_spec, ub_slot, where, uu_total, 
             _set_field(u, "displayed_range", cu["range"], "%s unit %d" % (w, slot))
 
         if "cost" in cu and cu["cost"] is not None:
-            cost = cu["cost"]
-            if not isinstance(cost, dict):
-                raise BuildError("%s: cost must be an object with food/wood/stone/gold" % w)
-            extra_res = set(cost) - set(RES_IDS)
-            if extra_res:
-                raise BuildError("%s: unknown cost resource(s) %s" % (w, sorted(extra_res)))
-            items = []
-            for rname in ("food", "wood", "stone", "gold"):
-                if rname in cost:
-                    val = cost[rname]
-                    if not _is_int(val) or val < 0 or val > 32767:
-                        raise BuildError("%s: cost %s must be a whole number 0..32767" % (w, rname))
-                    if val > 0:
-                        items.append((RES_IDS[rname], val))
-            if len(items) > 3:
-                raise BuildError("%s: cost has more than 3 resources" % w)
-            pop_cost = next((copy.deepcopy(c) for c in u.resource_costs if c.type == 4 and c.enabled == 0), None)
-            if len(items) <= 2 and pop_cost is not None:
-                for i in range(2):
-                    u.resource_costs[i] = (df.ResourceCost(type=items[i][0], amount=items[i][1], enabled=1)
-                                           if i < len(items) else df.ResourceCost(type=-1, amount=0, enabled=0))
-                u.resource_costs[2] = pop_cost
-            else:
-                for i in range(3):
-                    u.resource_costs[i] = (df.ResourceCost(type=items[i][0], amount=items[i][1], enabled=1)
-                                           if i < len(items) else df.ResourceCost(type=-1, amount=0, enabled=0))
+            apply_unit_cost(u, cu["cost"], cur_mod, len(civ.resources), custom_res_cu, w)
 
         if "attack" in cu and cu["attack"] is not None:
             atk = cu["attack"]
@@ -1400,11 +1729,25 @@ def build(game_dir):
         raise BuildError("expected %d civs in the base dat, found %d" % (FIRST_RESERVED_ID, n_orig))
 
     mods_dir = os.path.join(game_dir, "wololoader", "mods")
+    custom_res = find_custom_resources(mods_dir)
+    if custom_res:
+        # Grow every base civ (0 = Gaia, 1..31) identically so placeholders (32..34)
+        # and custom civs (35+) inherit the exact same resource_count and start values.
+        for c in civs:
+            while len(c.resources) < CUSTOM_RES_FIRST:
+                c.resources.append(0.0)
+            for r in custom_res:
+                c.resources.append(float(r["start"]))
+            c.resource_count = len(c.resources)
+
     files = find_civ_files(mods_dir)
+    remap = slp_remap(game_dir, mods_dir)
     lines = []
     ext = {"slots": 0, "sids": 0, "strings": [], "lua": [], "orig_res": len(dat.researches.researches),
            "bldg_icons": find_building_icons(mods_dir),
            "unit_icons": find_icons(mods_dir, "units", UNIT_ICON_BASE),
+           "cmd_icons": find_cmd_icons(mods_dir),
+           "custom_res": custom_res,
            "cu_k": 0, "cu_total": 0}
     if files:
         for k in range(NUM_RESERVED):
@@ -1425,6 +1768,8 @@ def build(game_dir):
         for mod, fn, path in files:
             spec = load_json(path)
             where = "%s/civs/%s" % (mod, fn)
+            SLP_REMAP.clear()
+            SLP_REMAP.update(remap.get(mod, {}))
             if not isinstance(spec, dict):
                 raise BuildError("%s: top level must be an object" % where)
             cid = apply_civ_json(dat, spec, where, uu_k, ub_k, uu_total, ext)
@@ -1447,6 +1792,14 @@ def build(game_dir):
     out = dat.serialize()
     os.makedirs(cache, exist_ok=True)
     out_dat = os.path.join(cache, "empires2_x2_p1.dat")
+    res_txt = "".join(
+        "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n" % (
+            r["id"], r["mod"], r["key"], r["name"], r["icon"],
+            fmt_res_float(r["start"]), fmt_res_float(r["max"]), r["show"],
+            r["description"].replace("\t", " ").replace("\r", "").replace("\n", "\\n"),
+        )
+        for r in custom_res
+    ).encode("utf-8")
     for path, data, mode in ((out_dat, df.compress(out), "wb"),
                              (os.path.join(cache, "civs.txt"),
                               "".join(l + "\n" for l in lines).encode("utf-8"), "wb"),
@@ -1456,7 +1809,8 @@ def build(game_dir):
                               "".join("%d\t%s\n" % (i, t.replace("\t", " ").replace("\n", "\\n"))
                                       for i, t in ext["strings"]).encode("utf-8"), "wb"),
                              (os.path.join(cache, "commands.txt"),
-                              "".join(l + "\n" for l in ext["lua"]).encode("utf-8"), "wb")):
+                              "".join(l + "\n" for l in ext["lua"]).encode("utf-8"), "wb"),
+                             (os.path.join(cache, "resources.txt"), res_txt, "wb")):
         tmp = path + ".tmp"
         with open(tmp, mode) as f:
             f.write(data)

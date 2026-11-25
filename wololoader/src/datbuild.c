@@ -791,6 +791,9 @@ typedef struct {
 #define WL_CMD_SID_BASE 31210  // strings of building commands: triples (name, create/research, rich help)
 #define WL_BLDG_ICON_BASE 55   // AoE2 HD 5.8 gamedata_x2/50706.slp frame count (0..54); matches iconmerge.c
 #define WL_UNIT_ICON_BASE 249  // AoE2 HD 5.8 gamedata_x2/50730.slp frame count (0..248); matches iconmerge.c
+#define WL_CMD_ICON_BASE 70    // AoE2 HD 5.8 interface/50721.slp frame count (0..69); matches iconmerge.c
+#define WL_CUSTOM_RES_FIRST 211   // AoE2 HD 5.8 vanilla resource_count = 211 (indices 0..210)
+#define WL_CUSTOM_RES_MAX 32766   // engine reads resource_count as signed int16 (max 32767)
 
 typedef struct {
     char mod[256];
@@ -798,7 +801,19 @@ typedef struct {
     int index;
 } WlBldgIcon;
 
-// Builder extension state: tracks slots/strings/lua/icons across all civs (mirroring ext dict in build.py)
+typedef struct {
+    int id;
+    char mod[256];
+    char key[65];
+    char name[129];
+    char icon[257];
+    float start;
+    float max;
+    int show;
+    char *description;
+} WlCustomRes;
+
+// Builder extension state: tracks slots/strings/lua/icons/custom resources across all civs (mirroring ext dict in build.py)
 typedef struct {
     size_t slots;   // unit slots used (buildings + train commands)
     size_t sids;    // string ID triples allocated
@@ -814,27 +829,21 @@ typedef struct {
     WlBldgIcon *unit_icons;
     size_t unit_icons_count;
     size_t unit_icons_cap;
+    WlBldgIcon *cmd_icons;
+    size_t cmd_icons_count;
+    size_t cmd_icons_cap;
+    WlCustomRes *custom_res;
+    size_t custom_res_count;
+    size_t custom_res_cap;
+    const char *cur_mod;
+    size_t max_res;
     size_t cu_k;
     size_t cu_total;
 } WlBuildExt;
 
 static void wl_ext_init(WlBuildExt *ext) {
-    ext->slots = 0;
-    ext->sids = 0;
-    ext->strings = NULL;
-    ext->strings_count = 0;
-    ext->strings_cap = 0;
-    ext->lua = NULL;
-    ext->lua_count = 0;
-    ext->lua_cap = 0;
-    ext->bldg_icons = NULL;
-    ext->bldg_icons_count = 0;
-    ext->bldg_icons_cap = 0;
-    ext->unit_icons = NULL;
-    ext->unit_icons_count = 0;
-    ext->unit_icons_cap = 0;
-    ext->cu_k = 0;
-    ext->cu_total = 0;
+    memset(ext, 0, sizeof(*ext));
+    ext->max_res = WL_CUSTOM_RES_FIRST;
 }
 
 static void wl_ext_free(WlBuildExt *ext) {
@@ -848,6 +857,11 @@ static void wl_ext_free(WlBuildExt *ext) {
     free(ext->lua);
     free(ext->bldg_icons);
     free(ext->unit_icons);
+    free(ext->cmd_icons);
+    for (size_t i = 0; i < ext->custom_res_count; i++) {
+        free(ext->custom_res[i].description);
+    }
+    free(ext->custom_res);
 }
 
 static int wl_strcasecmp(const char *a, const char *b) {
@@ -989,6 +1003,131 @@ static int wl_find_icon_stem(const WlBldgIcon *icons, size_t count, const char *
             return icons[i].index;
     }
     return -1;
+}
+
+static int wl_is_valid_png(const char *path) {
+    static const unsigned char sig[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len < 33 || len >= 16 * 1024 * 1024) { fclose(f); return 0; }
+    unsigned char hdr[33];
+    size_t nr = fread(hdr, 1, sizeof(hdr), f);
+    fclose(f);
+    if (nr != sizeof(hdr) || memcmp(hdr, sig, 8) != 0) return 0;
+    uint32_t clen = ((uint32_t)hdr[8] << 24) | ((uint32_t)hdr[9] << 16) | ((uint32_t)hdr[10] << 8) | hdr[11];
+    if (clen != 13 || memcmp(hdr + 12, "IHDR", 4) != 0) return 0;
+    uint32_t w = ((uint32_t)hdr[16] << 24) | ((uint32_t)hdr[17] << 16) | ((uint32_t)hdr[18] << 8) | hdr[19];
+    uint32_t h = ((uint32_t)hdr[20] << 24) | ((uint32_t)hdr[21] << 16) | ((uint32_t)hdr[22] << 8) | hdr[23];
+    unsigned char bd = hdr[24], ct = hdr[25], comp = hdr[26], filt = hdr[27], il = hdr[28];
+    if (w < 1 || w > 4096 || h < 1 || h > 4096) return 0;
+    if (comp != 0 || filt != 0 || (il != 0 && il != 1)) return 0;
+    if (ct == 0 && (bd == 1 || bd == 2 || bd == 4 || bd == 8 || bd == 16)) return 1;
+    if (ct == 2 && (bd == 8 || bd == 16)) return 1;
+    if (ct == 3 && (bd == 1 || bd == 2 || bd == 4 || bd == 8)) return 1;
+    if ((ct == 4 || ct == 6) && (bd == 8 || bd == 16)) return 1;
+    return 0;
+}
+
+static int wl_find_cmd_icons(const char *mods_dir, WlBuildExt *ext, char *err, size_t errcap) {
+    // Count valid 1-frame SLPs in <mod>/icons/50721/*.slp first so PNG command icons get
+    // the exact same indices that iconmerge.c assigns after them in 50721.slp.
+    WlBldgIcon *slp_50721 = NULL;
+    size_t slp_cnt = 0, slp_cap = 0;
+    if (wl_find_icons(mods_dir, "50721", WL_CMD_ICON_BASE, &slp_50721, &slp_cnt, &slp_cap, err, errcap) != 0) {
+        free(slp_50721);
+        return -1;
+    }
+    free(slp_50721);
+
+    if (!wl_is_dir(mods_dir)) return 0;
+    char **mod_names = NULL;
+    size_t mod_count = 0;
+    if (wl_list_dir(mods_dir, &mod_names, &mod_count) != 0) return 0;
+
+    int idx = WL_CMD_ICON_BASE + (int)slp_cnt;
+    for (size_t m = 0; m < mod_count; m++) {
+        const char *mod = mod_names[m];
+        char mdir[2048];
+        snprintf(mdir, sizeof(mdir), "%.1000s/%.256s", mods_dir, mod);
+        if (!wl_is_dir(mdir)) continue;
+
+        char meta_path[2048];
+        snprintf(meta_path, sizeof(meta_path), "%.1500s/mod.json", mdir);
+        if (wl_is_file(meta_path)) {
+            size_t meta_len = 0;
+            char *meta_bytes = wl_read_file(meta_path, &meta_len);
+            if (meta_bytes) {
+                char tmp_err[256];
+                WlJsonVal *meta_json = wl_json_parse(meta_bytes, tmp_err, sizeof(tmp_err));
+                free(meta_bytes);
+                if (meta_json) {
+                    const WlJsonVal *en = wl_json_get(meta_json, "enabled");
+                    int disabled = (en && en->type == WL_JSON_BOOL && en->u.bool_val == 0);
+                    wl_json_free(meta_json);
+                    if (disabled) continue;
+                }
+            }
+        }
+
+        char idir[2048];
+        snprintf(idir, sizeof(idir), "%.1500s/icons/commands", mdir);
+        if (!wl_is_dir(idir)) continue;
+
+        char **fnames = NULL;
+        size_t fcount = 0;
+        if (wl_list_dir(idir, &fnames, &fcount) != 0) continue;
+
+        WlSlpStem *stems = fcount ? malloc(fcount * sizeof(WlSlpStem)) : NULL;
+        size_t scount = 0;
+        if (stems) {
+            for (size_t i = 0; i < fcount; i++) {
+                const char *fn = fnames[i];
+                size_t fl = strlen(fn);
+                if (fl >= 5 && fn[fl - 4] == '.' &&
+                    tolower((unsigned char)fn[fl - 3]) == 'p' &&
+                    tolower((unsigned char)fn[fl - 2]) == 'n' &&
+                    tolower((unsigned char)fn[fl - 1]) == 'g') {
+                    char p[2048];
+                    snprintf(p, sizeof(p), "%.1500s/%.256s", idir, fn);
+                    if (!wl_is_file(p)) continue;
+                    size_t sl = fl - 4;
+                    if (sl >= sizeof(stems[scount].stem)) sl = sizeof(stems[scount].stem) - 1;
+                    memcpy(stems[scount].stem, fn, sl);
+                    stems[scount].stem[sl] = '\0';
+                    snprintf(stems[scount].path, sizeof(stems[scount].path), "%s", p);
+                    scount++;
+                }
+            }
+            if (scount > 1) qsort(stems, scount, sizeof(WlSlpStem), wl_cmp_slp_stem);
+            for (size_t i = 0; i < scount; i++) {
+                if (!wl_is_valid_png(stems[i].path)) continue;
+                if (ext->cmd_icons_count >= ext->cmd_icons_cap) {
+                    size_t ncap = ext->cmd_icons_cap ? ext->cmd_icons_cap * 2 : 16;
+                    WlBldgIcon *tmp = realloc(ext->cmd_icons, ncap * sizeof(WlBldgIcon));
+                    if (!tmp) {
+                        free(stems);
+                        wl_free_dir_list(fnames, fcount);
+                        wl_free_dir_list(mod_names, mod_count);
+                        snprintf(err, errcap, "out of memory");
+                        return -1;
+                    }
+                    ext->cmd_icons = tmp;
+                    ext->cmd_icons_cap = ncap;
+                }
+                WlBldgIcon *ci = &ext->cmd_icons[ext->cmd_icons_count++];
+                snprintf(ci->mod, sizeof(ci->mod), "%s", mod);
+                snprintf(ci->stem, sizeof(ci->stem), "%s", stems[i].stem);
+                ci->index = idx++;
+            }
+            free(stems);
+        }
+        wl_free_dir_list(fnames, fcount);
+    }
+    wl_free_dir_list(mod_names, mod_count);
+    return 0;
 }
 
 static int wl_resolve_building_icon(const WlBuildExt *ext, const char *where, int icon) {
@@ -1214,6 +1353,175 @@ static int wl_copy_civ_sounds(WlDatSound *sounds, size_t num_sounds, int base, i
 }
 
 // ==========================================================================
+// Automatic renumbering of new mod sprites (mirrors slp_remap in build.py)
+// ==========================================================================
+// Mods add sprites as <mod>/resources/_common/drs/graphics/<id>.slp. An id that
+// no file in the game's resources/_common/drs/* folders uses is "new". When two
+// enabled mods ship the same new id, the first mod (folder names in sorted
+// order) keeps it and each later one gets a free id from WL_SLP_REMAP_FIRST up.
+// The builder changes the "slp" values of that mod's civ files to match
+// (wl_slp_map), and files.c serves the file under the new id. Ids the game
+// already has are overrides of game sprites and are never renumbered.
+
+static int wl_cmp_int(const void *a, const void *b) {
+    int x = *(const int *)a, y = *(const int *)b;
+    return x < y ? -1 : x > y;
+}
+
+typedef struct { int *v; size_t n, cap; } WlIntSet;   // kept sorted by wl_intset_sort
+
+static int wl_intset_add(WlIntSet *s, int x) {
+    if (s->n == s->cap) {
+        size_t nc = s->cap ? s->cap * 2 : 64;
+        int *nv = realloc(s->v, nc * sizeof(int));
+        if (!nv) return -1;
+        s->v = nv;
+        s->cap = nc;
+    }
+    s->v[s->n++] = x;
+    return 0;
+}
+
+static void wl_intset_sort(WlIntSet *s) {
+    if (s->n > 1) qsort(s->v, s->n, sizeof(int), wl_cmp_int);
+    size_t o = 0;                                   // drop duplicates
+    for (size_t i = 0; i < s->n; i++) if (!o || s->v[o - 1] != s->v[i]) s->v[o++] = s->v[i];
+    s->n = o;
+}
+
+static int wl_intset_has(const WlIntSet *s, int x) {
+    return s->n && bsearch(&x, s->v, s->n, sizeof(int), wl_cmp_int) != NULL;
+}
+
+// Adds the ids of the files named <digits>.slp in folder (1..9 ASCII digits, .slp any case).
+static int wl_slp_ids(const char *folder, WlIntSet *out) {
+    if (!wl_is_dir(folder)) return 0;
+    char **names = NULL;
+    size_t cnt = 0;
+    if (wl_list_dir(folder, &names, &cnt) != 0) return -1;
+    for (size_t i = 0; i < cnt; i++) {
+        const char *fn = names[i];
+        size_t len = strlen(fn);
+        if (len < 5 || len > 13 || fn[len - 4] != '.' || tolower((unsigned char)fn[len - 3]) != 's' ||
+            tolower((unsigned char)fn[len - 2]) != 'l' || tolower((unsigned char)fn[len - 1]) != 'p') continue;
+        int ok = 1, v = 0;
+        for (size_t k = 0; k < len - 4; k++) {
+            if (fn[k] < '0' || fn[k] > '9') { ok = 0; break; }
+            v = v * 10 + (fn[k] - '0');
+        }
+        if (ok && wl_intset_add(out, v) != 0) { wl_free_dir_list(names, cnt); return -1; }
+    }
+    wl_free_dir_list(names, cnt);
+    return 0;
+}
+
+// 1 when <mods_dir>/<mod>/mod.json says "enabled": false.
+static int wl_mod_disabled(const char *mdir) {
+    char meta[2048];
+    snprintf(meta, sizeof meta, "%.1500s/mod.json", mdir);
+    if (!wl_is_file(meta)) return 0;
+    size_t len = 0;
+    char *bytes = wl_read_file(meta, &len);
+    if (!bytes) return 0;
+    char e[256];
+    WlJsonVal *j = wl_json_parse(bytes, e, sizeof e);
+    free(bytes);
+    const WlJsonVal *en = j ? wl_json_get(j, "enabled") : NULL;
+    int off = en && en->type == WL_JSON_BOOL && en->u.bool_val == 0;
+    wl_json_free(j);
+    return off;
+}
+
+int wl_slp_remap_compute(const char *drs_dir, const char *mods_dir, WlSlpRemap **out, size_t *out_count) {
+    *out = NULL;
+    *out_count = 0;
+    WlIntSet game = { 0 }, used = { 0 };
+    char **subs = NULL, **mods = NULL;
+    size_t nsubs = 0, nmods = 0, cnt = 0, cap = 0;
+    WlIntSet *mod_ids = NULL;
+    WlSlpRemap *res = NULL;
+    int rc = -1;
+
+    if (wl_is_dir(drs_dir)) {
+        if (wl_list_dir(drs_dir, &subs, &nsubs) != 0) goto done;
+        for (size_t i = 0; i < nsubs; i++) {
+            char sub[2048];
+            snprintf(sub, sizeof sub, "%.1000s/%.256s", drs_dir, subs[i]);
+            if (wl_slp_ids(sub, &game) != 0) goto done;
+        }
+    }
+    wl_intset_sort(&game);
+    if (wl_is_dir(mods_dir) && wl_list_dir(mods_dir, &mods, &nmods) != 0) goto done;
+    mod_ids = calloc(nmods ? nmods : 1, sizeof(WlIntSet));
+    if (!mod_ids) goto done;
+    for (size_t i = 0; i < game.n; i++) if (wl_intset_add(&used, game.v[i]) != 0) goto done;
+    for (size_t m = 0; m < nmods; m++) {
+        char mdir[2048], gdir[2048];
+        snprintf(mdir, sizeof mdir, "%.1000s/%.256s", mods_dir, mods[m]);
+        if (!wl_is_dir(mdir) || wl_mod_disabled(mdir)) continue;
+        snprintf(gdir, sizeof gdir, "%.1500s/resources/_common/drs/graphics", mdir);
+        if (wl_slp_ids(gdir, &mod_ids[m]) != 0) goto done;
+        wl_intset_sort(&mod_ids[m]);
+        for (size_t i = 0; i < mod_ids[m].n; i++) if (wl_intset_add(&used, mod_ids[m].v[i]) != 0) goto done;
+    }
+    wl_intset_sort(&used);
+
+    WlIntSet owned = { 0 };        // new ids claimed by an earlier mod
+    int next = WL_SLP_REMAP_FIRST;
+    for (size_t m = 0; m < nmods; m++) {
+        for (size_t i = 0; i < mod_ids[m].n; i++) {
+            int n = mod_ids[m].v[i];
+            if (wl_intset_has(&game, n)) continue;
+            if (!wl_intset_has(&owned, n)) {
+                if (wl_intset_add(&owned, n) != 0) { free(owned.v); goto done; }
+                wl_intset_sort(&owned);
+                continue;
+            }
+            while (wl_intset_has(&used, next)) next++;
+            if (cnt == cap) {
+                size_t nc = cap ? cap * 2 : 8;
+                WlSlpRemap *nr = realloc(res, nc * sizeof *nr);
+                if (!nr) { free(owned.v); goto done; }
+                res = nr;
+                cap = nc;
+            }
+            snprintf(res[cnt].mod, sizeof res[cnt].mod, "%s", mods[m]);
+            res[cnt].from = n;
+            res[cnt].to = next;
+            cnt++;
+            if (wl_intset_add(&used, next) != 0) { free(owned.v); goto done; }
+            wl_intset_sort(&used);
+        }
+    }
+    free(owned.v);
+    *out = res;
+    *out_count = cnt;
+    res = NULL;
+    rc = 0;
+done:
+    free(res);
+    if (mod_ids) for (size_t m = 0; m < nmods; m++) free(mod_ids[m].v);
+    free(mod_ids);
+    free(game.v);
+    free(used.v);
+    wl_free_dir_list(subs, nsubs);
+    wl_free_dir_list(mods, nmods);
+    return rc;
+}
+
+// Renumbering of the mod whose civ file is being applied (set in wl_dat_build).
+static const WlSlpRemap *g_slp_map;
+static size_t g_slp_map_n;
+static const char *g_slp_map_mod;
+
+static int32_t wl_slp_map(int64_t slp) {
+    for (size_t i = 0; i < g_slp_map_n; i++)
+        if (g_slp_map_mod && strcmp(g_slp_map[i].mod, g_slp_map_mod) == 0 && g_slp_map[i].from == slp)
+            return g_slp_map[i].to;
+    return (int32_t)slp;
+}
+
+// ==========================================================================
 // Civ File Discovery
 // ==========================================================================
 
@@ -1403,7 +1711,604 @@ static int wl_get_json_float(const WlJsonVal *val, float def, float *out, const 
     return -1;
 }
 
+// Custom resource discovery, growing civ resource arrays, and resource key/cost resolution
+// (mirrors find_custom_resources / resolve_resource_id / parse_cost_items in tools/build.py).
+static int wl_is_plain_int_str(const char *s) {
+    if (!s || !s[0]) return 0;
+    const char *p = (s[0] == '+' || s[0] == '-') ? s + 1 : s;
+    if (!*p) return 0;
+    for (; *p; p++) {
+        if ((unsigned char)*p < '0' || (unsigned char)*p > '9') return 0;
+    }
+    return 1;
+}
+
+static void wl_fmt_res_float(float v, char *buf, size_t cap) {
+    double d = (double)v;
+    if (d == 0.0) {
+        snprintf(buf, cap, "0");
+        return;
+    }
+    snprintf(buf, cap, "%.6g", d);
+}
+
+static int wl_find_custom_resources(const char *mods_dir, WlBuildExt *ext, char *err, size_t errcap) {
+    if (!wl_is_dir(mods_dir)) return 0;
+    char **mod_names = NULL;
+    size_t mod_count = 0;
+    if (wl_list_dir(mods_dir, &mod_names, &mod_count) != 0) {
+        snprintf(err, errcap, "failed to list mods directory '%.500s'", mods_dir);
+        return -1;
+    }
+    static const char *const vanilla_names[4] = { "food", "wood", "stone", "gold" };
+    static const char *const known_keys[7] = { "id", "name", "icon", "start", "max", "show", "description" };
+
+    for (size_t m = 0; m < mod_count; m++) {
+        const char *mod = mod_names[m];
+        char mdir[2048];
+        snprintf(mdir, sizeof(mdir), "%.1000s/%.256s", mods_dir, mod);
+        if (!wl_is_dir(mdir)) continue;
+
+        char meta_path[2048];
+        snprintf(meta_path, sizeof(meta_path), "%.1500s/mod.json", mdir);
+        if (!wl_is_file(meta_path)) continue;
+
+        size_t meta_len = 0;
+        char *meta_bytes = wl_read_file(meta_path, &meta_len);
+        if (!meta_bytes) {
+            snprintf(err, errcap, "%s: %s", meta_path, strerror(errno));
+            wl_free_dir_list(mod_names, mod_count);
+            return -1;
+        }
+        WlJsonVal *meta = wl_json_parse(meta_bytes, err, errcap);
+        free(meta_bytes);
+        if (!meta) {
+            char tmp_err[2048];
+            snprintf(tmp_err, sizeof(tmp_err), "%.1000s: %.1000s", meta_path, err);
+            strncpy(err, tmp_err, errcap - 1);
+            err[errcap - 1] = '\0';
+            wl_free_dir_list(mod_names, mod_count);
+            return -1;
+        }
+        if (meta->type != WL_JSON_OBJECT) {
+            wl_json_free(meta);
+            continue;
+        }
+        const WlJsonVal *en = wl_json_get(meta, "enabled");
+        if (en && en->type == WL_JSON_BOOL && en->u.bool_val == 0) {
+            wl_json_free(meta);
+            continue;
+        }
+        const WlJsonVal *res_list = wl_json_get(meta, "resources");
+        if (!res_list || res_list->type == WL_JSON_NULL) {
+            wl_json_free(meta);
+            continue;
+        }
+        if (res_list->type != WL_JSON_ARRAY) {
+            snprintf(err, errcap, "%s/mod.json: resources must be a list", mod);
+            wl_json_free(meta);
+            wl_free_dir_list(mod_names, mod_count);
+            return -1;
+        }
+
+        size_t mod_res_start = ext->custom_res_count;
+        for (size_t k = 0; k < res_list->u.arr.count; k++) {
+            char w[512];
+            snprintf(w, sizeof(w), "%.256s/mod.json resources[%zu]", mod, k);
+            const WlJsonVal *r = res_list->u.arr.items[k];
+            if (!r || r->type != WL_JSON_OBJECT) {
+                snprintf(err, errcap, "%s: must be an object", w);
+                wl_json_free(meta);
+                wl_free_dir_list(mod_names, mod_count);
+                return -1;
+            }
+            for (size_t mi = 0; mi < r->u.obj.count; mi++) {
+                const char *mk = r->u.obj.members[mi].key;
+                if (mk[0] == '_') continue;
+                int ok = 0;
+                for (int ki = 0; ki < 7; ki++) {
+                    if (strcmp(mk, known_keys[ki]) == 0) { ok = 1; break; }
+                }
+                if (!ok) {
+                    snprintf(err, errcap, "%s: unknown key '%s'", w, mk);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+            }
+            const WlJsonVal *id_v = wl_json_get(r, "id");
+            if (!id_v || id_v->type != WL_JSON_STRING || !id_v->u.str || !id_v->u.str[0] ||
+                strlen(id_v->u.str) > 64 || strchr(id_v->u.str, '\t') ||
+                strchr(id_v->u.str, '\n') || strchr(id_v->u.str, '\r') || strchr(id_v->u.str, ':')) {
+                snprintf(err, errcap, "%s: id must be a non-empty string (max 64 chars, no ':'/tab/newline)", w);
+                wl_json_free(meta);
+                wl_free_dir_list(mod_names, mod_count);
+                return -1;
+            }
+            const char *rkey = id_v->u.str;
+            int is_vanilla = 0;
+            for (int vi = 0; vi < 4; vi++) {
+                if (wl_strcasecmp(rkey, vanilla_names[vi]) == 0) { is_vanilla = 1; break; }
+            }
+            if (is_vanilla || wl_is_plain_int_str(rkey)) {
+                snprintf(err, errcap, "%s: id '%s' conflicts with vanilla/numeric resource ids", w, rkey);
+                wl_json_free(meta);
+                wl_free_dir_list(mod_names, mod_count);
+                return -1;
+            }
+            for (size_t si = mod_res_start; si < ext->custom_res_count; si++) {
+                if (strcmp(ext->custom_res[si].key, rkey) == 0) {
+                    snprintf(err, errcap, "%s: duplicate resource id '%s' in mod %s", w, rkey, mod);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+            }
+
+            const char *rname = rkey;
+            const WlJsonVal *nm_v = wl_json_get(r, "name");
+            if (nm_v && nm_v->type != WL_JSON_NULL) {
+                if (nm_v->type != WL_JSON_STRING || strlen(nm_v->u.str) > 128 ||
+                    strchr(nm_v->u.str, '\t') || strchr(nm_v->u.str, '\n') || strchr(nm_v->u.str, '\r')) {
+                    snprintf(err, errcap, "%s: name must be a string (max 128 chars, no tab/newline)", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                if (nm_v->u.str[0]) rname = nm_v->u.str;
+            }
+
+            const char *ricon = "";
+            const WlJsonVal *ic_v = wl_json_get(r, "icon");
+            if (ic_v && ic_v->type != WL_JSON_NULL) {
+                if (ic_v->type != WL_JSON_STRING || strlen(ic_v->u.str) > 256 ||
+                    strstr(ic_v->u.str, "..") || ic_v->u.str[0] == '/' || ic_v->u.str[0] == '\\' ||
+                    (ic_v->u.str[0] && ic_v->u.str[1] == ':') ||
+                    strchr(ic_v->u.str, '\t') || strchr(ic_v->u.str, '\n') || strchr(ic_v->u.str, '\r')) {
+                    snprintf(err, errcap, "%s: icon must be a relative path inside the mod folder", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                ricon = ic_v->u.str;
+            }
+
+            float rstart = 0.0f;
+            const WlJsonVal *st_v = wl_json_get(r, "start");
+            if (st_v && st_v->type != WL_JSON_NULL) {
+                if (st_v->type != WL_JSON_NUMBER) {
+                    snprintf(err, errcap, "%s: start must be a number", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                rstart = (float)st_v->u.num.dval;
+            }
+
+            float rmax = 0.0f;
+            const WlJsonVal *mx_v = wl_json_get(r, "max");
+            if (mx_v && mx_v->type != WL_JSON_NULL) {
+                if (mx_v->type != WL_JSON_NUMBER || mx_v->u.num.dval < 0.0) {
+                    snprintf(err, errcap, "%s: max must be a number >= 0", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                rmax = (float)mx_v->u.num.dval;
+            }
+
+            int rshow = 1;
+            const WlJsonVal *sh_v = wl_json_get(r, "show");
+            if (sh_v && sh_v->type != WL_JSON_NULL) {
+                if (sh_v->type != WL_JSON_BOOL) {
+                    snprintf(err, errcap, "%s: show must be a boolean", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                rshow = sh_v->u.bool_val ? 1 : 0;
+            }
+
+            const char *rdesc = "";
+            const WlJsonVal *ds_v = wl_json_get(r, "description");
+            if (ds_v && ds_v->type != WL_JSON_NULL) {
+                if (ds_v->type != WL_JSON_STRING) {
+                    snprintf(err, errcap, "%s: description must be a string", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                rdesc = ds_v->u.str;
+            }
+
+            int rid = WL_CUSTOM_RES_FIRST + (int)ext->custom_res_count;
+            if (rid > WL_CUSTOM_RES_MAX) {
+                snprintf(err, errcap, "%s: too many custom resources (max id %d)", w, WL_CUSTOM_RES_MAX);
+                wl_json_free(meta);
+                wl_free_dir_list(mod_names, mod_count);
+                return -1;
+            }
+
+            if (ext->custom_res_count >= ext->custom_res_cap) {
+                size_t ncap = ext->custom_res_cap ? ext->custom_res_cap * 2 : 16;
+                WlCustomRes *nr = realloc(ext->custom_res, ncap * sizeof(*nr));
+                if (!nr) {
+                    snprintf(err, errcap, "out of memory");
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                ext->custom_res = nr;
+                ext->custom_res_cap = ncap;
+            }
+            WlCustomRes *cr = &ext->custom_res[ext->custom_res_count++];
+            memset(cr, 0, sizeof(*cr));
+            cr->id = rid;
+            snprintf(cr->mod, sizeof(cr->mod), "%s", mod);
+            snprintf(cr->key, sizeof(cr->key), "%s", rkey);
+            snprintf(cr->name, sizeof(cr->name), "%s", rname);
+            snprintf(cr->icon, sizeof(cr->icon), "%s", ricon);
+            cr->start = rstart;
+            cr->max = rmax;
+            cr->show = rshow;
+            cr->description = malloc(strlen(rdesc) + 1);
+            if (!cr->description) {
+                ext->custom_res_count--;
+                snprintf(err, errcap, "out of memory");
+                wl_json_free(meta);
+                wl_free_dir_list(mod_names, mod_count);
+                return -1;
+            }
+            strcpy(cr->description, rdesc);
+        }
+        wl_json_free(meta);
+    }
+    wl_free_dir_list(mod_names, mod_count);
+    return 0;
+}
+
+// Grow a WlDatCiv's resources float array from civ->resource_count up to
+// WL_CUSTOM_RES_FIRST + custom_res_count, inserting start floats at offset 27 + rc*4
+// and shifting unit_offsets[] accordingly.
+static int wl_grow_civ_resources(WlDatCiv *civ, const WlBuildExt *ext, char *err, size_t errcap) {
+    if (ext->custom_res_count == 0) return 0;
+    size_t target_rc = WL_CUSTOM_RES_FIRST + ext->custom_res_count;
+    if (civ->resource_count >= target_rc) return 0;
+    size_t old_rc = civ->resource_count;
+    size_t add_slots = target_rc - old_rc;
+    size_t add_bytes = add_slots * 4;
+    size_t ins_off = 27 + old_rc * 4;
+    size_t new_size = civ->size + add_bytes;
+    uint8_t *nd = malloc(new_size);
+    if (!nd) {
+        snprintf(err, errcap, "out of memory growing civ resources");
+        return -1;
+    }
+    memcpy(nd, civ->data, ins_off);
+    memset(nd + ins_off, 0, add_bytes);
+    size_t custom_off = 27 + WL_CUSTOM_RES_FIRST * 4;
+    for (size_t i = 0; i < ext->custom_res_count; i++) {
+        uint32_t u = 0;
+        memcpy(&u, &ext->custom_res[i].start, sizeof(float));
+        size_t o = custom_off + i * 4;
+        nd[o]     = (uint8_t)(u & 0xFF);
+        nd[o + 1] = (uint8_t)((u >> 8) & 0xFF);
+        nd[o + 2] = (uint8_t)((u >> 16) & 0xFF);
+        nd[o + 3] = (uint8_t)((u >> 24) & 0xFF);
+    }
+    memcpy(nd + ins_off + add_bytes, civ->data + ins_off, civ->size - ins_off);
+    nd[21] = (uint8_t)(target_rc & 0xFF);
+    nd[22] = (uint8_t)((target_rc >> 8) & 0xFF);
+    free(civ->data);
+    civ->data = nd;
+    civ->size = new_size;
+    civ->resource_count = (uint16_t)target_rc;
+    for (size_t u = 0; u < civ->unit_count; u++) {
+        if (civ->unit_offsets[u] != 0) civ->unit_offsets[u] += (uint32_t)add_bytes;
+    }
+    return 0;
+}
+
+static int wl_resolve_resource_str(const char *ref, const WlBuildExt *ext, const char *where,
+                                   int *out_id, char *err, size_t errcap) {
+    if (!ref || !ref[0]) {
+        snprintf(err, errcap, "%s: invalid resource ''", where);
+        return -1;
+    }
+    if (strcmp(ref, "food") == 0)  { *out_id = 0; return 0; }
+    if (strcmp(ref, "wood") == 0)  { *out_id = 1; return 0; }
+    if (strcmp(ref, "stone") == 0) { *out_id = 2; return 0; }
+    if (strcmp(ref, "gold") == 0)  { *out_id = 3; return 0; }
+
+    size_t max_res = ext ? ext->max_res : WL_CUSTOM_RES_FIRST;
+    const char *colon = strchr(ref, ':');
+    if (colon && ext) {
+        size_t mlen = (size_t)(colon - ref);
+        const char *kpart = colon + 1;
+        for (size_t i = 0; i < ext->custom_res_count; i++) {
+            if (strlen(ext->custom_res[i].mod) == mlen &&
+                strncmp(ext->custom_res[i].mod, ref, mlen) == 0 &&
+                strcmp(ext->custom_res[i].key, kpart) == 0) {
+                *out_id = ext->custom_res[i].id;
+                return 0;
+            }
+        }
+        snprintf(err, errcap, "%s: unknown resource '%s'", where, ref);
+        return -1;
+    }
+    if (ext && ext->cur_mod) {
+        for (size_t i = 0; i < ext->custom_res_count; i++) {
+            if (strcmp(ext->custom_res[i].mod, ext->cur_mod) == 0 &&
+                strcmp(ext->custom_res[i].key, ref) == 0) {
+                *out_id = ext->custom_res[i].id;
+                return 0;
+            }
+        }
+    }
+    if (ext) {
+        for (size_t i = 0; i < ext->custom_res_count; i++) {
+            if (strcmp(ext->custom_res[i].key, ref) == 0) {
+                *out_id = ext->custom_res[i].id;
+                return 0;
+            }
+        }
+    }
+    if (wl_is_plain_int_str(ref)) {
+        long v = strtol(ref, NULL, 10);
+        if (v < 0 || (size_t)v >= max_res) {
+            snprintf(err, errcap, "%s: resource index %s out of range (0..%u)",
+                     where, ref, (unsigned)(max_res - 1));
+            return -1;
+        }
+        *out_id = (int)v;
+        return 0;
+    }
+    snprintf(err, errcap, "%s: unknown resource '%s'", where, ref);
+    return -1;
+}
+
+static int wl_resolve_resource_val(const WlJsonVal *v, const WlBuildExt *ext, const char *where,
+                                   int *out_id, char *err, size_t errcap) {
+    size_t max_res = ext ? ext->max_res : WL_CUSTOM_RES_FIRST;
+    if (!v) {
+        snprintf(err, errcap, "%s: missing resource", where);
+        return -1;
+    }
+    if (v->type == WL_JSON_NUMBER && !v->u.num.is_float) {
+        long long id = v->u.num.ival;
+        if (id < 0 || (size_t)id >= max_res) {
+            snprintf(err, errcap, "%s: resource index %lld out of range (0..%u)",
+                     where, id, (unsigned)(max_res - 1));
+            return -1;
+        }
+        *out_id = (int)id;
+        return 0;
+    }
+    if (v->type == WL_JSON_STRING && v->u.str) {
+        return wl_resolve_resource_str(v->u.str, ext, where, out_id, err, errcap);
+    }
+    snprintf(err, errcap, "%s: invalid resource", where);
+    return -1;
+}
+
+typedef struct { int type; int amount; int enabled; size_t ord; } WlCostItem;
+
+static int wl_cmp_cost_item(const void *a, const void *b) {
+    const WlCostItem *ca = (const WlCostItem *)a;
+    const WlCostItem *cb = (const WlCostItem *)b;
+    if (ca->type != cb->type) return ca->type - cb->type;
+    return (ca->ord < cb->ord) ? -1 : (ca->ord > cb->ord) ? 1 : 0;
+}
+
+static int wl_parse_cost_items(const WlJsonVal *cost, const WlBuildExt *ext, const char *where,
+                               int allow_enabled, WlCostItem out[3], int *out_n,
+                               char *err, size_t errcap) {
+    int n = 0;
+    if (cost->type == WL_JSON_OBJECT) {
+        static const char *const vanilla[4] = { "food", "wood", "stone", "gold" };
+        WlCostItem *extra = NULL;
+        size_t extra_n = 0, extra_cap = 0;
+        for (size_t i = 0; i < cost->u.obj.count; i++) {
+            const char *k = cost->u.obj.members[i].key;
+            const WlJsonVal *cv = cost->u.obj.members[i].val;
+            int rid = -1;
+            if (wl_resolve_resource_str(k, ext, where, &rid, err, errcap) != 0) {
+                free(extra);
+                return -1;
+            }
+            if (!cv || cv->type != WL_JSON_NUMBER || cv->u.num.is_float ||
+                cv->u.num.ival < 0 || cv->u.num.ival > 32767) {
+                snprintf(err, errcap, "%s: cost %s must be a whole number 0..32767", where, k);
+                free(extra);
+                return -1;
+            }
+            int is_v = (strcmp(k, "food") == 0 || strcmp(k, "wood") == 0 ||
+                        strcmp(k, "stone") == 0 || strcmp(k, "gold") == 0);
+            if (!is_v && cv->u.num.ival > 0) {
+                if (extra_n >= extra_cap) {
+                    size_t ncap = extra_cap ? extra_cap * 2 : 8;
+                    WlCostItem *ne = realloc(extra, ncap * sizeof(*ne));
+                    if (!ne) { free(extra); snprintf(err, errcap, "out of memory"); return -1; }
+                    extra = ne; extra_cap = ncap;
+                }
+                extra[extra_n].type = rid;
+                extra[extra_n].amount = (int)cv->u.num.ival;
+                extra[extra_n].enabled = 1;
+                extra[extra_n].ord = extra_n;
+                extra_n++;
+            }
+        }
+        for (int vi = 0; vi < 4; vi++) {
+            const WlJsonVal *cv = wl_json_get(cost, vanilla[vi]);
+            if (cv && cv->u.num.ival > 0) {
+                if (n >= 3) {
+                    free(extra);
+                    snprintf(err, errcap, "%s: cost has more than 3 resources", where);
+                    return -1;
+                }
+                out[n].type = vi;
+                out[n].amount = (int)cv->u.num.ival;
+                out[n].enabled = 1;
+                out[n].ord = (size_t)n;
+                n++;
+            }
+        }
+        if (extra_n > 1) qsort(extra, extra_n, sizeof(*extra), wl_cmp_cost_item);
+        for (size_t i = 0; i < extra_n; i++) {
+            if (n >= 3) {
+                free(extra);
+                snprintf(err, errcap, "%s: cost has more than 3 resources", where);
+                return -1;
+            }
+            out[n++] = extra[i];
+        }
+        free(extra);
+    } else if (cost->type == WL_JSON_ARRAY) {
+        for (size_t i = 0; i < cost->u.arr.count; i++) {
+            char ew[600];
+            snprintf(ew, sizeof(ew), "%.500s cost[%zu]", where, i);
+            const WlJsonVal *entry = cost->u.arr.items[i];
+            if (!entry || entry->type != WL_JSON_OBJECT) {
+                snprintf(err, errcap, "%s: must be an object", ew);
+                return -1;
+            }
+            for (size_t mi = 0; mi < entry->u.obj.count; mi++) {
+                const char *ek = entry->u.obj.members[mi].key;
+                int ok = (strcmp(ek, "resource") == 0 || strcmp(ek, "type") == 0 ||
+                          strcmp(ek, "amount") == 0 || (allow_enabled && strcmp(ek, "enabled") == 0));
+                if (!ok) {
+                    snprintf(err, errcap, "%s: unknown key '%s'", ew, ek);
+                    return -1;
+                }
+            }
+            const WlJsonVal *ref = wl_json_get(entry, "resource");
+            if (!ref) ref = wl_json_get(entry, "type");
+            if (!ref) {
+                snprintf(err, errcap, "%s: missing 'resource'", ew);
+                return -1;
+            }
+            int rid = -1;
+            if (wl_resolve_resource_val(ref, ext, ew, &rid, err, errcap) != 0) return -1;
+            const WlJsonVal *am = wl_json_get(entry, "amount");
+            if (!am || am->type != WL_JSON_NUMBER || am->u.num.is_float ||
+                am->u.num.ival < 0 || am->u.num.ival > 32767) {
+                snprintf(err, errcap, "%s: amount must be a whole number 0..32767", ew);
+                return -1;
+            }
+            int en = 1;
+            if (allow_enabled) {
+                const WlJsonVal *ev = wl_json_get(entry, "enabled");
+                if (ev) {
+                    if (ev->type == WL_JSON_BOOL) en = ev->u.bool_val ? 1 : 0;
+                    else if (ev->type == WL_JSON_NUMBER && !ev->u.num.is_float && (ev->u.num.ival == 0 || ev->u.num.ival == 1))
+                        en = (int)ev->u.num.ival;
+                    else {
+                        snprintf(err, errcap, "%s: enabled must be 0, 1, or boolean", ew);
+                        return -1;
+                    }
+                }
+            }
+            if (am->u.num.ival > 0) {
+                if (n >= 3) {
+                    snprintf(err, errcap, "%s: cost has more than 3 resources", where);
+                    return -1;
+                }
+                out[n].type = rid;
+                out[n].amount = (int)am->u.num.ival;
+                out[n].enabled = en;
+                out[n].ord = (size_t)n;
+                n++;
+            }
+        }
+    } else {
+        snprintf(err, errcap, "%s: cost must be an object or array", where);
+        return -1;
+    }
+    *out_n = n;
+    return 0;
+}
+
+static int wl_apply_unit_cost(uint8_t *u, const WlJsonVal *cost, const WlBuildExt *ext,
+                              const char *where, char *err, size_t errcap) {
+    if (u[0] != 70 && u[0] != 80) {
+        snprintf(err, errcap, "%s: only creatable units and buildings (type 70/80) have cost", where);
+        return -1;
+    }
+    WlCostItem items[3];
+    int n = 0;
+    if (wl_parse_cost_items(cost, ext, where, 1, items, &n, err, errcap) != 0) return -1;
+
+    int16_t nl = (int16_t)(u[1] | (u[2] << 8));
+    uint8_t dmg = u[149];
+    size_t s2 = 150 + (size_t)dmg * 5 + 6 + (size_t)nl;
+    size_t p_atk = s2 + 67;
+    uint16_t atk_cnt = (uint16_t)(u[p_atk] | (u[p_atk + 1] << 8));
+    size_t s3 = p_atk + 2 + (size_t)atk_cnt * 4;
+    uint16_t arm_cnt = (uint16_t)(u[s3] | (u[s3 + 1] << 8));
+    size_t s4 = s3 + 2 + (size_t)arm_cnt * 4;
+    uint8_t *rc_base = u + s4 + 56;
+
+    int has_pop_item = 0;
+    for (int i = 0; i < n; i++) if (items[i].type == 4) has_pop_item = 1;
+    int has_pop = 0;
+    uint8_t pop_bytes[6];
+    if (!has_pop_item) {
+        for (int i = 0; i < 3; i++) {
+            uint8_t *rc = rc_base + i * 6;
+            int16_t rt = (int16_t)(rc[0] | (rc[1] << 8));
+            int16_t re = (int16_t)(rc[4] | (rc[5] << 8));
+            if (rt == 4 && re == 0) {
+                memcpy(pop_bytes, rc, 6);
+                has_pop = 1;
+                break;
+            }
+        }
+    }
+    if (n <= 2 && has_pop) {
+        for (int i = 0; i < 2; i++) {
+            uint8_t *rc = rc_base + i * 6;
+            int16_t t = (i < n) ? (int16_t)items[i].type : -1;
+            int16_t a = (i < n) ? (int16_t)items[i].amount : 0;
+            int16_t e = (i < n) ? (int16_t)items[i].enabled : 0;
+            rc[0] = (uint8_t)(t & 0xFF); rc[1] = (uint8_t)((t >> 8) & 0xFF);
+            rc[2] = (uint8_t)(a & 0xFF); rc[3] = (uint8_t)((a >> 8) & 0xFF);
+            rc[4] = (uint8_t)(e & 0xFF); rc[5] = (uint8_t)((e >> 8) & 0xFF);
+        }
+        memcpy(rc_base + 12, pop_bytes, 6);
+    } else {
+        for (int i = 0; i < 3; i++) {
+            uint8_t *rc = rc_base + i * 6;
+            int16_t t = (i < n) ? (int16_t)items[i].type : -1;
+            int16_t a = (i < n) ? (int16_t)items[i].amount : 0;
+            int16_t e = (i < n) ? (int16_t)items[i].enabled : 0;
+            rc[0] = (uint8_t)(t & 0xFF); rc[1] = (uint8_t)((t >> 8) & 0xFF);
+            rc[2] = (uint8_t)(a & 0xFF); rc[3] = (uint8_t)((a >> 8) & 0xFF);
+            rc[4] = (uint8_t)(e & 0xFF); rc[5] = (uint8_t)((e >> 8) & 0xFF);
+        }
+    }
+    return 0;
+}
+
+static int wl_apply_research_cost(uint8_t *header, const WlJsonVal *cost, const WlBuildExt *ext,
+                                  const char *where, char *err, size_t errcap) {
+    WlCostItem items[3];
+    int n = 0;
+    if (cost) {
+        if (wl_parse_cost_items(cost, ext, where, 0, items, &n, err, errcap) != 0) return -1;
+    }
+    for (int i = 0; i < 3; i++) {
+        uint8_t *rc = header + 12 + 5 * i;
+        int16_t t = (i < n) ? (int16_t)items[i].type : -1;
+        int16_t a = (i < n) ? (int16_t)items[i].amount : 0;
+        rc[0] = (uint8_t)(t & 0xFF); rc[1] = (uint8_t)((t >> 8) & 0xFF);
+        rc[2] = (uint8_t)(a & 0xFF); rc[3] = (uint8_t)((a >> 8) & 0xFF);
+        rc[4] = (uint8_t)(i < n ? 1 : 0);
+    }
+    return 0;
+}
+
 static int wl_parse_effect_command(const WlJsonVal *cmd_spec, const char *where,
+                                  const WlBuildExt *ext,
                                   WlDatEffectCmd *out_cmd, char *err, size_t errcap) {
     if (cmd_spec->type != WL_JSON_OBJECT) {
         snprintf(err, errcap, "%s: effect command must be a JSON object", where);
@@ -1418,9 +2323,14 @@ static int wl_parse_effect_command(const WlJsonVal *cmd_spec, const char *where,
     if (wl_get_json_int(t_val, 0, &cmd_type, where, "type", err, errcap) != 0) return -1;
 
     const WlJsonVal *a_val = wl_json_get(cmd_spec, "a");
+    if (!a_val) a_val = wl_json_get(cmd_spec, "resource");
     if (!a_val) a_val = wl_json_get(cmd_spec, "unit");
     int a = -1;
-    if (wl_get_json_int(a_val, -1, &a, where, "a/unit", err, errcap) != 0) return -1;
+    if (a_val && a_val->type == WL_JSON_STRING && a_val->u.str && !wl_is_plain_int_str(a_val->u.str)) {
+        if (wl_resolve_resource_str(a_val->u.str, ext, where, &a, err, errcap) != 0) return -1;
+    } else {
+        if (wl_get_json_int(a_val, -1, &a, where, "a/unit", err, errcap) != 0) return -1;
+    }
 
     const WlJsonVal *b_val = wl_json_get(cmd_spec, "b");
     if (!b_val) b_val = wl_json_get(cmd_spec, "class");
@@ -1829,6 +2739,49 @@ static int wl_json_is_int(const WlJsonVal *v) {
     return v && v->type == WL_JSON_NUMBER && !v->u.num.is_float;
 }
 
+static int wl_resolve_cmd_icon(const WlBuildExt *ext, const char *where, const WlJsonVal *icon_val,
+                               int *out_icon, char *err, size_t errcap) {
+    if (!icon_val) {
+        *out_icon = 32;
+        return 0;
+    }
+    if (wl_json_is_int(icon_val)) {
+        *out_icon = (int)icon_val->u.num.ival;
+        return 0;
+    }
+    if (icon_val->type == WL_JSON_STRING && icon_val->u.str) {
+        const char *s = icon_val->u.str;
+        size_t sl = strlen(s);
+        if (sl >= 4 && wl_strcasecmp(s + sl - 4, ".png") == 0) sl -= 4;
+        char stem[128];
+        if (sl == 0 || sl >= sizeof(stem) || strchr(s, '/') || strchr(s, '\\') ||
+            strstr(s, "..") || strchr(s, '\t') || strchr(s, '\n') || strchr(s, '\r')) {
+            snprintf(err, errcap, "%s: invalid command icon name '%s'", where, s);
+            return -1;
+        }
+        memcpy(stem, s, sl);
+        stem[sl] = '\0';
+
+        char mod[256] = "";
+        const char *slash = strchr(where, '/');
+        size_t ml = slash ? (size_t)(slash - where) : strlen(where);
+        if (ml >= sizeof(mod)) ml = sizeof(mod) - 1;
+        memcpy(mod, where, ml);
+        mod[ml] = '\0';
+
+        for (size_t i = 0; i < ext->cmd_icons_count; i++) {
+            if (strcmp(ext->cmd_icons[i].mod, mod) == 0 && wl_strcasecmp(ext->cmd_icons[i].stem, stem) == 0) {
+                *out_icon = ext->cmd_icons[i].index;
+                return 0;
+            }
+        }
+        snprintf(err, errcap, "%s: command icon '%s' not found in icons/commands/", where, s);
+        return -1;
+    }
+    snprintf(err, errcap, "%s: lua icon must be a number or command icon name", where);
+    return -1;
+}
+
 static void wl_put16(uint8_t *p, int v) { p[0] = (uint8_t)(v & 0xFF); p[1] = (uint8_t)((v >> 8) & 0xFF); }
 static void wl_put32(uint8_t *p, int32_t v) { wl_put16(p, v & 0xFFFF); wl_put16(p + 2, (v >> 16) & 0xFFFF); }
 
@@ -2027,6 +2980,7 @@ static int wl_apply_graphics(const WlGfxCtx *g, uint8_t *unit, const WlJsonVal *
             if (av) angles = wl_json_is_int(av) ? av->u.num.ival : 0;
         }
         if (slp <= 0 || slp >= (1LL << 31)) { snprintf(err, errcap, "%s: slp must be a positive integer", w); return -1; }
+        slp = wl_slp_map(slp);
         if (frames != -1 && (frames < 1 || frames > 1000)) { snprintf(err, errcap, "%s: frames must be 1..1000", w); return -1; }
         if (angles != -1 && (angles < 1 || angles > 64)) { snprintf(err, errcap, "%s: angles must be 1..64", w); return -1; }
         uint8_t *f = wl_unit_field_addr(unit, desc) + 2 * k_anims[a].idx;
@@ -2148,8 +3102,13 @@ static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civ
             snprintf(err, errcap, "%s: train units must be an object", w);
             rc = -1;
         }
-        for (size_t i = 0; !rc && i < units_v->u.obj.count; i++)
-            rc = wl_set_unit_field(u, fw, units_v->u.obj.members[i].key, units_v->u.obj.members[i].val, err, errcap);
+        for (size_t i = 0; !rc && i < units_v->u.obj.count; i++) {
+            const char *fk = units_v->u.obj.members[i].key;
+            const WlJsonVal *fv = units_v->u.obj.members[i].val;
+            rc = (strcmp(fk, "cost") == 0)
+                ? wl_apply_unit_cost(u, fv, ext, fw, err, errcap)
+                : wl_set_unit_field(u, fw, fk, fv, err, errcap);
+        }
     }
     const WlJsonVal *gfx_v = obj ? wl_json_get(obj, "graphics") : NULL;
     if (!rc && gfx_v) rc = wl_apply_graphics(gctx, u, gfx_v, fw, err, errcap);
@@ -2220,7 +3179,7 @@ static int wl_cmd_research(int cid, int B, int button, int age, size_t k, const 
     if (wl_make_effect_name(ef_name, w, eff.name, err, errcap) != 0) return -1;
     for (size_t i = 0; effs && i < effs->u.arr.count; i++) {
         WlDatEffectCmd ec;
-        if (wl_parse_effect_command(effs->u.arr.items[i], w, &ec, err, errcap) != 0 ||
+        if (wl_parse_effect_command(effs->u.arr.items[i], w, ext, &ec, err, errcap) != 0 ||
             wl_effect_add_cmd(&eff, &ec, err, errcap) != 0) {
             free(eff.commands);
             return -1;
@@ -2245,31 +3204,7 @@ static int wl_cmd_research(int cid, int B, int button, int age, size_t k, const 
     wl_put16(h + 27, 1);
 
     const WlJsonVal *cost = wl_json_get(r, "cost");
-    static const char *const res_names[4] = { "food", "wood", "stone", "gold" };
-    if (cost && (cost->type != WL_JSON_OBJECT || wl_check_known_keys(cost, res_names, 4, w, "", err, errcap) != 0)) {
-        snprintf(err, errcap, "%s: research cost must be an object with food/wood/stone/gold", w);
-        return -1;
-    }
-    int items[4][2], n = 0;
-    for (int ri = 0; cost && ri < 4; ri++) {
-        const WlJsonVal *cv = wl_json_get(cost, res_names[ri]);
-        if (!cv) continue;
-        if (!wl_json_is_int(cv) || cv->u.num.ival < 0 || cv->u.num.ival > 32767) {
-            snprintf(err, errcap, "%s: research cost values must be whole numbers >= 0", w);
-            return -1;
-        }
-        if (cv->u.num.ival > 0) { items[n][0] = ri; items[n][1] = (int)cv->u.num.ival; n++; }
-    }
-    if (n > 3) {
-        snprintf(err, errcap, "%s: research cost has more than 3 resources", w);
-        return -1;
-    }
-    for (int i = 0; i < 3; i++) {
-        uint8_t *rc = h + 12 + 5 * i;
-        wl_put16(rc, i < n ? items[i][0] : -1);
-        wl_put16(rc + 2, i < n ? items[i][1] : 0);
-        rc[4] = i < n ? 1 : 0;
-    }
+    if (wl_apply_research_cost(h, cost, ext, w, err, errcap) != 0) return -1;
     v = wl_json_get(r, "time");
     long long rt = 30;
     if (v) rt = wl_json_is_int(v) ? v->u.num.ival : -1;
@@ -2434,11 +3369,9 @@ static int wl_add_building_commands(const WlGfxCtx *gctx, WlDatCiv *civ, const W
             }
             const char *name = lv->u.str;
             const WlJsonVal *iv = wl_json_get(c, "icon");
-            if (iv && !wl_json_is_int(iv)) {
-                snprintf(err, errcap, "%s: lua icon must be a number (command icon frame)", w);
+            int icon = 32;
+            if (wl_resolve_cmd_icon(ext, w, iv, &icon, err, errcap) != 0)
                 return -1;
-            }
-            int icon = iv ? (int)iv->u.num.ival : 32;
             const WlJsonVal *xv = wl_json_get(c, "text"), *hv = wl_json_get(c, "help");
             if ((xv && xv->type != WL_JSON_STRING) || (hv && hv->type != WL_JSON_STRING)) {
                 snprintf(err, errcap, "%s: lua text and help must be strings", w);
@@ -2757,7 +3690,7 @@ static int wl_add_unique_building(
             free(rep_B);
             return -1;
         }
-        int32_t slp = (int32_t)slp_val->u.num.ival;
+        int32_t slp = wl_slp_map(slp_val->u.num.ival);
 
         // Read source graphic ID from standing_graphic[0]
         int16_t gsrc = (int16_t)(rep_B[11] | (rep_B[12] << 8));
@@ -2866,7 +3799,10 @@ static int wl_add_unique_building(
         for (size_t f = 0; f < units_val->u.obj.count; f++) {
             const char *fname = units_val->u.obj.members[f].key;
             const WlJsonVal *fval = units_val->u.obj.members[f].val;
-            if (wl_set_unit_field(rep_B, where_unit, fname, fval, err, errcap) != 0) {
+            int frc = (strcmp(fname, "cost") == 0)
+                ? wl_apply_unit_cost(rep_B, fval, ext, where_unit, err, errcap)
+                : wl_set_unit_field(rep_B, where_unit, fname, fval, err, errcap);
+            if (frc != 0) {
                 free(rep_B);
                 return -1;
             }
@@ -3042,83 +3978,6 @@ static void wl_cu_offsets(const uint8_t *u, size_t *out_patk, size_t *out_s3, si
     *out_patk = p_atk;
     *out_s3 = s3;
     *out_s4 = s4;
-}
-
-static int wl_cu_set_cost(uint8_t *u, const WlJsonVal *cost, const char *w, char *err, size_t errcap) {
-    if (cost->type != WL_JSON_OBJECT) {
-        snprintf(err, errcap, "%s: cost must be an object with food/wood/stone/gold", w);
-        return -1;
-    }
-    static const char *const res_names[4] = { "food", "wood", "stone", "gold" };
-    if (wl_check_known_keys(cost, res_names, 4, w, "cost resource(s) ", err, errcap) != 0) {
-        // Format Python-identical message: unknown cost resource(s) [...]
-        char *extra[8];
-        size_t ec = 0;
-        for (size_t i = 0; i < cost->u.obj.count; i++) {
-            const char *k = cost->u.obj.members[i].key;
-            int ok = 0;
-            for (int r = 0; r < 4; r++) if (strcmp(k, res_names[r]) == 0) { ok = 1; break; }
-            if (!ok && ec < 8) extra[ec++] = (char *)k;
-        }
-        if (ec > 1) qsort(extra, ec, sizeof(char *), wl_cmp_str);
-        char buf[256];
-        size_t pos = snprintf(buf, sizeof(buf), "[");
-        for (size_t i = 0; i < ec && pos < sizeof(buf); i++)
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "%s'%s'", i ? ", " : "", extra[i]);
-        if (pos < sizeof(buf)) snprintf(buf + pos, sizeof(buf) - pos, "]");
-        snprintf(err, errcap, "%s: unknown cost resource(s) %s", w, buf);
-        return -1;
-    }
-    int items[4][2], n = 0;
-    for (int ri = 0; ri < 4; ri++) {
-        const WlJsonVal *cv = wl_json_get(cost, res_names[ri]);
-        if (!cv) continue;
-        if (!wl_json_is_int(cv) || cv->u.num.ival < 0 || cv->u.num.ival > 32767) {
-            snprintf(err, errcap, "%s: cost %s must be a whole number 0..32767", w, res_names[ri]);
-            return -1;
-        }
-        if (cv->u.num.ival > 0) {
-            items[n][0] = ri;
-            items[n][1] = (int)cv->u.num.ival;
-            n++;
-        }
-    }
-    if (n > 3) {
-        snprintf(err, errcap, "%s: cost has more than 3 resources", w);
-        return -1;
-    }
-    size_t p_atk, s3, s4;
-    wl_cu_offsets(u, &p_atk, &s3, &s4);
-    uint8_t *rc_base = u + s4 + 56;
-    int has_pop = 0;
-    uint8_t pop_bytes[6];
-    for (int i = 0; i < 3; i++) {
-        uint8_t *rc = rc_base + i * 6;
-        int16_t rt = (int16_t)(rc[0] | (rc[1] << 8));
-        int16_t re = (int16_t)(rc[4] | (rc[5] << 8));
-        if (rt == 4 && re == 0) {
-            memcpy(pop_bytes, rc, 6);
-            has_pop = 1;
-            break;
-        }
-    }
-    if (n <= 2 && has_pop) {
-        for (int i = 0; i < 2; i++) {
-            uint8_t *rc = rc_base + i * 6;
-            wl_put16(rc, i < n ? items[i][0] : -1);
-            wl_put16(rc + 2, i < n ? items[i][1] : 0);
-            wl_put16(rc + 4, i < n ? 1 : 0);
-        }
-        memcpy(rc_base + 12, pop_bytes, 6);
-    } else {
-        for (int i = 0; i < 3; i++) {
-            uint8_t *rc = rc_base + i * 6;
-            wl_put16(rc, i < n ? items[i][0] : -1);
-            wl_put16(rc + 2, i < n ? items[i][1] : 0);
-            wl_put16(rc + 4, i < n ? 1 : 0);
-        }
-    }
-    return 0;
 }
 
 static int wl_cu_set_attack(uint8_t **pu, size_t *plen, int atk, char *err, size_t errcap) {
@@ -3373,9 +4232,12 @@ static int wl_add_custom_units(
             for (size_t i = 0; !rc && i < units_v->u.obj.count; i++) {
                 const char *fk = units_v->u.obj.members[i].key;
                 const WlJsonVal *fv = units_v->u.obj.members[i].val;
-                rc = (strcmp(fk, "graphics") == 0)
-                    ? wl_apply_graphics(gctx, u, fv, fw, err, errcap)
-                    : wl_set_unit_field(u, fw, fk, fv, err, errcap);
+                if (strcmp(fk, "graphics") == 0)
+                    rc = wl_apply_graphics(gctx, u, fv, fw, err, errcap);
+                else if (strcmp(fk, "cost") == 0)
+                    rc = wl_apply_unit_cost(u, fv, ext, fw, err, errcap);
+                else
+                    rc = wl_set_unit_field(u, fw, fk, fv, err, errcap);
             }
         }
 
@@ -3392,7 +4254,7 @@ static int wl_add_custom_units(
 
         const WlJsonVal *cost_v = wl_json_get(cu, "cost");
         if (!rc && cost_v && cost_v->type != WL_JSON_NULL) {
-            rc = wl_cu_set_cost(u, cost_v, w, err, errcap);
+            rc = wl_apply_unit_cost(u, cost_v, ext, w, err, errcap);
         }
 
         const WlJsonVal *atk_v = wl_json_get(cu, "attack");
@@ -3987,7 +4849,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                 char where_eff[1024];
                 snprintf(where_eff, sizeof(where_eff), "%.800s effects[%zu]", where, ei);
                 WlDatEffectCmd c;
-                if (wl_parse_effect_command(eff_val->u.arr.items[ei], where_eff, &c, err, errcap) != 0) {
+                if (wl_parse_effect_command(eff_val->u.arr.items[ei], where_eff, ext, &c, err, errcap) != 0) {
                     free(new_eff.commands);
                     if (!extend) wl_free_civ(&new_civ);
                     return -1;
@@ -4067,7 +4929,7 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             char where_tbe[1024];
             snprintf(where_tbe, sizeof(where_tbe), "%.800s team_bonus_effects[%zu]", where, ei);
             WlDatEffectCmd c;
-            if (wl_parse_effect_command(tbe_val->u.arr.items[ei], where_tbe, &c, err, errcap) != 0) {
+            if (wl_parse_effect_command(tbe_val->u.arr.items[ei], where_tbe, ext, &c, err, errcap) != 0) {
                 free(tb_eff.commands);
                 if (!extend) wl_free_civ(&new_civ);
                 return -1;
@@ -4144,9 +5006,11 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
                     const WlJsonVal *fval = flds->u.obj.members[f].val;
                     int frc = !strcmp(fname, "graphics")
                         ? wl_apply_graphics(&gctx, u_data, fval, where_unit, err, errcap)
-                        : wl_set_unit_field(u_data, where_unit, fname, fval, err, errcap);
+                        : !strcmp(fname, "cost")
+                            ? wl_apply_unit_cost(u_data, fval, ext, where_unit, err, errcap)
+                            : wl_set_unit_field(u_data, where_unit, fname, fval, err, errcap);
                     if (frc != 0) {
-                        wl_free_civ(&new_civ);
+                        if (!extend) wl_free_civ(&new_civ);
                         return -1;
                     }
                 }
@@ -4154,23 +5018,27 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         }
     }
 
-    // Resource overrides (starting food, wood, gold, stone, etc.)
+    // Resource overrides (starting food, wood, gold, stone, custom resources, etc.)
     const WlJsonVal *res_val = wl_json_get(spec, "resources");
     if (res_val && res_val->type == WL_JSON_OBJECT) {
         for (size_t r = 0; r < res_val->u.obj.count; r++) {
             const char *idx_str = res_val->u.obj.members[r].key;
             const WlJsonVal *val = res_val->u.obj.members[r].val;
 
-            long idx = strtol(idx_str, NULL, 10);
+            int idx = -1;
+            if (wl_resolve_resource_str(idx_str, ext, where, &idx, err, errcap) != 0) {
+                if (!extend) wl_free_civ(&new_civ);
+                return -1;
+            }
             if (idx < 0 || (size_t)idx >= civ_ptr->resource_count) {
                 snprintf(err, errcap, "%s: resource index %s out of range (0..%u)",
                          where, idx_str, (unsigned)(civ_ptr->resource_count - 1));
-                wl_free_civ(&new_civ);
+                if (!extend) wl_free_civ(&new_civ);
                 return -1;
             }
             if (val->type != WL_JSON_NUMBER) {
-                snprintf(err, errcap, "%s: resource %ld must be a number", where, idx);
-                wl_free_civ(&new_civ);
+                snprintf(err, errcap, "%s: resource %d must be a number", where, idx);
+                if (!extend) wl_free_civ(&new_civ);
                 return -1;
             }
             float f = (float)val->u.num.dval;
@@ -4500,76 +5368,25 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
         }
 
         const WlJsonVal *ecost_val = wl_json_get(uu_val, "elite_cost");
-        int cost_types[3] = { -1, -1, -1 };
-        int cost_amounts[3] = { 0, 0, 0 };
-        int cost_cnt = 0;
         if (ecost_val) {
-            if (ecost_val->type != WL_JSON_OBJECT) {
-                snprintf(err, errcap, "%s: unique_unit elite_cost must be an object", where);
+            char where_ec[1024];
+            snprintf(where_ec, sizeof(where_ec), "%.500s unique_unit elite_cost", where);
+            if (wl_apply_research_cost(elite_res.header, ecost_val, ext, where_ec, err, errcap) != 0) {
                 wl_free_civ(&new_civ);
                 return -1;
-            }
-            const char *cost_names[] = { "food", "wood", "stone", "gold" };
-            int cost_ids[] = { 0, 1, 2, 3 };
-            char *extra_rc[8];
-            size_t extra_rc_cnt = 0;
-            for (size_t mi = 0; mi < ecost_val->u.obj.count; mi++) {
-                const char *ck = ecost_val->u.obj.members[mi].key;
-                int valid_res = 0;
-                for (int ci = 0; ci < 4; ci++) {
-                    if (strcmp(ck, cost_names[ci]) == 0) { valid_res = 1; break; }
-                }
-                if (!valid_res && extra_rc_cnt < 8) {
-                    extra_rc[extra_rc_cnt++] = (char *)ck;
-                }
-            }
-            if (extra_rc_cnt > 0) {
-                if (extra_rc_cnt > 1) qsort(extra_rc, extra_rc_cnt, sizeof(char *), wl_cmp_str);
-                char extra_buf[256];
-                size_t epos = 0;
-                epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "[");
-                for (size_t i = 0; i < extra_rc_cnt; i++) {
-                    epos += snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "%s'%s'", (i > 0 ? ", " : ""), extra_rc[i]);
-                }
-                snprintf(extra_buf + epos, sizeof(extra_buf) - epos, "]");
-                snprintf(err, errcap, "%s: unknown elite_cost resource(s) %s", where, extra_buf);
-                wl_free_civ(&new_civ);
-                return -1;
-            }
-            for (int ci = 0; ci < 4; ci++) {
-                const WlJsonVal *cv = wl_json_get(ecost_val, cost_names[ci]);
-                if (cv) {
-                    if (cv->type != WL_JSON_NUMBER || cv->u.num.dval < 0) {
-                        snprintf(err, errcap, "%s: elite_cost %s must be a positive number", where, cost_names[ci]);
-                        wl_free_civ(&new_civ);
-                        return -1;
-                    }
-                    if (cv->u.num.ival > 0) {
-                        if (cost_cnt < 3) {
-                            cost_types[cost_cnt] = cost_ids[ci];
-                            cost_amounts[cost_cnt] = (int)cv->u.num.ival;
-                            cost_cnt++;
-                        } else {
-                            snprintf(err, errcap, "%s: unique_unit elite_cost has more than 3 non-zero costs", where);
-                            wl_free_civ(&new_civ);
-                            return -1;
-                        }
-                    }
-                }
             }
         } else {
-            cost_types[0] = 0; cost_amounts[0] = 1000;
-            cost_types[1] = 3; cost_amounts[1] = 800;
-            cost_cnt = 2;
-        }
-        for (int si = 0; si < 3; si++) {
-            uint8_t *cp = elite_res.header + 12 + si * 5;
-            int16_t t = (int16_t)cost_types[si];
-            int16_t a = (int16_t)cost_amounts[si];
-            int8_t fl = (cost_types[si] >= 0) ? 1 : 0;
-            cp[0] = (uint8_t)(t & 0xFF); cp[1] = (uint8_t)((t >> 8) & 0xFF);
-            cp[2] = (uint8_t)(a & 0xFF); cp[3] = (uint8_t)((a >> 8) & 0xFF);
-            cp[4] = (uint8_t)fl;
+            int cost_types[3] = { 0, 3, -1 };
+            int cost_amounts[3] = { 1000, 800, 0 };
+            for (int si = 0; si < 3; si++) {
+                uint8_t *cp = elite_res.header + 12 + si * 5;
+                int16_t t = (int16_t)cost_types[si];
+                int16_t a = (int16_t)cost_amounts[si];
+                int8_t fl = (cost_types[si] >= 0) ? 1 : 0;
+                cp[0] = (uint8_t)(t & 0xFF); cp[1] = (uint8_t)((t >> 8) & 0xFF);
+                cp[2] = (uint8_t)(a & 0xFF); cp[3] = (uint8_t)((a >> 8) & 0xFF);
+                cp[4] = (uint8_t)fl;
+            }
         }
 
         const WlJsonVal *etime_val = wl_json_get(uu_val, "elite_time");
@@ -4702,7 +5519,10 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             for (size_t f = 0; f < uu_units_val->u.obj.count; f++) {
                 const char *fname = uu_units_val->u.obj.members[f].key;
                 const WlJsonVal *fval = uu_units_val->u.obj.members[f].val;
-                if (wl_set_unit_field(rep_U, where_unit, fname, fval, err, errcap) != 0) {
+                int frc = (strcmp(fname, "cost") == 0)
+                    ? wl_apply_unit_cost(rep_U, fval, ext, where_unit, err, errcap)
+                    : wl_set_unit_field(rep_U, where_unit, fname, fval, err, errcap);
+                if (frc != 0) {
                     free(rep_U); wl_free_civ(&new_civ);
                     return -1;
                 }
@@ -4806,7 +5626,10 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             for (size_t f = 0; f < uu_units_val->u.obj.count; f++) {
                 const char *fname = uu_units_val->u.obj.members[f].key;
                 const WlJsonVal *fval = uu_units_val->u.obj.members[f].val;
-                if (wl_set_unit_field(rep_E, where_unit, fname, fval, err, errcap) != 0) {
+                int frc = (strcmp(fname, "cost") == 0)
+                    ? wl_apply_unit_cost(rep_E, fval, ext, where_unit, err, errcap)
+                    : wl_set_unit_field(rep_E, where_unit, fname, fval, err, errcap);
+                if (frc != 0) {
                     free(rep_U); free(rep_E); wl_free_civ(&new_civ);
                     return -1;
                 }
@@ -4825,7 +5648,10 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
             for (size_t f = 0; f < uu_el_units_val->u.obj.count; f++) {
                 const char *fname = uu_el_units_val->u.obj.members[f].key;
                 const WlJsonVal *fval = uu_el_units_val->u.obj.members[f].val;
-                if (wl_set_unit_field(rep_E, where_unit, fname, fval, err, errcap) != 0) {
+                int frc = (strcmp(fname, "cost") == 0)
+                    ? wl_apply_unit_cost(rep_E, fval, ext, where_unit, err, errcap)
+                    : wl_set_unit_field(rep_E, where_unit, fname, fval, err, errcap);
+                if (frc != 0) {
                     free(rep_U); free(rep_E); wl_free_civ(&new_civ);
                     return -1;
                 }
@@ -5261,9 +6087,33 @@ int wl_dat_build(const WlZlib *z,
     // ----------------------------------------------------------------------
     WlCivFile *civ_files = NULL;
     size_t num_civ_files = 0;
-    if (wl_find_civ_files(mods_dir, &civ_files, &num_civ_files, err, errcap) != 0 ||
+    // <game>/resources/_common/drs from src_dat (<game>/resources/_common/dat/<file>.dat)
+    WlSlpRemap *slp_remap = NULL;
+    size_t slp_remap_n = 0;
+    {
+        char drs[2048];
+        snprintf(drs, sizeof drs, "%.2000s", src_dat);
+        for (int up = 0; up < 2; up++) {
+            char *a = strrchr(drs, '/'), *b = strrchr(drs, '\\');
+            char *cut = a > b ? a : b;
+            if (cut) *cut = 0;
+        }
+        size_t dl = strlen(drs);
+        snprintf(drs + dl, sizeof drs - dl, "/drs");
+        if (wl_slp_remap_compute(drs, mods_dir, &slp_remap, &slp_remap_n) != 0) {
+            slp_remap = NULL;
+            slp_remap_n = 0;
+        }
+        free((void *)g_slp_map);   // the previous build's table (kept until now: tiny)
+        g_slp_map = slp_remap;
+        g_slp_map_n = slp_remap_n;
+        g_slp_map_mod = NULL;
+    }
+    if (wl_find_custom_resources(mods_dir, &ext, err, errcap) != 0 ||
+        wl_find_civ_files(mods_dir, &civ_files, &num_civ_files, err, errcap) != 0 ||
         wl_find_icons(mods_dir, "buildings", WL_BLDG_ICON_BASE, &ext.bldg_icons, &ext.bldg_icons_count, &ext.bldg_icons_cap, err, errcap) != 0 ||
-        wl_find_icons(mods_dir, "units", WL_UNIT_ICON_BASE, &ext.unit_icons, &ext.unit_icons_count, &ext.unit_icons_cap, err, errcap) != 0) {
+        wl_find_icons(mods_dir, "units", WL_UNIT_ICON_BASE, &ext.unit_icons, &ext.unit_icons_count, &ext.unit_icons_cap, err, errcap) != 0 ||
+        wl_find_cmd_icons(mods_dir, &ext, err, errcap) != 0) {
         wl_ext_free(&ext);
         free(civ_files);
         free(orig_researches);
@@ -5275,6 +6125,17 @@ int wl_dat_build(const WlZlib *z,
         free(orig);
         return -1;
     }
+
+    // Grow every base civ (0 = Gaia, 1..31) identically when custom resources exist,
+    // before placeholders (32..34) and custom civs (35+) are cloned from them.
+    if (ext.custom_res_count > 0) {
+        for (size_t c = 0; c < cur_civ_count; c++) {
+            if (wl_grow_civ_resources(&civs[c], &ext, err, errcap) != 0) {
+                goto cleanup_err;
+            }
+        }
+    }
+    ext.max_res = cur_civ_count > 0 ? civs[0].resource_count : WL_CUSTOM_RES_FIRST;
 
     // Dynamic buffer for civs.txt: formatted as "%d\t%d\t%s\t%s\t%s[\t%d\t%d]\n"
     size_t lines_cap = 4096, lines_len = 0;
@@ -5343,6 +6204,8 @@ int wl_dat_build(const WlZlib *z,
             free(jbytes);
             char where[1024];
             snprintf(where, sizeof(where), "%.256s/civs/%.256s", civ_files[f].mod, civ_files[f].fn);
+            g_slp_map_mod = civ_files[f].mod;
+            ext.cur_mod = civ_files[f].mod;
             if (!spec) {
                 char tmp_err[2048];
                 snprintf(tmp_err, sizeof(tmp_err), "%.1000s: %.1000s", civ_files[f].path, err);
@@ -5678,6 +6541,59 @@ int wl_dat_build(const WlZlib *z,
         goto cleanup_err;
     }
     free(commands_buf);
+
+    // Write resources.txt next to civs.txt (id<TAB>mod<TAB>key<TAB>name<TAB>icon<TAB>start<TAB>max<TAB>show<TAB>desc)
+    {
+        char out_resources_txt[2048];
+        size_t clen = strlen(out_civs_txt);
+        if (clen >= 8 && strcmp(out_civs_txt + clen - 8, "civs.txt") == 0 && clen + 8 < sizeof(out_resources_txt)) {
+            memcpy(out_resources_txt, out_civs_txt, clen - 8);
+            strcpy(out_resources_txt + clen - 8, "resources.txt");
+        } else {
+            snprintf(out_resources_txt, sizeof(out_resources_txt), "%.1900s.resources.txt", out_dat);
+        }
+        size_t rcap = 1024, rlen = 0;
+        char *rbuf = malloc(rcap);
+        if (!rbuf) {
+            snprintf(err, errcap, "out of memory");
+            goto cleanup_err;
+        }
+        rbuf[0] = '\0';
+        for (size_t i = 0; i < ext.custom_res_count; i++) {
+            const WlCustomRes *cr = &ext.custom_res[i];
+            char s_start[32], s_max[32];
+            wl_fmt_res_float(cr->start, s_start, sizeof(s_start));
+            wl_fmt_res_float(cr->max, s_max, sizeof(s_max));
+            const char *desc = cr->description ? cr->description : "";
+            size_t need = rlen + 64 + strlen(cr->mod) + strlen(cr->key) + strlen(cr->name) +
+                          strlen(cr->icon) + strlen(s_start) + strlen(s_max) + 2 * strlen(desc);
+            if (need > rcap) {
+                char *nb = realloc(rbuf, need * 2);
+                if (!nb) {
+                    free(rbuf);
+                    snprintf(err, errcap, "out of memory");
+                    goto cleanup_err;
+                }
+                rbuf = nb;
+                rcap = need * 2;
+            }
+            rlen += (size_t)sprintf(rbuf + rlen, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t",
+                                    cr->id, cr->mod, cr->key, cr->name, cr->icon,
+                                    s_start, s_max, cr->show);
+            for (const char *p = desc; *p; p++) {
+                if (*p == '\r') continue;
+                if (*p == '\n') { rbuf[rlen++] = '\\'; rbuf[rlen++] = 'n'; }
+                else if (*p == '\t') rbuf[rlen++] = ' ';
+                else rbuf[rlen++] = *p;
+            }
+            rbuf[rlen++] = '\n';
+        }
+        if (wl_atomic_write_file(out_resources_txt, rbuf, rlen, err, errcap) != 0) {
+            free(rbuf);
+            goto cleanup_err;
+        }
+        free(rbuf);
+    }
 
     // Cleanup resources
     wl_ext_free(&ext);

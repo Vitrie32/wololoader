@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bgSup" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#4e3616"/>
+      <stop offset="100%" stop-color="#221608"/>
+    </linearGradient>
+    <linearGradient id="oakCrate" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c98b44"/>
+      <stop offset="100%" stop-color="#784618"/>
+    </linearGradient>
+    <linearGradient id="coinGold" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff099"/>
+      <stop offset="100%" stop-color="#d49419"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bgSup)" stroke="#160e05" stroke-width="1.8"/>
+  <rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+  <!-- Wheat & timber peeking above crate -->
+  <g stroke="#1b1106" stroke-width="1">
+    <ellipse cx="12.5" cy="12" rx="2.3" ry="4.5" transform="rotate(-18 12.5 12)" fill="#f2c955"/>
+    <ellipse cx="16.0" cy="11" rx="2.3" ry="4.8" fill="#ffe073"/>
+    <circle cx="22.5" cy="12.5" r="3.1" fill="url(#coinGold)"/>
+    <circle cx="25.5" cy="14.2" r="2.7" fill="url(#coinGold)"/>
+  </g>
+  <!-- Iron-bound wooden supply chest -->
+  <rect x="7" y="15" width="22" height="14" rx="1.5" fill="url(#oakCrate)" stroke="#1b1106" stroke-width="1.5"/>
+  <!-- Plank lines -->
+  <line x1="7.5" y1="22" x2="28.5" y2="22" stroke="#47280b" stroke-width="1.1"/>
+  <!-- Iron straps & lock -->
+  <rect x="9.5" y="15" width="3" height="14" fill="#6b7785" stroke="#1b1106" stroke-width="1"/>
+  <rect x="23.5" y="15" width="3" height="14" fill="#6b7785" stroke="#1b1106" stroke-width="1"/>
+  <rect x="15.8" y="17.5" width="4.4" height="5" rx="0.8" fill="#ffd966" stroke="#1b1106" stroke-width="1.1"/>
+</svg>

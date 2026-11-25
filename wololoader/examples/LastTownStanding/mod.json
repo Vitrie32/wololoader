@@ -1,0 +1,15 @@
+{
+  "name": "Last Town Standing",
+  "version": "1.0",
+  "author": "Wololoader",
+  "description": "Adds the Last Town Standing lobby game mode: lose all of your Town Centers and you are defeated at once; the last player with a Town Center wins.",
+  "enabled": true,
+  "game_modes": [
+    {
+      "id": "last_town_standing",
+      "name": "Last Town Standing",
+      "description": "Protect your Town Centers! Any player whose Town Centers are all destroyed is defeated at once. The last player with a Town Center standing wins.",
+      "script_event": true
+    }
+  ]
+}

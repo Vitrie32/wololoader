@@ -51,6 +51,9 @@ typedef struct {
     char placeholder[64];            // text boxes: grey hint while empty
     int mono;                        // 1 = monospace font (Consolas)
     RECT abs; int shown, z;          // from the last paint (z = draw order)
+    // Translucent background (see blend_bg): the final pixels of this element's rect after the
+    // last paint, and the rect / colour / alpha they belong to.
+    DWORD *bg_last; RECT bg_rect; COLORREF bg_col; int bg_alpha;
 } El;
 
 static El g_el[MAX_EL];
@@ -118,6 +121,8 @@ void wl_ui_destroy(int id) {
     if (!e) return;
     for (int i = 0; i < MAX_EL; i++)                     // children go with their parent
         if (g_el[i].used && g_el[i].parent == id - 1) wl_ui_destroy(i + 1);
+    free(e->bg_last);
+    e->bg_last = NULL;
     e->used = 0;
     if (g_hover == id - 1) g_hover = -1;
     if (g_pressed == id - 1) g_pressed = -1;
@@ -232,6 +237,95 @@ static void fill(HDC dc, const RECT *r, COLORREF c, int alpha) {
     HBRUSH b = CreateSolidBrush(c);
     FillRect(dc, r, b);
     DeleteObject(b);
+}
+
+// Translucent backgrounds. The game does not repaint the map under the UI on every frame
+// (only what changed), so blending onto the screen each frame put the colour on top of last
+// frame's blend: a panel grew darker until the game repainted it, then lighter again (seen as
+// flicker, 2026-11-25). Here a pixel is blended only when the game drew it anew: one that still
+// holds what the UI left there after the last paint (bg_last) is kept as it is.
+static HDC g_bg_dc;
+static HBITMAP g_bg_bmp;
+static DWORD *g_bg_px;
+static int g_bg_w, g_bg_h;
+
+static DWORD *bg_scratch(HDC dc, int w, int h) {
+    if (w > g_bg_w || h > g_bg_h || !g_bg_dc) {
+        if (g_bg_dc) { DeleteDC(g_bg_dc); g_bg_dc = NULL; }
+        if (g_bg_bmp) { DeleteObject(g_bg_bmp); g_bg_bmp = NULL; }
+        int nw = w > g_bg_w ? w : g_bg_w, nh = h > g_bg_h ? h : g_bg_h;
+        BITMAPINFO bi;
+        memset(&bi, 0, sizeof bi);
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+        bi.bmiHeader.biWidth = nw;
+        bi.bmiHeader.biHeight = -nh;          // top-down
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+        void *bits = NULL;
+        g_bg_dc = CreateCompatibleDC(dc);
+        g_bg_bmp = g_bg_dc ? CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0) : NULL;
+        if (!g_bg_bmp) { if (g_bg_dc) DeleteDC(g_bg_dc); g_bg_dc = NULL; g_bg_w = g_bg_h = 0; return NULL; }
+        SelectObject(g_bg_dc, g_bg_bmp);
+        g_bg_px = bits;
+        g_bg_w = nw;
+        g_bg_h = nh;
+    }
+    return g_bg_px;
+}
+
+static int blend_bg(HDC dc, El *e, const RECT *r, COLORREF c, int alpha) {
+    int w = r->right - r->left, h = r->bottom - r->top;
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096) return 0;
+    DWORD *px = bg_scratch(dc, w, h);
+    if (!px) return 0;
+    GdiFlush();
+    if (!BitBlt(g_bg_dc, 0, 0, w, h, dc, r->left, r->top, SRCCOPY)) return 0;
+    GdiFlush();
+    int same = e->bg_last && EqualRect(&e->bg_rect, r) && e->bg_col == c && e->bg_alpha == alpha;
+    int cr = GetRValue(c) * alpha, cg = GetGValue(c) * alpha, cb = GetBValue(c) * alpha, ia = 255 - alpha;
+    for (int y = 0; y < h; y++) {
+        DWORD *row = px + (size_t)y * g_bg_w;
+        const DWORD *old = same ? e->bg_last + (size_t)y * w : NULL;
+        for (int x = 0; x < w; x++) {
+            DWORD p = row[x] & 0xffffff;
+            if (old && p == old[x]) continue;          // still the UI's own pixel from last paint
+            int pr = (int)(p >> 16) & 255, pg = (int)(p >> 8) & 255, pb = (int)p & 255;
+            row[x] = (DWORD)(((pr * ia + cr) / 255) << 16 | ((pg * ia + cg) / 255) << 8 | ((pb * ia + cb) / 255));
+        }
+    }
+    BitBlt(dc, r->left, r->top, w, h, g_bg_dc, 0, 0, SRCCOPY);
+    if (!same) {
+        free(e->bg_last);
+        e->bg_last = NULL;
+        e->bg_rect = *r;
+        e->bg_col = c;
+        e->bg_alpha = alpha;
+    }
+    return 1;
+}
+
+// After the whole UI is drawn: remember the final pixels of every translucent background.
+static void remember_bgs(HDC dc) {
+    for (int i = 0; i < MAX_EL; i++) {
+        El *e = &g_el[i];
+        if (!e->used || !e->shown || !e->has_bg || e->alpha <= 0 || e->alpha >= 255) continue;
+        RECT r = e->bg_rect;
+        int w = r.right - r.left, h = r.bottom - r.top;
+        if (w <= 0 || h <= 0 || !EqualRect(&r, &e->abs)) continue;
+        DWORD *px = bg_scratch(dc, w, h);
+        if (!px) continue;
+        GdiFlush();
+        if (!BitBlt(g_bg_dc, 0, 0, w, h, dc, r.left, r.top, SRCCOPY)) continue;
+        GdiFlush();
+        if (!e->bg_last) e->bg_last = malloc((size_t)w * h * sizeof(DWORD));
+        if (!e->bg_last) continue;
+        for (int y = 0; y < h; y++) {
+            const DWORD *row = px + (size_t)y * g_bg_w;
+            DWORD *dst = e->bg_last + (size_t)y * w;
+            for (int x = 0; x < w; x++) dst[x] = row[x] & 0xffffff;
+        }
+    }
 }
 
 static COLORREF shade(COLORREF c, int pct) {   // pct > 100 lighter, < 100 darker
@@ -352,7 +446,7 @@ static void draw_el(HDC dc, int i) {
         COLORREF c = e->bg;
         if (e->type == T_BUTTON && g_pressed == i) c = shade(c, 70);
         else if (e->type == T_BUTTON && g_hover == i) c = shade(c, 135);
-        fill(dc, &r, c, e->alpha);
+        if (!(e->alpha > 0 && e->alpha < 255 && blend_bg(dc, e, &r, c, e->alpha))) fill(dc, &r, c, e->alpha);
     }
 
     // Draw image (frames and buttons only)
@@ -505,21 +599,38 @@ static void __fastcall paint_hook(void *screen, void *edx) {
     o_paint(screen);
     int any = 0;
     for (int i = 0; i < MAX_EL && !any; i++) any = g_el[i].used;
-    if (!any || !RD32(screen, 0xc)) return;
+    int resbar = wl_resbar_active();
+    if ((!any && !resbar) || !RD32(screen, 0xc)) return;
 
     // Hide the UI while another screen is on top (F10 game menu, dialogs: they are screens of
     // their own, the game screen keeps painting under them). Screen manager [0xada4b4]: its
     // first dword is the current screen (0x43c0d0 `mov (%ecx),%eax; ret` is the getter that
     // set-current 0x48a8e0 compares the new screen with). Skipping also leaves g_last_paint
     // old, so mouse and hotkeys go to the game again after 300 ms.
+    // The custom resource boxes (resbar.c) are part of the top bar, which the game keeps showing
+    // under menus: they stay drawn (the menu paints over them) but get no input then
+    // (g_last_paint is not refreshed). Seen 2026-11-25: Esc hid them.
     void *mgr = *(void **)0xada4b4;
-    if (mgr && *(void **)mgr != screen) return;
+    int covered = mgr && *(void **)mgr != screen;
     // In-game popups (F10 menu, chat dialog, ...) are panels of the game screen itself: its
     // focus list at screen+0x128 has the popup on top instead of the map view [screen+0xb04].
     // GameScreen paint 0x6c2e8f..0x6c2ec2 makes the same test (current via 0x43c0d0 = first
     // dword, compared with 0xb04) and then stops repainting the map.
     void *top = *(void **)((char *)screen + 0x128);
-    if (top && top != *(void **)((char *)screen + 0xb04)) return;
+    if (top && top != *(void **)((char *)screen + 0xb04)) covered = 1;
+    if (covered) {
+        if (!resbar) return;
+        RECT cs = { (LONG)RD32(screen, 0xb8), (LONG)RD32(screen, 0xbc), 0, 0 };
+        cs.right = cs.left + (LONG)RD32(screen, 0xc0);
+        cs.bottom = cs.top + (LONG)RD32(screen, 0xc4);
+        BYTE cctx[0x34];
+        memset(cctx, 0, sizeof cctx);
+        ((CtxInit_t)0x49e3c0)(cctx, (void *)RD32(screen, 0xc));
+        HDC cdc = ((CtxDC_t)0x49e7b0)(cctx);
+        wl_resbar_paint_passive(screen, cdc, &cs);
+        ((CtxDone_t)0x49e4b0)(cctx);
+        return;
+    }
 
     if (!g_hwnd) {
         HWND h = NULL;
@@ -538,8 +649,12 @@ static void __fastcall paint_hook(void *screen, void *edx) {
     memset(ctx, 0, sizeof ctx);
     ((CtxInit_t)0x49e3c0)(ctx, (void *)RD32(screen, 0xc));
     HDC dc = ((CtxDC_t)0x49e7b0)(ctx);
-    g_z = 0;
-    draw_tree(dc, -1, &scr, 1);
+    if (resbar) wl_resbar_paint(screen, dc, &scr);
+    if (any) {
+        g_z = 0;
+        draw_tree(dc, -1, &scr, 1);
+        remember_bgs(dc);
+    }
     ((CtxDone_t)0x49e4b0)(ctx);
     g_last_paint = GetTickCount();
 }
@@ -621,6 +736,8 @@ static int current_mods(void) {
 
 static LRESULT CALLBACK ui_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     int active = GetTickCount() - g_last_paint < 300;     // the game screen is on and painting
+
+    if (wl_resbar_wndproc(h, msg, wp, lp, active, g_scr_w, g_scr_h)) return 0;
 
     // Focused text box: it takes the keyboard (the game gets no keys, so no hotkeys fire).
     if (g_focus >= 0 && (!active || !is_el_visible(g_focus))) g_focus = -1;

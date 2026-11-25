@@ -6,6 +6,7 @@
 // Runs lazily from civs.c (not DllMain): file IO and our own code, no LoadLibrary of new DLLs
 // (zlibwapi.dll is already loaded as an import of the exe).
 #include "wololoader.h"
+#include "modsettings.h"
 #include "datbuild.h"
 #include <stdio.h>
 #include <string.h>
@@ -86,6 +87,33 @@ static u64 fnv_dir(u64 h, const char *dir, const char *ext, int sorted) {
     return h;
 }
 
+// Hash of the file names in dir (not their contents), sorted when `sorted`.
+static int cmp_name(const void *a, const void *b) { return _stricmp(*(char *const *)a, *(char *const *)b); }
+static u64 fnv_names(u64 h, const char *dir, int sorted) {
+    char pattern[MAX_PATH];
+    snprintf(pattern, MAX_PATH, "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE f = FindFirstFileA(pattern, &fd);
+    if (f == INVALID_HANDLE_VALUE) return h;
+    char **names = NULL;
+    size_t n = 0, cap = 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 64;
+            char **nn = realloc(names, cap * sizeof *nn);
+            if (!nn) break;
+            names = nn;
+        }
+        names[n++] = _strdup(fd.cFileName);
+    } while (FindNextFileA(f, &fd));
+    FindClose(f);
+    if (sorted && n > 1) qsort(names, n, sizeof *names, cmp_name);
+    for (size_t i = 0; i < n; i++) { if (names[i]) h = fnv_str(h, names[i]); free(names[i]); }
+    free(names);
+    return h;
+}
+
 static u64 hash_mod_files(u64 h, const WlMod *m, int sorted) {
     char path[MAX_PATH];
     h = fnv_str(h, m->id);
@@ -95,6 +123,9 @@ static u64 hash_mod_files(u64 h, const WlMod *m, int sorted) {
     h = fnv_dir(h, path, "json", sorted);
     snprintf(path, MAX_PATH, "%s\\icons\\buildings", m->dir);
     h = fnv_dir(h, path, "slp", sorted);
+    // Names of the mod's sprites: which ids clash decides the renumbering (wl_slp_remap_compute).
+    snprintf(path, MAX_PATH, "%s\\resources\\_common\\drs\\graphics", m->dir);
+    h = fnv_names(h, path, sorted);
     return h;
 }
 
@@ -141,8 +172,13 @@ void wl_content_checksum(char out[9]) {
         for (int i = 0; i < g_wl.listed_count; i++)
             if (g_wl.mods[i].enabled) enabled[n++] = &g_wl.mods[i];
         qsort(enabled, (size_t)n, sizeof *enabled, cmp_mod_id);
-        for (int i = 0; i < n; i++)
+        for (int i = 0; i < n; i++) {
             h = hash_mod_files(h, enabled[i], 1);
+            // The player's mod settings change what the scripts do, so they must match too.
+            char sp[MAX_PATH];
+            wl_settings_path(enabled[i], sp, sizeof sp);
+            h = fnv_file(h, sp);
+        }
         unsigned sum = (unsigned)((h ^ (h >> 32)) & 0xffffffffu);
         snprintf(g_checksum_cached, sizeof g_checksum_cached, "%08x", sum);
     }

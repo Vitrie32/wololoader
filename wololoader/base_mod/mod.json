@@ -2,13 +2,43 @@
   "name": "Wololoader Base",
   "version": "1.0",
   "author": "Wololoader",
-  "description": "Wololoader's own gameplay and UI features. Turn the whole mod off, or set single features to false below.",
-  "features": {
-    "popcap_1000": true,
-    "selection_250": true,
-    "borderless": true,
-    "formations_tab": true,
-    "monk_autoconvert": false,
-    "dev_panel": true
-  }
+  "description": "Wololoader's own gameplay and UI features. Turn the whole mod off, or single features in Settings.",
+  "settings": [
+    {
+      "id": "popcap_1000",
+      "name": "Population cap 1000 (restart)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "id": "selection_250",
+      "name": "Select up to 250 units (restart)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "id": "borderless",
+      "name": "Borderless window (restart)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "id": "formations_tab",
+      "name": "Formations tab (restart)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "id": "monk_autoconvert",
+      "name": "Monks convert nearby enemies",
+      "type": "bool",
+      "default": false
+    },
+    {
+      "id": "dev_panel",
+      "name": "Dev Panel and Lua console",
+      "type": "bool",
+      "default": true
+    }
+  ]
 }

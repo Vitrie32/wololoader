@@ -468,7 +468,9 @@ static void update_buttons_state(void) {
     }
 
     const HubUiMod *m = &g_mods[g_selected];
-    if (m->installed && !m->hub_managed) {
+    // A newer version of a mod that came with the setup (no .hub.json) can be updated too:
+    // op_worker_proc moves the local copy to wololoader\trash first.
+    if (m->installed && !m->hub_managed && !m->update_available) {
         button_set_text(g_btn_action, "Local Mod");
         button_set_enabled(g_btn_action, 0);
         button_set_enabled(g_btn_uninstall, 0);
@@ -508,7 +510,10 @@ static void update_details_ui(void) {
             snprintf(g_detail_ver_author, sizeof(g_detail_ver_author), "Version %s", m->version);
         }
 
-        if (m->installed && !m->hub_managed) {
+        if (m->installed && !m->hub_managed && m->update_available) {
+            snprintf(g_detail_mod_status, sizeof(g_detail_mod_status),
+                     "Status: Update available (local v%s; Update keeps a copy in wololoader\\trash)", m->installed_version);
+        } else if (m->installed && !m->hub_managed) {
             snprintf(g_detail_mod_status, sizeof(g_detail_mod_status),
                      "Status: Local mod (not managed by Hub)");
         } else if (m->update_available) {
@@ -806,10 +811,39 @@ static DWORD WINAPI op_worker_proc(LPVOID arg) {
         WlJsonVal *root = g_index_root;
         LeaveCriticalSection(&g_cs);
 
-        if (hub_install_mod(g_wl.game_dir, mods_dir, root, job->index_url, job->id, 0,
+        // Updating a local copy (e.g. an example mod from the setup): keep it in the trash
+        // and remember whether it was on, then install the Hub version in its place.
+        HubLocalState before;
+        hub_inspect_local_mod(mods_dir, job->id, &before);
+        int was_local = before.installed && !before.hub_managed;
+        if (was_local) {
+            char src[MAX_PATH], trash[MAX_PATH], dst[MAX_PATH];
+            SYSTEMTIME t;
+            GetLocalTime(&t);
+            snprintf(src, sizeof src, "%s\\%s", mods_dir, job->id);
+            snprintf(trash, sizeof trash, "%s\\trash", g_wl.root);
+            CreateDirectoryA(trash, NULL);
+            snprintf(dst, sizeof dst, "%s\\%s-local-%04d%02d%02d-%02d%02d%02d", trash, job->id,
+                     t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+            if (!MoveFileA(src, dst)) {
+                wl_log("hub: could not move local '%s' to the trash (%lu)", job->id, GetLastError());
+                was_local = -1;
+            } else {
+                wl_log("hub: local '%s' v%s kept in %s", job->id, before.version, dst);
+            }
+        }
+
+        if (was_local == -1) {
+            snprintf(msg, sizeof(msg), "Update failed: the local folder could not be moved to wololoader\\trash (in use?)");
+        } else if (hub_install_mod(g_wl.game_dir, mods_dir, root, job->index_url, job->id, 0,
                             WOLOLOADER_VERSION, dll_inflate_cb, NULL,
                             dll_progress_cb, NULL, dll_log_cb, NULL, &ir) == 0) {
             ok = 1;
+            if (was_local == 1 && before.has_enabled && !before.enabled) {
+                char mdir[MAX_PATH];
+                snprintf(mdir, sizeof mdir, "%s\\%s", mods_dir, job->id);
+                wl_set_mod_enabled(mdir, FALSE);   // it was off before the update
+            }
             if (ir.installed_dep_count > 0) {
                 snprintf(msg, sizeof(msg),
                          "%s %s v%s (+%d dep%s). Return to Main Menu to apply.",
