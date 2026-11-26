@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Last Stand mod icon: the shared Castle on a blood-red shield, the Horde's spears closing in.
+       Same shield frame as the other example mods (dark outline, gold rim). Rendered to icon.png. -->
+  <defs>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6d98a"/><stop offset="0.5" stop-color="#c8902e"/><stop offset="1" stop-color="#8a5a18"/>
+    </linearGradient>
+    <linearGradient id="field" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a3261e"/><stop offset="1" stop-color="#4a0d0a"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe7a3"/><stop offset="0.55" stop-color="#e0a93c"/><stop offset="1" stop-color="#a86d1c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.5">
+      <stop offset="0" stop-color="#ff7a3a" stop-opacity="0.55"/><stop offset="1" stop-color="#ff7a3a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <path d="M128 14 L226 46 C226 140 192 200 128 242 C64 200 30 140 30 46 Z" fill="#2a1608"/>
+  <path d="M128 24 L216 53 C215 137 184 191 128 230 C72 191 41 137 40 53 Z" fill="url(#rim)"/>
+  <path d="M128 38 L202 62 C200 132 174 180 128 214 C82 180 56 132 54 62 Z" fill="url(#field)"/>
+  <ellipse cx="128" cy="118" rx="70" ry="60" fill="url(#glow)"/>
+  <!-- spears of the Horde, from both sides -->
+  <g stroke="#2a1608" stroke-width="5" stroke-linecap="round">
+    <line x1="64" y1="196" x2="92" y2="132"/><line x1="192" y1="196" x2="164" y2="132"/>
+    <line x1="52" y1="160" x2="84" y2="124"/><line x1="204" y1="160" x2="172" y2="124"/>
+  </g>
+  <g fill="#d9d2c0" stroke="#2a1608" stroke-width="3" stroke-linejoin="round">
+    <path d="M92 132 l-2 -16 l10 10 z"/><path d="M164 132 l2 -16 l-10 10 z"/>
+    <path d="M84 124 l2 -15 l7 12 z"/><path d="M172 124 l-2 -15 l-7 12 z"/>
+  </g>
+  <!-- the Castle -->
+  <g fill="url(#gold)" stroke="#2a1608" stroke-width="5" stroke-linejoin="round">
+    <path d="M86 186 V104 h12 v-10 h10 v10 h12 v-10 h16 v10 h12 v-10 h10 v10 h12 V186 Z"/>
+    <path d="M100 104 V76 h8 v-8 h8 v8 h8 v-8 h8 v8 h8 v-8 h8 v8 h8 V104"/>
+  </g>
+  <path d="M116 186 v-26 a12 12 0 0 1 24 0 v26 z" fill="#2a1608"/>
+  <g fill="#2a1608"><rect x="96" y="120" width="8" height="14" rx="3"/><rect x="152" y="120" width="8" height="14" rx="3"/><rect x="124" y="84" width="8" height="12" rx="3"/></g>
+  <!-- banner -->
+  <path d="M128 68 V44" stroke="#2a1608" stroke-width="4"/>
+  <path d="M130 44 h22 l-6 7 l6 7 h-22 z" fill="#c8902e" stroke="#2a1608" stroke-width="3" stroke-linejoin="round"/>
+</svg>

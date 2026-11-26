@@ -87,15 +87,28 @@ static int ga_units(int pid, WlUnitInfo *out, int max) {
 
 // Like ga_units but only units of one type, looking at the whole list (Gaia has thousands of
 // trees and mines, so the first 2048 of ga_units may not reach a unit created later).
-static int ga_units_of_type(int pid, int type, WlUnitInfo *out, int max) {
-    void *p = player(pid);
-    char *list = p ? (char *)RDP(p, 0x18) : NULL;
-    if (!list) return 0;
+// Player object lists {?, void **objects @4, int count @8}: +0x18 = the normal objects; +0x1c holds
+// objects the game keeps apart (Genie RGE_Player "sleeping" objects: flags, the 837 REVEAL map
+// revealer, ...; seen 2026-11-26: revealers created by Last Stand were not in +0x18 and so never
+// deleted). UnitsOfType scans both so a script can find what it created.
+static int scan_list(char *list, int type, WlUnitInfo *out, int n, int max) {
+    if (!list || IsBadReadPtr(list, 12)) return n;
     void **u = (void **)RDP(list, 4);
-    int count = (int)RD32(list, 8), n = 0;
+    int count = (int)RD32(list, 8);
+    if (!u || count <= 0 || count > 200000 || IsBadReadPtr(u, (UINT_PTR)count * 4)) return n;
     WlUnitInfo tmp;
     for (int i = 0; i < count && n < max; i++)
         if (unit_info(u[i], &tmp) && tmp.type == type) out[n++] = tmp;
+    return n;
+}
+static int ga_units_of_type(int pid, int type, WlUnitInfo *out, int max) {
+    void *p = player(pid);
+    if (!p) return 0;
+    int n = scan_list((char *)RDP(p, 0x18), type, out, 0, max);
+    int before = n;
+    n = scan_list((char *)RDP(p, 0x1c), type, out, n, max);
+    static int logged;
+    if (n > before && !logged) { logged = 1; wl_log("gameapi: %d unit(s) of type %d in player %d list +0x1c", n - before, type, pid); }
     return n;
 }
 

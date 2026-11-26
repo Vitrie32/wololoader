@@ -1,0 +1,225 @@
+/* ************ LAST STAND ARENA ************ */
+/* Map of the Last Stand game mode (Wololoader example mod). The game mode picks it by itself.  */
+/* Every player starts close to the map centre, where the Last Stand script puts the shared     */
+/* Castle: the player lands may only be placed inside the middle of the map (the big borders    */
+/* below, in percent of the map), so the Town Centers end on a small ring around the centre.    */
+/* An empty central land keeps the Castle spot free. The Horde comes from the open plains and   */
+/* forests around the ring.                                                                     */
+
+<PLAYER_SETUP>
+  random_placement
+
+<LAND_GENERATION>
+base_terrain GRASS
+
+/* the Castle spot: a small clear land in the exact middle */
+create_land
+{
+  terrain_type                  DIRT
+  land_percent                  1
+  base_size                     5
+  land_position                 50 50
+  border_fuzziness              15
+  other_zone_avoidance_distance 4
+}
+
+create_player_lands
+{
+  terrain_type                  GRASS3
+  land_percent                  20
+  base_size                     8
+/* borders in percent of the map: the middle area left for the players stays about 40 tiles wide on
+   every map size (Tiny 120, Small 144, Medium 168, Normal 200, Large 220, Giant 240, LudiKRIS 480) */
+if TINY_MAP
+  left_border                  33
+  right_border                 33
+  top_border                   33
+  bottom_border                33
+elseif SMALL_MAP
+  left_border                  36
+  right_border                 36
+  top_border                   36
+  bottom_border                36
+elseif MEDIUM_MAP
+  left_border                  38
+  right_border                 38
+  top_border                   38
+  bottom_border                38
+elseif LARGE_MAP
+  left_border                  40
+  right_border                 40
+  top_border                   40
+  bottom_border                40
+elseif HUGE_MAP
+  left_border                  41
+  right_border                 41
+  top_border                   41
+  bottom_border                41
+elseif GIGANTIC_MAP
+  left_border                  42
+  right_border                 42
+  top_border                   42
+  bottom_border                42
+else
+  left_border                  46
+  right_border                 46
+  top_border                   46
+  bottom_border                46
+endif
+  border_fuzziness              5
+  other_zone_avoidance_distance 2
+}
+
+<TERRAIN_GENERATION>
+
+/* forests outside the ring: cover for the Horde, wood for the players */
+create_terrain FOREST
+{
+  base_terrain                  GRASS
+  spacing_to_other_terrain_types 6
+  land_percent                  12
+  number_of_clumps              14
+  set_avoid_player_start_areas
+  set_scale_by_groups
+}
+
+create_terrain DIRT3
+{
+  base_terrain                  GRASS
+  number_of_clumps              20
+  spacing_to_other_terrain_types 1
+  land_percent                  3
+  set_scale_by_size
+}
+
+create_terrain GRASS2
+{
+  base_terrain                  GRASS
+  number_of_clumps              20
+  spacing_to_other_terrain_types 1
+  land_percent                  3
+  set_scale_by_size
+}
+
+<OBJECTS_GENERATION>
+
+create_object TOWN_CENTER
+{
+  set_place_for_every_player
+  group_placement_radius        18
+  min_distance_to_players       0
+  max_distance_to_players       0
+}
+
+create_object VILLAGER
+{
+  set_place_for_every_player
+  min_distance_to_players       6
+  max_distance_to_players       6
+}
+
+create_object SCOUT
+{
+  number_of_objects             1
+  set_place_for_every_player
+  min_distance_to_players       7
+  max_distance_to_players       9
+}
+
+/* each player's own wood line, food and mines, close to the Town Center */
+create_object OAKTREE
+{
+  number_of_objects             12
+  group_placement_radius        3
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       9
+  max_distance_to_players       11
+}
+
+create_object FORAGE
+{
+  number_of_objects             6
+  group_placement_radius        3
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       8
+  max_distance_to_players       10
+}
+
+create_object SHEEP
+{
+  number_of_objects             6
+  set_loose_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       6
+  max_distance_to_players       9
+}
+
+create_object GOLD
+{
+  number_of_objects             7
+  group_placement_radius        3
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       10
+  max_distance_to_players       12
+}
+
+create_object STONE
+{
+  number_of_objects             5
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       10
+  max_distance_to_players       13
+}
+
+/* more resources farther out: the players have to walk towards the Horde for them */
+create_object GOLD
+{
+  number_of_groups              3
+  number_of_objects             6
+  group_placement_radius        3
+  set_tight_grouping
+  set_gaia_object_only
+  set_scaling_to_player_number
+  min_distance_to_players       24
+  min_distance_group_placement  9
+}
+
+create_object STONE
+{
+  number_of_groups              2
+  number_of_objects             5
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  set_scaling_to_player_number
+  min_distance_to_players       24
+  min_distance_group_placement  9
+}
+
+create_object DEER
+{
+  number_of_groups              2
+  number_of_objects             4
+  set_loose_grouping
+  set_gaia_object_only
+  set_scaling_to_player_number
+  min_distance_to_players       18
+}
+
+create_object FOREST_TREE
+{
+  number_of_objects             30
+  set_gaia_object_only
+  min_distance_to_players       16
+  set_scaling_to_map_size
+}

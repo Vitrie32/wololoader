@@ -1055,6 +1055,7 @@ Every script also gets a simple high-level API, written on top of `wl.*` (which 
 | `p:AddGold(n)`, `p:AddFood(n)`, `p:AddWood(n)`, `p:AddStone(n)`, `p:AddResource(res, n)`, `p:SetResource(res, n)`, `p:GetResource(res)` | read, add (or subtract), or set vanilla or custom resources by key/name or numeric id (multiplayer-safe lockstep commands) |
 | `Game.Resources()` | list all custom resources declared by enabled mods (`{ id, mod, key, name, icon, start, max, show, description }`) |
 | `Game.Mode()` | key (`"id"`) of the active custom lobby game mode, or `nil` for vanilla modes |
+| `Game.ModeEnemy()` | the active game mode's enemy player (`"enemy_player": true` modes), or `nil` |
 | `p:Win([team])`, `p:Defeat()` | mark a player (`1..8`) as winner (`team = true` also awards mutual allies with allied victory) or defeated immediately via lockstep commands |
 | `p:CreateUnit(unitId, x, y)` | create a unit (dat unit id, e.g. 125 Monk, 4 Archer) at tile x, y |
 | `p:Research(techId)` | finish a technology instantly (skipped if already researched) |
@@ -1473,6 +1474,9 @@ Add a `"game_modes"` array to `mod.json`:
 | `name` | `id` | Display name shown in the lobby Game Mode dropdown, Objectives dialog, and Mods screen. |
 | `description` | `""` | Hover tooltip shown in the lobby Game Mode dropdown. |
 | `script_event` | `true` | Marks the mode as script-driven (check `Game.Mode()` in `Game.OnStart`). |
+| `teams` | `""` | `"all"`: every player, computer players included, is put on one locked team at start (single player). |
+| `map` | *(none)* | The mode's own random map: `{ "script": "resources/_common/random-map-scripts/MyMap.rms", "base": "arena" }`. In a single-player lobby the mode selects it as the Custom map and keeps it selected (picking another map snaps back). If the script is not found in the lobby list, `base` (`arabia`, `fortress`, `arena` or `nomad`) is used and its script is served from the mod. In a multiplayer lobby the host picks the map by hand. Example: `examples/LastStand`. |
+| `enemy_player` | `false` | `true`: at start (single player) one more computer player is added on its own team as the mode's enemy; Lua gets it with `Game.ModeEnemy()`. It is not defeated while it owns nothing, so the script can spawn its waves for it. Needs a free player slot (else `Game.ModeEnemy()` is `nil`). |
 
 *(Custom game modes are loaded at startup before the game initializes its mode table; toggling a mod that adds game modes requires restarting the game. If a player disables a mode mod whose ID was saved in their profile or a savegame, Wololoader automatically falls back to Random Map.)*
 

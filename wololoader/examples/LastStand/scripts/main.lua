@@ -8,6 +8,8 @@
 
 local S = MOD.settings or {}
 
+local MARKET_ID = 84   -- every player starts with one: the shop is on its page 2 too (an ally's Castle has no buttons for you)
+local RES_CARTOGRAPHY = 50 -- MODDING.md resource table: 1 = shared vision with allies
 local CASTLE_ID = 82   -- the objective: a Castle (a Wonder would start the game's own Wonder victory timer)
 local WATCH_TOWER_ID = 79
 local TOWN_CENTERS = { [109] = true, [71] = true, [141] = true, [142] = true }
@@ -78,7 +80,11 @@ local rand = math.random or function(a, b) return a + math.floor((Game.Time or 0
 local active = false
 local ended = false
 local start_time = 0
-local players = {}          -- every player (humans and bots), without Gaia
+local players = {}          -- every player (humans and bots), without Gaia and without the Horde player
+-- The Horde's owner: the mode's enemy computer player (mod.json "enemy_player": true, single player),
+-- so every unit and building fights it on sight. Without one (multiplayer, 8 players) it is Gaia.
+local horde_owner = nil
+local function horde_player() return horde_owner or Game.Player(0) end
 
 local castle_id = nil
 local castle_seen = false
@@ -115,6 +121,7 @@ local function get_config()
         break_seconds = clamp(S.break_seconds, 5, 120, 20),
         grace_seconds = clamp(S.grace_seconds, 10, 300, 90),
         difficulty = S.difficulty or "Normal",
+        start_bonus = clamp(S.start_bonus, 0, 5000, 1000),
         mult = DIFF_MULT[S.difficulty] or 1.0,
     }
 end
@@ -178,6 +185,68 @@ local function compute_castle_spot()
         if clear then return cx, cy end
     end
     return math.max(4, mx), math.max(4, my)
+end
+
+-- Players start around the Castle. The mode's own map (maps/LastStandArena.rms) does that already;
+-- on any other map the Town Centers are near the map edge, so at the start every far player gets a new Town Center on a ring (RING_RADIUS tiles) around the Castle, the old
+-- Town Center and houses are removed, and the starting units (villagers, scout...) are rebuilt next to
+-- the new Town Center (same unit types, so civ-specific starts stay right). The ring angle comes from
+-- the player's place in the sorted list, so every machine computes the same spots; the commands are
+-- sent only by the machine that sends for that player (gamecmd).
+local RING_RADIUS = 13
+local function relocate_players(cx, cy)
+    local n = #players
+    for i, p in ipairs(players) do
+        local a = (i - 1) * 2 * math.pi / n + math.pi / 4
+        local dx, dy = math.cos(a), math.sin(a)
+        local tx, ty = cx + dx * RING_RADIUS, cy + dy * RING_RADIUS
+        local old_buildings, old_units = {}, {}
+        for _, u in ipairs(p:Units()) do
+            if u.IsBuilding then
+                if u.Type ~= CASTLE_ID then old_buildings[#old_buildings + 1] = u end
+            else
+                old_units[#old_units + 1] = u
+            end
+        end
+        -- the Last Stand Arena map (mod.json "map") already starts everyone near the centre:
+        -- only a player whose Town Center is far away (another map, e.g. a multiplayer lobby map) moves
+        local near = false
+        for _, u in ipairs(old_buildings) do
+            if TOWN_CENTERS[u.Type] and (u.X - cx) ^ 2 + (u.Y - cy) ^ 2 <= 24 * 24 then near = true end
+        end
+        if not near and (#old_buildings > 0 or #old_units > 0) then
+            safe_create(p, 109, tx, ty)                   -- the new Town Center first (never zero buildings)
+            for _, u in ipairs(old_buildings) do pcall(u.Delete, u) end
+            -- starting units on the far side of the Town Center (away from the Castle), in rows
+            local ox, oy = tx + dx * 3.5, ty + dy * 3.5
+            local px, py = -dy, dx                        -- along the row
+            for k, u in ipairs(old_units) do
+                local row, col = (k - 1) // 4, (k - 1) % 4
+                local ux = ox + dx * row * 1.2 + px * (col - 1.5) * 1.2
+                local uy = oy + dy * row * 1.2 + py * (col - 1.5) * 1.2
+                if safe_create(p, u.Type, ux, uy) then pcall(u.Delete, u) end
+            end
+        end
+    end
+end
+
+-- Start kit for everyone: extra resources, shared vision with the allies (Cartography) and a
+-- finished Market next to the Town Center, on the side away from the Castle. The Market carries
+-- the shop too, so every player can spend Points (the Castle's buttons only show for its owner).
+local function equip_players(cx, cy, bonus)
+    for _, p in ipairs(players) do
+        if bonus > 0 then
+            p:AddFood(bonus); p:AddWood(bonus); p:AddGold(bonus); p:AddStone(bonus)
+        end
+        pcall(p.SetResource, p, RES_CARTOGRAPHY, 1)
+        local tc = find_player_tcs(p)[1]
+        if tc then
+            local dx, dy = tc.X - cx, tc.Y - cy
+            local len = math.sqrt(dx * dx + dy * dy)
+            if len < 1 then dx, dy, len = 1, 0, 1 end
+            safe_create(p, MARKET_ID, tc.X + dx / len * 7, tc.Y + dy / len * 7)
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -345,32 +414,38 @@ local function add_command_safe(spec, fallback_icon)
     end
 end
 
+-- the shop buttons: on the shared Castle (its owner) and on every player's own Market
+local SHOP_BUILDINGS = { { id = CASTLE_ID, suffix = "" }, { id = MARKET_ID, suffix = "@Market" } }
+
 local function register_shop()
     if not Game.AddCommand then return end
     for _, item in ipairs(SHOP_ITEMS) do
+      for _, sb in ipairs(SHOP_BUILDINGS) do
         add_command_safe({
-            building = CASTLE_ID,
+            building = sb.id,
             page = 2,
             button = item.button,
             icon = item.icon,
-            name = item.name,
+            name = item.name .. sb.suffix,
             text = item.text,
             help = item.help,
-            condition = item.name,
+            condition = item.name .. sb.suffix,
             condition_action = "disable",
         }, item.fallback_icon)
+      end
     end
 end
 
 local function unregister_shop()
     if not Game.RemoveCommand then return end
     for _, item in ipairs(SHOP_ITEMS) do
-        Game.RemoveCommand(item.name)
+        for _, sb in ipairs(SHOP_BUILDINGS) do Game.RemoveCommand(item.name .. sb.suffix) end
     end
 end
 
 for _, item in ipairs(SHOP_ITEMS) do
-    Game.CommandCondition(item.name, function(building)
+  for _, sb in ipairs(SHOP_BUILDINGS) do
+    Game.CommandCondition(item.name .. sb.suffix, function(building)
         if not active or ended then return false end
         local buyer = Game.LocalPlayer or (building and building.Owner)
         if not buyer then return false end
@@ -378,7 +453,7 @@ for _, item in ipairs(SHOP_ITEMS) do
         return (buyer:GetResource(RES_POINTS) or 0) >= item.cost
     end)
 
-    Game.OnCommand(item.name, function(building)
+    Game.OnCommand(item.name .. sb.suffix, function(building)
         if not active or ended then return end
         local buyer = Game.LocalPlayer or (building and building.Owner)
         if not buyer then return end
@@ -393,6 +468,7 @@ for _, item in ipairs(SHOP_ITEMS) do
         local by = (building and building.Y) or castle_y or castle_target_y or 20
         item.run(bx, by, buyer)
     end)
+  end
 end
 
 -- ---------------------------------------------------------------------------------------------
@@ -501,14 +577,43 @@ local function spawn_points(r)
     for i = 1, count do
         local a = base + (i - 1) * 2 * math.pi / count + (rnd() - 0.5) * 0.4
         local d = 25 + rnd() * 15
-        -- unknown map size: only the lower edge can be clamped (3). A point beyond the upper edge is
-        -- not detected here (the API has no map size), see the report.
+        -- the API has no map size, but the Castle stands at the map centre, so the map is about
+        -- 2 * castle tiles wide: points are kept 3 tiles inside both edges (off-map spawns failed)
+        local maxx = castle_target_x and (castle_target_x * 2 - 3) or 1e9
+        local maxy = castle_target_y and (castle_target_y * 2 - 3) or 1e9
         pts[i] = {
-            math.max(3, cx + math.cos(a) * (hx + d)),
-            math.max(3, cy + math.sin(a) * (hy + d)),
+            math.min(maxx, math.max(3, cx + math.cos(a) * (hx + d))),
+            math.min(maxy, math.max(3, cy + math.sin(a) * (hy + d))),
         }
     end
     return pts
+end
+
+-- The round's spawn points are shown for REVEAL_SECONDS: a flare on the map and the minimap
+-- (unit 274 FLARE2) and a few revealers (837 REVEAL, line of sight 4) that lift the fog there. They
+-- belong to the first player and every player has Cartography (equip_players), so all allies see
+-- them. Removed again by hide_spawn_points.
+local REVEAL_SECONDS = 8
+local REVEAL_OFFSETS = { { 0, 0 }, { 5, 0 }, { -5, 0 }, { 0, 5 }, { 0, -5 } }
+local reveal_until = nil
+local function reveal_spawn_points(pts, used, now)
+    local owner = players[1]
+    if not owner then return end
+    for i = 1, math.min(#pts, used) do
+        local x, y = pts[i][1], pts[i][2]
+        safe_create(owner, 274, x, y)
+        for _, off in ipairs(REVEAL_OFFSETS) do safe_create(owner, 837, x + off[1], y + off[2]) end
+    end
+    reveal_until = now + REVEAL_SECONDS
+end
+local function hide_spawn_points(now)
+    if not reveal_until or now < reveal_until then return end
+    reveal_until = nil
+    local owner = players[1]
+    if not owner then return end
+    for _, t in ipairs({ 837, 274 }) do
+        for _, u in ipairs(owner:UnitsOfType(t)) do pcall(u.Delete, u) end
+    end
 end
 
 local function start_round(now)
@@ -546,6 +651,7 @@ local function start_round(now)
             id = c.id, n = c.n, x = pt[1], y = pt[2],
         }
     end
+    reveal_spawn_points(pts, #chunks, now)
     state = "fight"
     spawn_done_at = now + window
 
@@ -568,7 +674,8 @@ end
 -- spawn the chunks that are due (game time, same on every machine)
 local function run_spawn_queue(now)
     if #spawn_queue == 0 then return end
-    local gaia = Game.Player(0)
+    local owner = horde_player()
+    local opts = (not horde_owner) and { Capturable = false } or nil
     local rest = {}
     for _, c in ipairs(spawn_queue) do
         if c.at <= now then
@@ -576,7 +683,7 @@ local function run_spawn_queue(now)
             for i = 1, c.n do
                 local dx = ((i - 1) % cols - 1) * 1.3
                 local dy = ((i - 1) // cols) * 1.3
-                safe_create(gaia, c.id, c.x + dx, c.y + dy, { Capturable = false })
+                safe_create(owner, c.id, c.x + dx, c.y + dy, opts)
             end
         else
             rest[#rest + 1] = c
@@ -590,10 +697,10 @@ end
 -- ---------------------------------------------------------------------------------------------
 
 local function scan_horde()
-    local gaia = Game.Player(0)
+    local owner = horde_player()
     local cur, n = {}, 0
     for _, t in ipairs(HORDE_TYPES) do
-        for _, u in ipairs(gaia:UnitsOfType(t)) do
+        for _, u in ipairs(owner:UnitsOfType(t)) do
             cur[u.Id] = u
             n = n + 1
         end
@@ -661,17 +768,55 @@ local function ally_assist(cur)
     end
 end
 
+-- The Horde marches on the Castle, but it does not walk past the players: a Horde unit with a
+-- player's unit or building within AGGRO_RANGE tiles fights that first (the nearest one), then goes
+-- on to the Castle. Orders: a fresh unit, a new target, a walking unit every 20 s, a standing one
+-- every 10 s (repeating orders more often froze marching units).
+local AGGRO_RANGE = 7
+local NOT_TARGETS = { [837] = true, [274] = true } -- the spawn point revealers and flares
+
 local function horde_ai(cur, now)
-    local reps = build_targets()
-    if #reps == 0 then return end
+    local castle_ref = (castle_seen and castle_id) and { x = castle_x, y = castle_y, id = castle_id } or nil
+    local reps = castle_ref and {} or build_targets()
+    if #reps == 0 and not castle_ref then return end
+    -- the players' things, in 8x8 tile buckets for the near-by search
+    local buckets = {}
+    for _, p in ipairs(players) do
+        for _, pu in ipairs(p:Units()) do
+            if not NOT_TARGETS[pu.Type] then
+                local key = (pu.X // 8) * 4096 + (pu.Y // 8)
+                local bk = buckets[key]
+                if not bk then bk = {}; buckets[key] = bk end
+                bk[#bk + 1] = pu
+            end
+        end
+    end
+    local r2 = AGGRO_RANGE * AGGRO_RANGE
     local sent = 0
     for id, u in pairs(cur) do
         if sent >= 80 then break end -- at most 80 orders per tick (the command queue is limited)
-        local best, bd = nil, 1e18
-        for i = 1, #reps do
-            local dx, dy = reps[i].x - u.X, reps[i].y - u.Y
-            local d = dx * dx + dy * dy
-            if d < bd then best, bd = reps[i], d end
+        local best, bd = nil, r2
+        local cx, cy = u.X // 8, u.Y // 8
+        for gx = cx - 1, cx + 1 do
+            for gy = cy - 1, cy + 1 do
+                local bk = buckets[gx * 4096 + gy]
+                if bk then
+                    for i = 1, #bk do
+                        local t = bk[i]
+                        local dx, dy = t.X - u.X, t.Y - u.Y
+                        local d = dx * dx + dy * dy
+                        if d < bd then best, bd = { x = t.X, y = t.Y, id = t.Id }, d end
+                    end
+                end
+            end
+        end
+        if not best then
+            best, bd = castle_ref, 1e18
+            for i = 1, (castle_ref and 0 or #reps) do   -- the nearest player cell while the Castle is unknown
+                local dx, dy = reps[i].x - u.X, reps[i].y - u.Y
+                local d = dx * dx + dy * dy
+                if d < bd then best, bd = reps[i], d end
+            end
         end
         local o = orders[id]
         local go = false
@@ -679,7 +824,9 @@ local function horde_ai(cur, now)
             go = true                                   -- fresh Horde unit
         else
             local mx, my = u.X - o.x, u.Y - o.y
-            if mx * mx + my * my > 0.36 then
+            if best and best.id ~= o.target then
+                go = true                               -- something closer to fight (or back to the Castle)
+            elseif mx * mx + my * my > 0.36 then
                 go = (now - o.at >= 20)                 -- walking: retarget now and then
             else
                 go = (now - o.at >= 10)                 -- standing (idle or stuck): attack again
@@ -687,12 +834,10 @@ local function horde_ai(cur, now)
             o.x, o.y = u.X, u.Y
         end
         if go and best then
-            -- Gaia units do not fight on their own: an attack order makes them hit the target (and the
-            -- players' defences answer); a plain move is only the fallback.
             if not (best.id and u.Attack and pcall(u.Attack, u, best.id)) then
                 pcall(u.MoveTo, u, best.x, best.y)
             end
-            orders[id] = { x = u.X, y = u.Y, at = now }
+            orders[id] = { x = u.X, y = u.Y, at = now, target = best.id }
             sent = sent + 1
         end
     end
@@ -768,8 +913,13 @@ Game.OnStart(function()
         return
     end
 
+    horde_owner = Game.ModeEnemy and Game.ModeEnemy() or nil
     for _, p in ipairs(Game.Players()) do
-        players[#players + 1] = p
+        if not (horde_owner and p.Id == horde_owner.Id) then players[#players + 1] = p end
+    end
+    if horde_owner then
+        -- the Horde starts with nothing: its map start (Town Center, villagers, scout) is removed
+        for _, u in ipairs(horde_owner:Units()) do pcall(u.Delete, u) end
     end
     table.sort(players, function(a, b) return a.Id < b.Id end)
     if #players == 0 then
@@ -785,6 +935,8 @@ Game.OnStart(function()
     castle_target_x, castle_target_y = compute_castle_spot()
     castle_x, castle_y = castle_target_x, castle_target_y
     safe_create(host, CASTLE_ID, castle_target_x, castle_target_y)
+    relocate_players(castle_target_x, castle_target_y)
+    equip_players(castle_target_x, castle_target_y, get_config().start_bonus)
 
     register_shop()
 
@@ -795,7 +947,7 @@ Game.OnStart(function()
 
     commander("Last Stand (" .. cfg.difficulty .. "): defend the Castle together" ..
         (cfg.rounds > 0 and (" for " .. cfg.rounds .. " rounds") or " for as long as you can") ..
-        ". Round 1 in " .. cfg.grace_seconds .. "s. Click the Castle (page 2) to spend Points.")
+        ". Round 1 in " .. cfg.grace_seconds .. "s. Spend Points at your Market or the Castle (page 2).")
     Sound.Play("Objective")
 end)
 
@@ -851,6 +1003,7 @@ Game.OnSecond(function()
 
     -- 2. Spawn the due groups, then look at the Horde: a unit that vanished is a kill
     run_spawn_queue(now)
+    hide_spawn_points(now)
     local cur, alive = scan_horde()
     local kills = 0
     for id in pairs(horde_prev) do
@@ -869,7 +1022,7 @@ Game.OnSecond(function()
     if alive > 0 and now - last_ai_at >= 5 then
         last_ai_at = now
         horde_ai(cur, now)
-        ally_assist(cur)
+        if not horde_owner then ally_assist(cur) end   -- a real enemy is fought by the AI on its own
     end
 
     -- 4. Round flow: break -> fight -> break ...

@@ -51,6 +51,7 @@
 #define WL_MARK_SETRES16 0x5c  /* '\': set int16 resource (12-byte packet: i16 res @+4, f32 val @+8) */
 #define WL_MARK_DEFEAT 0x5d    /* ']': defeat player via RGE_Player::loss_if_game_on (0x750580) */
 #define WL_MARK_WIN 0x5e       /* '^': win player via 0x7558a0 (solo) or 0x7558b0 (team) */
+#define WL_MARK_REMOVE 0x5f    /* '_': remove an object the game's delete (0x6a) skips (master type < 70) */
 
 typedef void *(__cdecl *Calloc_t)(size_t n, size_t size);
 typedef int (__thiscall *Send_t)(void *cmd, BYTE *pkt, int size, int player);
@@ -298,6 +299,16 @@ int wl_cmd_delete(int unit_id) {
     if (!owner) return -1;
     int pid = (int)RD32(owner, 0x1adc);
     void *w; int rc;
+    void *m = RDP(u, 0xc);
+    if (m && *(BYTE *)((char *)m + 4) < 70) {
+        // The game's delete executor 0x8140d0 ignores master types below 70 (0x8140ec cmpb $0x46),
+        // e.g. 837 REVEAL (type 20) or flags (10): those go through our marked packet instead.
+        BYTE *pk = begin(pid, 12, &w, &rc);
+        if (!pk) return rc;
+        pk[0] = 0x05; pk[1] = (BYTE)pid; pk[2] = 0; pk[3] = WL_MARK_REMOVE;
+        *(int *)(pk + 4) = unit_id;
+        return send_cmd(w, pk, 12);
+    }
     BYTE *pkt = begin(pid, 12, &w, &rc);
     if (!pkt) return rc;
     pkt[0] = 0x6a;
@@ -407,7 +418,7 @@ int wl_cmd_attack(int unit_id, int target_id) {
 static int exec_wl(BYTE *pkt) {
     if (pkt[0] != 0x05 || (pkt[3] != WL_MARK && pkt[3] != WL_MARK_TECH && pkt[3] != WL_MARK_AGE &&
                            pkt[3] != WL_MARK_SPAWN_NC && pkt[3] != WL_MARK_RES16 && pkt[3] != WL_MARK_SETRES16 &&
-                           pkt[3] != WL_MARK_DEFEAT && pkt[3] != WL_MARK_WIN))
+                           pkt[3] != WL_MARK_DEFEAT && pkt[3] != WL_MARK_WIN && pkt[3] != WL_MARK_REMOVE))
         return 0;
     void *p = player_obj(world(), pkt[1], NULL);
     if (!p) return 1;
@@ -443,6 +454,16 @@ static int exec_wl(BYTE *pkt) {
         memcpy(&x, pkt + 8, 4);
         memcpy(&y, pkt + 12, 4);
         exec_spawn_neutral(p, *(short *)(pkt + 4), x, y);
+    } else if (pkt[3] == WL_MARK_REMOVE) {
+        // vtable slot 30 (+0x78) of every object class: RGE_Static_Object (vtable 0x9eab30) and
+        // RGE_Animated_Object (0x9e7328) both point to 0x8b2e10 (plain ret, __thiscall(obj)): it
+        // releases the object's map/LOS state (0x755540 / 0x8b7670) and sets hp [obj+0x34] = 0, so
+        // the object goes. TRIBE_Combat's delete slot 0x8c47b0 ends in the same jmp [vtable+0x78].
+        void *o = ((GetObj_t)0x733bf0)(world(), *(int *)(pkt + 4));
+        void *own = o ? RDP(o, 0x10) : NULL;
+        void *m = o ? RDP(o, 0xc) : NULL;
+        if (own && m && (int)RD32(own, 0x1adc) == pkt[1] && *(BYTE *)((char *)m + 4) < 70)
+            ((void (__thiscall *)(void *))(*(void ***)o)[0x78 / 4])(o);
     } else if (pkt[3] == WL_MARK_AGE) {
         exec_set_age(p, pkt[2]);
     } else if (pkt[3] == WL_MARK_DEFEAT) {

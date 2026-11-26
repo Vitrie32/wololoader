@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.6.0"
+#define WOLOLOADER_VERSION "0.6.1"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -115,7 +115,9 @@ void wl_civs_set_mode_string(int slot, const char *text);
 void wl_install_gamemodes(void);
 const char *wl_gamemode_key_by_id(int mode_id);
 const char *wl_gamemode_current_key(void);
-int wl_gamemode_id_by_key(const char *key);   // custom mode key -> mode id, -1 if unknown
+int wl_gamemode_map_script(const char *file_name, char *out, size_t out_size); // current mode's .rms for a game map script
+int wl_gamemode_id_by_key(const char *key);
+int wl_gamemode_enemy_player(void);   // enemy player id of the match ("enemy_player" modes), 0 = none   // custom mode key -> mode id, -1 if unknown
 
 // hotreload.c: Level 2 mod hot reload at the main menu (World == NULL)
 void wl_install_hotreload(void);

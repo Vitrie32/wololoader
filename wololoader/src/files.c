@@ -474,6 +474,9 @@ static BOOL redirect_target(const char *path, char *out) {
     }
     LeaveCriticalSection(&g_files_cs);
     if (hit) return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    size_t flen = strlen(file);
+    if (flen > 4 && _stricmp(file + flen - 4, ".rms") == 0 && wl_gamemode_map_script(file, out, MAX_PATH))
+        return TRUE;  // a game mode's own map (gamemodes.c "map")
     return asset_override(path, out);
 }
 

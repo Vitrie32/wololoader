@@ -123,6 +123,7 @@ static int api_raw_selected(lua_State *L);
 static int api_raw_researched(lua_State *L);
 static int api_raw_time(lua_State *L);
 static int api_raw_mode(lua_State *L);
+static int api_raw_mode_enemy(lua_State *L);
 static int api_raw_ui_create(lua_State *L);
 static int api_raw_ui_set(lua_State *L);
 static int api_raw_ui_destroy(lua_State *L);
@@ -940,6 +941,7 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_researched); lua_setfield(L, -2, "raw_researched");
     lua_pushcfunction(L, api_raw_time);     lua_setfield(L, -2, "raw_time");
     lua_pushcfunction(L, api_raw_mode);     lua_setfield(L, -2, "raw_mode");
+    lua_pushcfunction(L, api_raw_mode_enemy); lua_setfield(L, -2, "raw_mode_enemy");
     lua_pushcfunction(L, api_raw_is_multiplayer); lua_setfield(L, -2, "raw_is_multiplayer");
     lua_pushcfunction(L, api_raw_cheats_enabled); lua_setfield(L, -2, "raw_cheats_enabled");
     lua_pushstring(L, m->id);
@@ -1323,6 +1325,10 @@ static int api_raw_mode(lua_State *L) {
     if (m && m[0]) lua_pushstring(L, m); else lua_pushnil(L);
     return 1;
 }
+static int api_raw_mode_enemy(lua_State *L) {
+    lua_pushinteger(L, wl_gamemode_enemy_player());
+    return 1;
+}
 static int api_raw_is_multiplayer(lua_State *L) {
     lua_pushboolean(L, is_multiplayer());
     return 1;
@@ -1631,6 +1637,8 @@ static const char k_prelude[] =
 "  for i = 1, wl.raw_player_count() - 1 do t[#t + 1] = player(i) end; return t end\n"
 "function Game.Resources() return wl.raw_resources() end\n"
 "function Game.Mode() return wl.raw_mode() end\n"
+"-- the game mode's enemy player (mod.json \"enemy_player\": true), nil without one\n"
+"function Game.ModeEnemy() local id = wl.raw_mode_enemy() if id and id > 0 then return player(id) end end\n"
 "function Game.OnStart(fn) return on('game_start', fn) end\n"
 "-- Game.OnCommand(name, fn(building)): a Lua button of a mod building (unique_building commands)\n"
 "function Game.OnCommand(name, fn)\n"

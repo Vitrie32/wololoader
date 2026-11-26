@@ -443,3 +443,14 @@ All addresses, raw bytes, calling conventions, `ret N` sizes, and return values 
 | `0x7558b0` | `TRIBE_Player::win_game_now_team` | `__thiscall(player)`, `ret` (`0x755954`), `void` | Prologue (14 B): `55 8b ec 51 53 56 57 8b d9 e8 e2 ff ff ff`. Calls `0x7558a0` on `this` and mutually allied players with `[+0xf8] != 0`, and `0x750580` on all others. Invoked by `WL_MARK_WIN` (`0x5e`, `team=1`). |
 
 Implementation: `wololoader/src/gamemodes.c`, `wololoader/src/civs.c`, `wololoader/src/gamecmd.c`, `wololoader/src/gameapi.c`, `wololoader/src/script.c`, `wololoader/src/ui_mods.c`. Not yet verified in-game.
+
+## Lobby map lock & enemy player (`gamemodes.c`, verified in disassembly and in a hidden game 2026-11-26)
+
+| Address | Name | Notes |
+|---|---|---|
+| `0x658ab0` | `GameSetupScreen::set_map_style` | `__thiscall(screen, int style)`, `ret 4` (`0x658ca3`). Style 2 = Custom: takes the first entry of the Custom map list (vector of entry pointers at `screen+0x88c/+0x890`, refcount at entry+4), sets map type `0x3b` (`0x613650`), copies entry+0x10 string -> settings+0x24 (file name, e.g. `LastStandArena.rms`), entry+0x24 -> settings+0x38, entry +0xc/+0x1c/+0x20/+0x30 -> settings +0x20/+0x30/+0x34/+0x44, then calls `0x657af0`. |
+| `0x657af0` | `GameSetupScreen` settings-changed handler | `__thiscall(screen)`, plain `ret` (`0x657cda`, `0x657d97`), 35 callers. Stolen 10 B: `55 8b ec 6a ff 68 ae eb 94 00`. |
+| `0x60e3a0` | `GameSettings::get_map_style` | `__thiscall(settings)`, returns 2 while map type is `0x3b`. |
+| `0x6134b0` | `GameSettings::set_player_count` | `__thiscall(settings, n)`, `ret 4` (`0x6135a0`). `+0x3f0 = n`; slots < n with status not in {2,0,4,6} (`0x9c4420`) become Computer (`0x615780`), slots >= n closed (`0x615800`). |
+| `0x748a40` | `TRIBE_Player::set_game_status` | `__thiscall(player, int status)`, `ret 4` (`0x748d11`); 2 = lost. Stolen 10 B: `55 8b ec 6a ff 68 e1 bf 96 00`. |
+| String type | `{char *data; int len; int cap}` | copy `0x432970` (`__thiscall(dst, src)`, reads `[src+4]` as length); empty data = `0xad0380`. |

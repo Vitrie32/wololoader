@@ -1,6 +1,6 @@
 {
   "name": "Last Stand",
-  "version": "2.0",
+  "version": "2.1",
   "author": "Wololoader",
   "description": "Co-op zombies-style survival mode. Every player, computer players included, defends one shared Castle against the Horde: endless rounds of Gaia raiders that spawn all around your bases and march on your buildings. Earn Points from kills and survived rounds, then spend them at the Castle on Mystery Boxes, perks (Juggernaut, Speed Cola, Pack-a-Punch), mercenaries, towers and supplies.",
   "enabled": true,
@@ -39,7 +39,12 @@
       "name": "Last Stand",
       "description": "Co-op zombies-style survival! Everyone defends a shared Castle against rounds of the Horde that grow nastier every round. Spend Points at the Castle on the Mystery Box and perks. The Castle falls and it is over.",
       "script_event": true,
-      "teams": "all"
+      "teams": "all",
+      "enemy_player": true,
+      "map": {
+        "base": "arena", "min_size": "medium",
+        "script": "resources/_common/random-map-scripts/LastStandArena.rms"
+      }
     }
   ],
   "settings": [
@@ -74,8 +79,22 @@
       "id": "difficulty",
       "name": "Difficulty",
       "type": "choice",
-      "choices": ["Easy", "Normal", "Hard", "Insane"],
+      "choices": [
+        "Easy",
+        "Normal",
+        "Hard",
+        "Insane"
+      ],
       "default": "Normal"
+    },
+    {
+      "id": "start_bonus",
+      "name": "Extra starting resources (each)",
+      "type": "number",
+      "min": 0,
+      "max": 5000,
+      "step": 250,
+      "default": 1000
     }
   ]
 }
