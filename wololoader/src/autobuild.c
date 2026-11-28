@@ -8,6 +8,7 @@
 #include "wololoader.h"
 #include "modsettings.h"
 #include "datbuild.h"
+#include "json.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -114,11 +115,62 @@ static u64 fnv_names(u64 h, const char *dir, int sorted) {
     return h;
 }
 
+// The meaning of a JSON value, not its bytes: formatting, key order and the top-level "enabled"
+// flag (rewritten by the Mods screen, wl_set_mod_enabled) do not change it. Object keys are
+// sorted so a Mod Hub copy and a hand-edited copy with the same content match.
+static int cmp_member(const void *a, const void *b) {
+    return strcmp((*(const WlJsonMember *const *)a)->key, (*(const WlJsonMember *const *)b)->key);
+}
+static u64 fnv_json(u64 h, const WlJsonVal *v, int top) {
+    if (!v) return fnv_str(h, "~");
+    switch (v->type) {
+    case WL_JSON_NULL:   return fnv_str(h, "n");
+    case WL_JSON_BOOL:   return fnv_str(h, v->u.bool_val ? "t" : "f");
+    case WL_JSON_NUMBER: { char b[48]; snprintf(b, sizeof b, "#%.10g", v->u.num.dval); return fnv_str(h, b); }
+    case WL_JSON_STRING: h = fnv_str(h, "s"); return fnv_str(h, v->u.str ? v->u.str : "");
+    case WL_JSON_ARRAY: {
+        size_t n = wl_json_len(v);
+        h = fnv_str(h, "[");
+        for (size_t i = 0; i < n; i++) h = fnv_json(h, wl_json_at(v, i), 0);
+        return fnv_str(h, "]");
+    }
+    case WL_JSON_OBJECT: {
+        size_t n = v->u.obj.count;
+        const WlJsonMember **ms = malloc((n ? n : 1) * sizeof *ms);
+        if (!ms) return h;
+        for (size_t i = 0; i < n; i++) ms[i] = &v->u.obj.members[i];
+        qsort(ms, n, sizeof *ms, cmp_member);
+        h = fnv_str(h, "{");
+        for (size_t i = 0; i < n; i++) {
+            if (top && strcmp(ms[i]->key, "enabled") == 0) continue;
+            h = fnv_str(h, ms[i]->key);
+            h = fnv_json(h, ms[i]->val, 0);
+        }
+        free(ms);
+        return fnv_str(h, "}");
+    }
+    }
+    return h;
+}
+static u64 fnv_json_file(u64 h, const char *path) {
+    size_t len = 0;
+    char *text = wl_read_file(path, &len);
+    if (!text) return fnv_str(h, "<missing>");
+    char err[64];
+    WlJsonVal *v = wl_json_parse(text, err, sizeof err);
+    free(text);
+    if (!v) return fnv_file(h, path);
+    h = fnv_json(h, v, 1);
+    wl_json_free(v);
+    return h;
+}
+
 static u64 hash_mod_files(u64 h, const WlMod *m, int sorted) {
     char path[MAX_PATH];
     h = fnv_str(h, m->id);
     snprintf(path, MAX_PATH, "%s\\mod.json", m->dir);
-    h = fnv_file(h, path);
+    // the multiplayer checksum (sorted) compares meaning; the build fingerprint keeps the bytes
+    h = sorted ? fnv_json_file(h, path) : fnv_file(h, path);
     snprintf(path, MAX_PATH, "%s\\civs", m->dir);
     h = fnv_dir(h, path, "json", sorted);
     snprintf(path, MAX_PATH, "%s\\icons\\buildings", m->dir);

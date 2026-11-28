@@ -1,5 +1,11 @@
 # Wololoader changelog
 
+## 0.7.2
+
+- **Multiplayer fixes for Last Stand**:
+  - The match no longer ends in a sudden victory: every player's game keeps track of the enemy computer.
+  - Players with the same mods are no longer reported as having "different mods" when a mod file is laid out differently, for example a Mod Hub copy and a hand-installed copy.
+
 ## 0.7.1
 
 - **Buttons for allies**: a mod can make a building's buttons usable by the owner's allies (`shared = true`). Last Stand's Castle shop works this way.

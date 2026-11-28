@@ -754,6 +754,8 @@ static int settings_mp(const char *settings) {
 }
 
 static const WlCustomMode *g_vis_done;   // the mode whose default_visibility was applied in this lobby
+static int g_lobby_enemy_pid;              // multiplayer: the enemy seen in the lobby, kept for the match
+static int enemy_pid_from_settings(char *settings, const WlCustomMode *cm);
 static void apply_lobby_map_rules(void *screen) {
     if (g_in_force_map) return;
     DWORD game = *(DWORD *)ADDR_GAME_PTR;
@@ -784,6 +786,11 @@ static void apply_lobby_map_rules(void *screen) {
         }
     }
     apply_map_lock_ui(screen, cm);          // every machine
+    if (mp) {
+        int e = enemy_pid_from_settings(settings, cm);
+        if (e != g_lobby_enemy_pid) wl_log("gamemodes: '%s': enemy player %d (lobby)", cm->key, e);
+        g_lobby_enemy_pid = e;
+    }
 }
 
 // 0x65efb0 GameSetupScreen multiplayer lobby UI update __thiscall(screen), plain ret (0x65f046,
@@ -863,6 +870,9 @@ static int enemy_pid_from_settings(char *settings, const WlCustomMode *cm) {
     return 0;
 }
 
+// Multiplayer: the enemy as seen in the lobby (every machine, apply_lobby_map_rules), kept for the
+// match: after the launch the lobby settings may no longer be readable on a client, and without
+// the enemy id its defeat is not blocked and the match ends in a victory at once (seen 2026-11-28).
 int wl_gamemode_enemy_player(void) {
     DWORD game = *(DWORD *)ADDR_GAME_PTR;
     void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
@@ -871,7 +881,8 @@ int wl_gamemode_enemy_player(void) {
         int pid = enemy_pid_from_settings(settings, mode_of_settings(settings));
         if (pid) return pid;
     }
-    return g_enemy_pid;
+    if (g_enemy_pid) return g_enemy_pid;
+    return g_lobby_enemy_pid;
 }
 
 // A loaded savegame does not go through the lobby start (hook_setup_start), so the script tells
