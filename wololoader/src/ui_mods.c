@@ -212,6 +212,9 @@ static void panel_set_visible(void *panel, int visible) {
 static void *load_png(const char *path) {
     void *chain = *(void **)ADDR_LOADER_CHAIN;
     if (!chain || !path || !path[0]) return NULL;
+    // The game's loader does not survive a missing file: a mod folder deleted outside the game
+    // (file manager) while its icon was still listed crashed the Mods screen (2026-11-28).
+    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) return NULL;
     void *drawable = NULL;
     ((LoadPng_t)ADDR_LOAD_PNG)(chain, &drawable, path);
     return drawable;
@@ -233,10 +236,11 @@ static void *panel_from_drawable(void *s, void *d, int x, int y, int w, int h) {
 
 // Mod icon, pre-scaled by wl_icon_scaled to exactly size x size (iconcache.c).
 static void *mod_icon(void *s, const WlMod *m, int x, int y, int size) {
-    const char *src = m->icon[0] ? m->icon : g_default_icon;
-    const char *path = wl_icon_scaled(src, m->icon[0] ? m->id : "default", size);
+    int own = m->icon[0] && GetFileAttributesA(m->icon) != INVALID_FILE_ATTRIBUTES;
+    const char *src = own ? m->icon : g_default_icon;
+    const char *path = wl_icon_scaled(src, own ? m->id : "default", size);
     void *d = load_png(path);
-    if (!d && m->icon[0]) d = load_png(wl_icon_scaled(g_default_icon, "default", size));
+    if (!d && own) d = load_png(wl_icon_scaled(g_default_icon, "default", size));
     return d ? panel_from_drawable(s, d, x, y, size, size) : NULL;
 }
 
@@ -1007,6 +1011,19 @@ static void build_view(void) {
 
 static void *create_screen(void) {
     wl_log("mods: create");
+    // A mod folder deleted outside the game (file manager) is still in the list: read the mods
+    // folder again so the screen only shows what is there. Leaving the Mods screen then runs the
+    // usual main-menu reload, which takes the deleted mod out of the game data.
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        if (GetFileAttributesA(g_wl.mods[i].dir) == INVALID_FILE_ATTRIBUTES) {
+            wl_log("mods: '%s' was removed from the mods folder, reading the folder again", g_wl.mods[i].id);
+            wl_scan_mods();
+            wl_basemod_reload();
+            g_conf_valid = 0;
+            if (g_selected_mod >= g_wl.listed_count) g_selected_mod = g_wl.listed_count ? 0 : -1;
+            break;
+        }
+    }
     wl_civs_ensure();  // so a build error can be shown
     void *s = ((New_t)ADDR_GAME_NEW)(SCREENPANEL_SIZE);
     if (!s) return NULL;

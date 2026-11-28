@@ -10,6 +10,7 @@
 // (registry SteamPath -> steamapps/libraryfolders.vdf -> appmanifest_221380.acf installdir), else the
 // user picks the folder. Install writes version.dll and the wololoader folder; Uninstall moves them
 // to the Recycle Bin (mods included, so they can be restored).
+// `--update --wait-pid N --game "<dir>"`: the in-game updater's mode, no window (see run_update).
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -264,52 +265,121 @@ static int exe_aslr(const wchar_t *game, int enable, wchar_t *err, size_t errcap
     return 1;
 }
 
-static void do_install(void) {
-    wchar_t game[MAX_PATH];
-    if (!get_game(game)) return;
-    int examples = SendMessageW(g_examples, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    int written = 0, kept = 0;
+// Example mods in an update (--update): only those the player already has, so a removed example
+// does not come back. rel = "wololoader\\mods\\<Name>\\..." -> is <game>\wololoader\mods\<Name> there?
+static int example_present(const wchar_t *game, const wchar_t *rel) {
+    const wchar_t *pre = L"wololoader\\mods\\";
+    size_t pl = wcslen(pre);
+    if (_wcsnicmp(rel, pre, pl) != 0) return 0;
+    const wchar_t *name = rel + pl, *end = wcschr(name, L'\\');
+    if (!end || end == name) return 0;   // no "<Name>\\" part
+    wchar_t dir[MAX_PATH];
+    int r = _snwprintf(dir, MAX_PATH, L"%s\\%.*s", game, (int)(end - rel), rel);
+    if (r < 0 || r >= MAX_PATH) return 0;
+    DWORD a = GetFileAttributesW(dir);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// Writes the payload into `game`. examples: 0 none, 1 all, 2 only already installed ones.
+// Returns 1 ok; 0 with err filled (`err_exe` set when only the exe step failed).
+static int install_files(const wchar_t *game, int examples, int *written, int *kept,
+                         wchar_t *err, size_t errcap, int *err_exe) {
+    *written = *kept = 0;
+    *err_exe = 0;
     for (int i = 0; i < g_nentries; i++) {
         const Entry *e = &g_entries[i];
-        if ((e->flags & 2) && !examples) continue;
         wchar_t rel[260], dst[MAX_PATH];
         MultiByteToWideChar(CP_UTF8, 0, e->path, -1, rel, 260);
         for (wchar_t *c = rel; *c; c++) if (*c == L'/') *c = L'\\';
+        if (e->flags & 2) {
+            if (examples == 0) continue;
+            if (examples == 2 && !example_present(game, rel)) continue;
+        }
         if (_snwprintf(dst, MAX_PATH, L"%s\\%s", game, rel) >= MAX_PATH) continue;
         dst[MAX_PATH - 1] = 0;
-        if ((e->flags & 1) && GetFileAttributesW(dst) != INVALID_FILE_ATTRIBUTES) { kept++; continue; }
+        if ((e->flags & 1) && GetFileAttributesW(dst) != INVALID_FILE_ATTRIBUTES) { (*kept)++; continue; }
         make_dirs_for(dst);
         status(L"Writing %s", rel);
         HANDLE f = CreateFileW(dst, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         DWORD put = 0;
         int ok = f != INVALID_HANDLE_VALUE && WriteFile(f, g_payload + e->off, e->size, &put, NULL) && put == e->size;
+        DWORD le = GetLastError();
         if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
         if (!ok) {
-            wchar_t msg[600];
-            _snwprintf(msg, 600, L"Could not write\n%s\n\n(error %lu). Is the folder write-protected? Try running Setup as administrator.",
-                       dst, GetLastError());
-            msg[599] = 0;
-            MessageBoxW(g_wnd, msg, APP_TITLE, MB_ICONERROR);
-            status(L"Install failed.");
-            return;
+            _snwprintf(err, errcap, L"Could not write\n%s\n\n(error %lu). Is the folder write-protected? Try running Setup as administrator.",
+                       dst, le);
+            err[errcap - 1] = 0;
+            return 0;
         }
-        written++;
+        (*written)++;
     }
-    wchar_t err[600];
-    if (exe_aslr(game, 0, err, 600) < 0) {
-        wchar_t msg[800];
-        _snwprintf(msg, 800, L"The files are installed, but the game exe could not be prepared:\n%s\n\n"
-                             L"Without it Windows loads the game at a random address and Wololoader stays off. "
-                             L"Try running Setup as administrator.", err);
-        msg[799] = 0;
-        MessageBoxW(g_wnd, msg, APP_TITLE, MB_ICONERROR);
-        status(L"Installed, but the exe was not prepared.");
+    wchar_t e2[600];
+    if (exe_aslr(game, 0, e2, 600) < 0) {
+        _snwprintf(err, errcap, L"The files are installed, but the game exe could not be prepared:\n%s\n\n"
+                                L"Without it Windows loads the game at a random address and Wololoader stays off. "
+                                L"Try running Setup as administrator.", e2);
+        err[errcap - 1] = 0;
+        *err_exe = 1;
+        return 0;
+    }
+    return 1;
+}
+
+static void do_install(void) {
+    wchar_t game[MAX_PATH];
+    if (!get_game(game)) return;
+    int examples = SendMessageW(g_examples, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    int written = 0, kept = 0, err_exe = 0;
+    wchar_t err[1200];
+    if (!install_files(game, examples, &written, &kept, err, 1200, &err_exe)) {
+        MessageBoxW(g_wnd, err, APP_TITLE, MB_ICONERROR);
+        status(err_exe ? L"Installed, but the exe was not prepared." : L"Install failed.");
         return;
     }
     status(L"Installed: %d files (%d settings kept).", written, kept);
     MessageBoxW(g_wnd, L"Wololoader is installed.\n\nStart Age of Empires II HD: the main menu shows "
                        L"\"Wololoader " TEXT(WL_VERSION) L"\" and the Mods button opens the mod list.",
                 APP_TITLE, MB_ICONINFORMATION);
+}
+
+// ---------------------------------------------------------------- update from the game
+// `Setup.exe --update --wait-pid N --game "<dir>"`: started by Wololoader (changelog.c) after the
+// player clicked "Update now" on the main menu. Waits until the game (process N) has exited and
+// version.dll is free, installs into <dir> without questions (examples only where already
+// installed, mod.json settings kept as always) and says "Wololoader updated to vX".
+static int run_update(const wchar_t *game_arg, DWORD pid) {
+    wchar_t game[MAX_PATH];
+    lstrcpynW(game, game_arg, MAX_PATH);
+    size_t n = wcslen(game);
+    while (n && (game[n - 1] == L'\\' || game[n - 1] == L'/' || game[n - 1] == L'"' || game[n - 1] == L' ')) game[--n] = 0;
+    if (!is_game_dir(game)) {
+        MessageBoxW(NULL, L"Wololoader update: the game folder was not found. Run this setup again and pick the folder.",
+                    APP_TITLE, MB_ICONERROR);
+        return 1;
+    }
+    if (pid) {
+        HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid);
+        if (h) {   // NULL: it has already exited
+            WaitForSingleObject(h, INFINITE);
+            CloseHandle(h);
+        }
+    }
+    // The game process is gone; give the loader up to a minute to let go of version.dll.
+    for (int i = 0; i < 120 && game_running(game); i++) Sleep(500);
+    if (game_running(game)) {
+        MessageBoxW(NULL, L"Wololoader update: Age of Empires II HD is still running. Close it and run this setup again.",
+                    APP_TITLE, MB_ICONWARNING);
+        return 1;
+    }
+    int written = 0, kept = 0, err_exe = 0;
+    wchar_t err[1200];
+    if (!install_files(game, 2, &written, &kept, err, 1200, &err_exe)) {
+        MessageBoxW(NULL, err, APP_TITLE, MB_ICONERROR);
+        return 1;
+    }
+    MessageBoxW(NULL, L"Wololoader updated to v" TEXT(WL_VERSION) L".\n\nStart Age of Empires II HD to use it.",
+                APP_TITLE, MB_ICONINFORMATION | MB_SETFOREGROUND);
+    return 0;
 }
 
 static void do_uninstall(void) {
@@ -403,6 +473,16 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show) {
     (void)prev; (void)cmd;
+    int argc = 0;
+    wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    int update = 0;
+    DWORD wait_pid = 0;
+    const wchar_t *update_game = NULL;
+    for (int i = 1; argv && i < argc; i++) {
+        if (wcscmp(argv[i], L"--update") == 0) update = 1;
+        else if (wcscmp(argv[i], L"--wait-pid") == 0 && i + 1 < argc) wait_pid = wcstoul(argv[++i], NULL, 10);
+        else if (wcscmp(argv[i], L"--game") == 0 && i + 1 < argc) update_game = argv[++i];
+    }
     INITCOMMONCONTROLSEX icc;
     icc.dwSize = sizeof icc;
     icc.dwICC = ICC_STANDARD_CLASSES;
@@ -412,6 +492,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmd, int show) {
         MessageBoxW(NULL, L"This setup file is damaged (no files inside). Download it again.", APP_TITLE, MB_ICONERROR);
         return 1;
     }
+    if (update && update_game) return run_update(update_game, wait_pid);
     WNDCLASSW wc = { 0 };
     wc.lpfnWndProc = wndproc;
     wc.hInstance = inst;

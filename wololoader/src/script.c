@@ -125,6 +125,7 @@ static int api_raw_researched(lua_State *L);
 static int api_raw_time(lua_State *L);
 static int api_raw_mode(lua_State *L);
 static int api_raw_mode_enemy(lua_State *L);
+static int api_raw_free_spot(lua_State *L);
 static int api_raw_map_size(lua_State *L);
 static int api_raw_map_capture(lua_State *L);
 static int api_raw_unit_control_disabled(lua_State *L);
@@ -987,6 +988,7 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_time);     lua_setfield(L, -2, "raw_time");
     lua_pushcfunction(L, api_raw_mode);     lua_setfield(L, -2, "raw_mode");
     lua_pushcfunction(L, api_raw_mode_enemy); lua_setfield(L, -2, "raw_mode_enemy");
+    lua_pushcfunction(L, api_raw_free_spot); lua_setfield(L, -2, "raw_free_spot");
     lua_pushcfunction(L, api_raw_map_size); lua_setfield(L, -2, "raw_map_size");
     lua_pushcfunction(L, api_raw_map_capture); lua_setfield(L, -2, "raw_map_capture");
     lua_pushcfunction(L, api_raw_unit_control_disabled); lua_setfield(L, -2, "raw_unit_control_disabled");
@@ -1454,6 +1456,14 @@ static int api_sound_file(lua_State *L) {
     lua_pushboolean(L, wl_play_sfx_file(path));
     return 1;
 }
+static int api_raw_free_spot(lua_State *L) {
+    float ox = 0, oy = 0;
+    if (g_game && g_game->free_spot &&
+        g_game->free_spot((float)luaL_checknumber(L, 1), (float)luaL_checknumber(L, 2), (int)luaL_optinteger(L, 3, 10), &ox, &oy)) {
+        lua_pushnumber(L, ox); lua_pushnumber(L, oy); return 2;
+    }
+    return 0;
+}
 static int api_raw_mode_enemy(lua_State *L) {
     if (lua_isinteger(L, 1)) wl_gamemode_set_enemy_player((int)lua_tointeger(L, 1));
     lua_pushinteger(L, wl_gamemode_enemy_player());
@@ -1775,6 +1785,8 @@ static const char k_prelude[] =
 "  return info and info.deposit or nil\n"
 "end\n"
 "function Game.Mode() return wl.raw_mode() end\n"
+"-- nearest open tile to (x, y) within radius (default 10): no tree, mine, cliff or building; nil if none\n"
+"function Game.FreeSpot(x, y, radius) return wl.raw_free_spot(x, y, radius) end\n"
 "-- Game.MapSize(): side of the (square) map in tiles from the lobby map size, nil if unknown\n"
 "function Game.MapSize() return wl.raw_map_size() end\n"
 "function Game.SetMapClickCapture(on) wl.raw_map_capture(not not on) end\n"

@@ -156,7 +156,67 @@ static int ga_player_civ(int pid) {
     return civ ? *(int *)(civ + 8) : -1;
 }
 
+// Nearest map tile to (x, y) that no tree, mine, rock, cliff or building covers, within `radius`
+// tiles. Scans every player's two object lists ([player+0x18] and +0x1c, see ga_units_of_type),
+// all of them: Gaia has thousands of trees, more than a Lua unit list holds (2048). Gaia animals
+// (class 58 livestock, 9 prey animal, 7 predator) do not block. Returns 1 and the tile centre.
+#define FS_MAX 24
+static unsigned char g_fs[2 * FS_MAX + 1][2 * FS_MAX + 1];
+static void fs_mark_list(char *list, int cx, int cy, int r, int gaia) {
+    if (!list || IsBadReadPtr(list, 12)) return;
+    void **u = (void **)RDP(list, 4);
+    int count = (int)RD32(list, 8);
+    if (!u || count <= 0 || count > 400000 || IsBadReadPtr(u, (UINT_PTR)count * 4)) return;
+    for (int i = 0; i < count; i++) {
+        char *x = (char *)u[i];
+        if (!x || *(unsigned char *)(x + 0x4c) >= 7 || RD32(x, 0x24) != 0) continue;
+        char *m = (char *)RDP(x, 0xc);
+        if (!m) continue;
+        int type = *(unsigned char *)(m + 4), cls = *(short *)(m + 0x16);
+        if (gaia) { if (cls == 58 || cls == 9 || cls == 7) continue; }
+        else if (type != 80) continue;                     // players: only buildings block
+        int tx = (int)*(float *)(x + 0x3c) - cx + r, ty = (int)*(float *)(x + 0x40) - cy + r;
+        int pad = (type == 80) ? 2 : 0;                    // buildings cover more than one tile
+        for (int dx = -pad; dx <= pad; dx++)
+            for (int dy = -pad; dy <= pad; dy++) {
+                int a = tx + dx, b = ty + dy;
+                if (a >= 0 && b >= 0 && a <= 2 * r && b <= 2 * r) g_fs[a][b] = 1;
+            }
+    }
+}
+static int ga_free_spot(float fx, float fy, int r, float *ox, float *oy) {
+    int n = ga_count();
+    if (n <= 0) return 0;
+    if (r < 1) r = 1;
+    if (r > FS_MAX) r = FS_MAX;
+    int cx = (int)fx, cy = (int)fy;
+    memset(g_fs, 0, sizeof g_fs);
+    for (int pid = 0; pid < n; pid++) {
+        void *p = player(pid);
+        if (!p) continue;
+        fs_mark_list((char *)RDP(p, 0x18), cx, cy, r, pid == 0);
+        fs_mark_list((char *)RDP(p, 0x1c), cx, cy, r, pid == 0);
+    }
+    for (int d = 0; d <= r; d++)
+        for (int dx = -d; dx <= d; dx++)
+            for (int dy = -d; dy <= d; dy++) {
+                if (dx != -d && dx != d && dy != -d && dy != d) continue;
+                int a = dx + r, b = dy + r;
+                if (cx + dx < 2 || cy + dy < 2) continue;
+                // a free tile with free neighbours, so a group of units fits
+                int ok = !g_fs[a][b];
+                for (int k = -1; ok && k <= 1; k++)
+                    for (int l = -1; ok && l <= 1; l++) {
+                        int aa = a + k, bb = b + l;
+                        if (aa >= 0 && bb >= 0 && aa <= 2 * r && bb <= 2 * r && g_fs[aa][bb]) ok = 0;
+                    }
+                if (ok) { *ox = cx + dx + 0.5f; *oy = cy + dy + 0.5f; return 1; }
+            }
+    return 0;
+}
+
 static const WlGameApi k_api = { ga_local, ga_count, ga_resource, ga_is_enemy, ga_units,
     wl_cmd_add_resource, wl_cmd_research, wl_cmd_spawn, wl_cmd_delete, ga_selected, ga_time, wl_cmd_set_age, ga_researched, wl_cmd_move, ga_units_of_type, wl_cmd_spawn_neutral,
-    wl_cmd_set_resource, wl_resources_list, wl_resource_resolve, ga_mode, wl_cmd_win, wl_cmd_defeat, ga_player_civ, wl_cmd_attack, wl_gather_by_key };
+    wl_cmd_set_resource, wl_resources_list, wl_resource_resolve, ga_mode, wl_cmd_win, wl_cmd_defeat, ga_player_civ, wl_cmd_attack, wl_gather_by_key,
+    ga_free_spot };
 const WlGameApi *wl_game_api(void) { return &k_api; }

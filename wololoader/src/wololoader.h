@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.7.2"
+#define WOLOLOADER_VERSION "0.7.3"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -80,6 +80,10 @@ BOOL wl_patch_call(DWORD at, void *fn, int len);
 // menu.c
 void wl_install_menu_hooks(void);
 void wl_menu_set_label(const char *text);
+// changelog.c: "What's new" window (main menu label click) and Wololoader self-update
+void wl_changelog_open(void);
+void wl_update_check(void);            // background GitHub release check, once per session
+const char *wl_update_version(void);   // newer release ("0.7.3") once found, else NULL
 
 // autostart.c: quick-launch single-player match from <root>\autostart.json ("Test it")
 void wl_install_autostart(void);
@@ -241,6 +245,7 @@ typedef struct {
     int (*player_civ)(int pid);                                      // civ id of a player, -1 if none
     int (*attack_unit)(int unit_id, int target_id);                  // game order (attack) command
     const WlGatherDef *(*gather_by_key)(const char *key, const char *prefer_mod); // cache/gather.txt lookup
+    int (*free_spot)(float x, float y, int radius, float *ox, float *oy);  // nearest tile with no tree/mine/building
 } WlGameApi;
 void wl_script_set_game(const WlGameApi *api);
 const WlGameApi *wl_game_api(void);

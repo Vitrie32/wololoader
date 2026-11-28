@@ -504,6 +504,16 @@ static int exec_wl(BYTE *pkt) {
 
 static void __fastcall exec_hook(void *proc, void *edx, BYTE *pkt) {
     (void)edx;
+    // A game mode's enemy computer (Last Stand's Horde) must not resign: the resign command is
+    // type 0x0b ("RGE_COMMAND_RESIGN", registered at 0x805785 push 0xb; dispatcher 0x809fe0
+    // case 0xb -> 0x80a052), player id at +1 (describe function 0x808720 reads +1 pId, +2 commId,
+    // +3 dropped). Dropped here, on every machine alike, while the match runs (the computer AI
+    // resigned when it owned nothing, and the match ended in a victory, 2026-11-28).
+    if (pkt && pkt[0] == 0x0b && pkt[1] && pkt[1] == wl_gamemode_enemy_player() && !pkt[3]) {
+        static int logged;
+        if (logged++ < 3) wl_log("gamecmd: enemy player %d tried to resign, ignored", pkt[1]);
+        return;
+    }
     if (pkt && exec_wl(pkt)) return;
     if (wl_overflow_exec((void *)o_exec, proc, pkt)) return;
     o_exec(proc, pkt);

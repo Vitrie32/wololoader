@@ -1,7 +1,7 @@
 CC      = i686-w64-mingw32-gcc
 CFLAGS  = -O2 -Wall -Wextra -Wno-format-truncation -std=c11 -static-libgcc
 LDFLAGS = -shared -static -Wl,--enable-stdcall-fixup -Wl,--kill-at -lshell32 -lgdi32 -luser32 -lole32 -lwindowscodecs -luuid -lwinhttp
-SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/autostart.c src/civs.c src/gamemodes.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/modsettings.c src/ui_hub.c src/hubcore.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/mpcheck.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/resources.c src/resbar.c src/buildpage.c src/iconmerge.c src/taunts.c src/history.c src/victory.c src/hotreload.c src/proxy_version.S
+SRC     = src/main.c src/log.c src/mods.c src/hook.c src/menu.c src/changelog.c src/mdtext.c src/autostart.c src/civs.c src/gamemodes.c src/files.c src/crash.c src/shell.c src/ui_mods.c src/modsettings.c src/ui_hub.c src/hubcore.c src/iconcache.c src/datbuild.c src/json.c src/zlib_game.c src/autobuild.c src/popcap.c src/overflow.c src/selpanel.c src/mpguard.c src/mpcheck.c src/noworkshop.c src/loadscreen.c src/borderless.c src/script.c src/luagame.c src/basemod.c src/lobby.c src/monk.c src/gameapi.c src/counter.c src/formtab.c src/gamecmd.c src/uikit.c src/resources.c src/resbar.c src/buildpage.c src/iconmerge.c src/taunts.c src/history.c src/victory.c src/hotreload.c src/proxy_version.S
 
 # Embedded Lua 5.4 (third_party/lua, unmodified). Only the core and the safe
 # libraries: no lua.c/luac.c, no linit.c (script.c opens libs itself), no
@@ -48,7 +48,7 @@ build/kind.$(BUILD_KIND):
 	rm -f build/kind.*
 	touch $@
 
-build/version.dll: build/kind.$(BUILD_KIND) $(SRC) $(LUA_OBJ) build/wl_icon.o src/wololoader.h src/datbuild.h src/json.h src/hubcore.h src/modsettings.h src/version.def
+build/version.dll: build/kind.$(BUILD_KIND) $(SRC) $(LUA_OBJ) build/wl_icon.o src/wololoader.h src/datbuild.h src/json.h src/hubcore.h src/modsettings.h src/mdtext.h src/version.def
 	mkdir -p build
 	$(CC) $(CFLAGS) -I$(LUA_DIR) -o $@ $(SRC) $(LUA_OBJ) build/wl_icon.o src/version.def $(LDFLAGS)
 
@@ -76,6 +76,8 @@ install: build/version.dll build/Scriptorium.exe
 	cp build/version.dll "$(GAME)/version.dll"
 	mkdir -p "$(GAME)/wololoader/mods"
 	cp build/Scriptorium.exe "$(GAME)/wololoader/Scriptorium.exe"
+	# What's new window (changelog.c, a click on the main menu label)
+	cp ../CHANGELOG.md "$(GAME)/wololoader/changelog.txt"
 	rsvg-convert -h 66 art/wololoader_mark.svg -o build/menu_mark.png
 	python3 -I tools/make_menu_icon.py "$(GAME)" build/menu_mark.png
 	# Wololoader Base mod (feature switches): created once, never overwritten.
@@ -105,7 +107,7 @@ build/wlsetup_stub.exe: installer/wlsetup.c build/setup_res.o src/wololoader.h
 	$(CC) -O2 -Wall -Wextra -std=c11 -municode -mwindows -DWL_VERSION='"$(VERSION)"' -o $@ $(filter %.c %.o,$^) -static -lcomctl32 -lshell32 -lole32 -ladvapi32
 	i686-w64-mingw32-strip $@
 
-release: build/version.dll build/Scriptorium.exe build/wlsetup_stub.exe installer/install.sh.in tools/package.py ui-icons
+release: build/version.dll build/Scriptorium.exe build/wlsetup_stub.exe installer/install.sh.in tools/package.py ../CHANGELOG.md ui-icons
 	python3 -I tools/package.py "$(VERSION)" "$(GAME)" build/release build/wlsetup_stub.exe
 
 # Mods screen icons: one PNG per shown size (name_SIZE.png); the drawables are not scaled in

@@ -27,11 +27,46 @@ local UNIT_MANGONEL = 280
 local UNIT_ELEPHANT = 239
 local UNIT_TREBUCHET = 331 -- Packed Trebuchet (the form the game trains; unpacks by itself to attack)
 
--- every unit type the Horde can contain: the Horde is found with Player(0):UnitsOfType(type)
+-- The Horde's unit lines get stronger with the rounds, like a player going up the Ages (unit ids
+-- checked in empires2_x2_p1.dat, civ 1): { first round, unit id, plural name }
+local HORDE_LINES = {
+    infantry = { { 1, 74, "Militia" }, { 6, 75, "Men-at-Arms" }, { 12, 77, "Long Swordsmen" },
+                 { 18, 473, "Two-Handed Swordsmen" }, { 24, 567, "Champions" } },
+    spear    = { { 1, 93, "Spearmen" }, { 12, 358, "Pikemen" }, { 20, 359, "Halberdiers" } },
+    archer   = { { 1, 4, "Archers" }, { 12, 24, "Crossbowmen" }, { 20, 492, "Arbalests" } },
+    skirm    = { { 1, 7, "Skirmishers" }, { 20, 6, "Elite Skirmishers" } },
+    scout    = { { 1, 448, "Scouts" }, { 14, 546, "Light Cavalry" }, { 22, 441, "Hussars" } },
+    knight   = { { 1, 38, "Knights" }, { 18, 283, "Cavaliers" }, { 26, 569, "Paladins" } },
+    ram      = { { 1, 35, "Battering Rams" }, { 20, 422, "Capped Rams" }, { 28, 548, "Siege Rams" } },
+    mangonel = { { 1, 280, "Mangonels" }, { 22, 550, "Onagers" }, { 30, 588, "Siege Onagers" } },
+}
+-- elephants and siege come in groups of 2 (they are big)
+local BIG_UNITS = { [239] = true, [331] = true, [42] = true }
+for _, line in ipairs({ "ram", "mangonel" }) do
+    for _, e in ipairs(HORDE_LINES[line]) do BIG_UNITS[e[2]] = true end
+end
+local function line_unit(line, r)
+    local id, name = nil, nil
+    for _, e in ipairs(HORDE_LINES[line]) do
+        if r >= e[1] then id, name = e[2], e[3] end
+    end
+    return id, name
+end
+
+-- every unit type the Horde can contain: the Horde is found with Player:UnitsOfType(type)
 -- (a scan of all Gaia units would also return trees, mines and animals)
-local HORDE_TYPES = {
-    UNIT_MILITIA, UNIT_MAA, UNIT_SPEARMAN, UNIT_ARCHER, UNIT_SKIRMISHER, UNIT_SCOUT,
-    UNIT_KNIGHT, UNIT_RAM, UNIT_CAPPED_RAM, UNIT_MANGONEL, UNIT_ELEPHANT, UNIT_TREBUCHET,
+local HORDE_TYPES = { 239, 331, 42 }   -- War Elephant, Trebuchet (packed and unpacked)
+for _, line in pairs(HORDE_LINES) do
+    for _, e in ipairs(line) do HORDE_TYPES[#HORDE_TYPES + 1] = e[2] end
+end
+
+-- The Horde's blacksmith: from these rounds its player researches attack and armour upgrades
+-- (only when the Horde is a real enemy player, Game.ModeEnemy). Tech ids: MODDING.md table.
+local HORDE_TECHS = {
+    { 8,  { 67, 74, 211, 199 },     "Forging, Scale Mail, Padded Archer Armor and Fletching" },
+    { 14, { 68, 76, 212, 200, 81 }, "Iron Casting, Chain Mail, Leather Archer Armor, Bodkin Arrow and Scale Barding" },
+    { 20, { 75, 77, 219, 201, 82 }, "Blast Furnace, Plate Mail, Ring Archer Armor, Bracer and Chain Barding" },
+    { 26, { 80 },                   "Plate Barding" },
 }
 
 local RES_WAVE = "wave"   -- top bar: "Round"
@@ -659,17 +694,16 @@ end)
 -- ---------------------------------------------------------------------------------------------
 
 -- Normal mix: { unit, label, weight, first round, last round (nil = no end) }
+-- { unit line, weight, first round }: rounds 1-2 are Militia only (round 1 is smaller, see
+-- build_round), Scouts join in round 3, Spearmen in round 4. No weaker unit works: villagers were
+-- put to work by the enemy AI and animals cannot attack buildings (seen 2026-11-26).
 local MIX = {
--- weakest first: rounds 1-2 are Militia only (round 1 is smaller, see build_round), Scouts join in
--- round 3, Spearmen in round 4. No weaker unit works: villagers were put to work by the enemy AI
--- and animals (Bear 486) cannot attack buildings, so they ignored the Castle (seen 2026-11-26).
-    { UNIT_MILITIA,   "Militia",   50, 1, 7 },
-    { UNIT_SPEARMAN,  "Spearmen",  25, 4, 9 },
-    { UNIT_SCOUT,     "Scouts",    15, 3, nil },  -- the fast "runners"
-    { UNIT_ARCHER,    "Archers",   20, 5, nil },
-    { UNIT_MAA,       "Men-at-Arms", 25, 6, nil },
-    { UNIT_KNIGHT,    "Knights",   15, 9, nil },
-    { UNIT_SKIRMISHER, "Skirmishers", 10, 12, nil },
+    { "infantry", 50, 1 },
+    { "scout",    15, 3 },
+    { "spear",    20, 4 },
+    { "archer",   20, 5 },
+    { "knight",   15, 9 },
+    { "skirm",    10, 12 },
 }
 
 -- returns { {id, label, count}, ... }, boss message or nil
@@ -691,15 +725,18 @@ local function build_round(r, mult)
             -- every 10th round: something wild
             add(UNIT_ELEPHANT, "War Elephants", (1 + tier) * mult)
             add(UNIT_TREBUCHET, "Trebuchets", math.min(6, tier) * mult)
-            add(UNIT_CAPPED_RAM, "Capped Rams", (1 + tier) * mult)
-            add(UNIT_MANGONEL, "Mangonels", tier * mult)
+            local rid, rname = line_unit("ram", math.max(r, 20))
+            local mid, mname = line_unit("mangonel", r)
+            add(rid, rname, (1 + tier) * mult)
+            add(mid, mname, tier * mult)
             boss_msg = "ROUND " .. r .. ": THE APOCALYPSE! Elephants, trebuchets and rams are coming!"
         elseif tier % 2 == 1 and tier % 3 ~= 0 then
             add(UNIT_ELEPHANT, "War Elephants", (1 + tier) * mult)
             boss_msg = "ROUND " .. r .. ": BOSS ROUND! The War Elephants are coming!"
         else
             add(UNIT_TREBUCHET, "Trebuchets", math.min(4, 1 + tier // 2) * mult)
-            add(UNIT_RAM, "Battering Rams", (1 + tier) * mult)
+            local rid, rname = line_unit("ram", r)
+            add(rid, rname, (1 + tier) * mult)
             boss_msg = "ROUND " .. r .. ": BOSS ROUND! Siege engines march on the Castle!"
         end
     end
@@ -708,19 +745,22 @@ local function build_round(r, mult)
     local sum = 0
     local live = {}
     for _, m in ipairs(MIX) do
-        if r >= m[4] and (not m[5] or r <= m[5]) then
+        if r >= m[3] then
             live[#live + 1] = m
-            sum = sum + m[3]
+            sum = sum + m[2]
         end
     end
     for _, m in ipairs(live) do
-        add(m[1], m[2], math.max(1, want * m[3] / sum))
+        local id, name = line_unit(m[1], r)
+        add(id, name, math.max(1, want * m[2] / sum))
     end
+    local ram_id, ram_name = line_unit("ram", r)
+    local mango_id, mango_name = line_unit("mangonel", r)
     if r >= 14 and r % 5 ~= 0 then
-        add(UNIT_RAM, "Battering Rams", (1 + (r - 14) // 3) * math.max(1, mult))
+        add(ram_id, ram_name, (1 + (r - 14) // 3) * math.max(1, mult))
     end
     if r >= 18 and r % 5 ~= 0 then
-        add(UNIT_MANGONEL, "Mangonels", (1 + (r - 18) // 4) * math.max(1, mult))
+        add(mango_id, mango_name, (1 + (r - 18) // 4) * math.max(1, mult))
     end
     return groups, boss_msg
 end
@@ -802,8 +842,10 @@ local function rebuild_blocked()
         end
     end
 end
--- the free tile nearest to (x, y), searched in growing squares up to 10 tiles away
-local function free_spot(x, y, taken)
+-- the free tile nearest to (x, y), searched in growing squares up to 10 tiles away. Wololoader
+-- 0.7.3+ has Game.FreeSpot, which sees every tree on the map (a Lua unit list holds only the first
+-- 2048 Gaia objects, so big forests looked empty and the Horde spawned inside them, 2026-11-28).
+local function free_spot_lua(x, y, taken)
     local tx, ty = math.floor(x), math.floor(y)
     for r = 0, 10 do
         for dx = -r, r do
@@ -819,6 +861,16 @@ local function free_spot(x, y, taken)
         end
     end
     return x, y
+end
+local function free_spot(x, y, taken)
+    if Game.FreeSpot then
+        local fx, fy = Game.FreeSpot(x, y, 12)
+        if fx then
+            local k = math.floor(fx) * 4096 + math.floor(fy)
+            if not taken[k] then taken[k] = true; return fx, fy end
+        end
+    end
+    return free_spot_lua(x, y, taken)
 end
 
 -- The Horde comes from the edge of the map: points on a ring a few tiles inside the map border
@@ -895,6 +947,15 @@ local function start_round(now)
     rng_state = (r * 7919 + 31337) & 0x7fffffff
 
     local groups, boss_msg = build_round(r, cfg.mult)
+    -- the Horde's blacksmith (a real enemy player only; Research skips techs it already has)
+    if horde_owner then
+        for _, t in ipairs(HORDE_TECHS) do
+            if r == t[1] then
+                for _, tech in ipairs(t[2]) do pcall(horde_owner.Research, horde_owner, tech) end
+                commander("The Horde's smiths have learned " .. t[3] .. "!", 2)
+            end
+        end
+    end
     rebuild_blocked()
     local pts = spawn_points(r)
     for _, pt in ipairs(pts) do pt[1], pt[2] = free_spot(pt[1], pt[2], {}) end  -- flare/reveal on open ground
@@ -904,8 +965,7 @@ local function start_round(now)
     local parts = {}
     for _, g in ipairs(groups) do
         parts[#parts + 1] = g.count .. " " .. g.label
-        local size = (g.id == UNIT_ELEPHANT or g.id == UNIT_TREBUCHET or g.id == UNIT_RAM
-            or g.id == UNIT_CAPPED_RAM or g.id == UNIT_MANGONEL) and 2 or 5
+        local size = BIG_UNITS[g.id] and 2 or 5
         local left = g.count
         while left > 0 do
             local n = math.min(size, left)
@@ -955,11 +1015,11 @@ local function run_spawn_queue(now)
     for _, c in ipairs(spawn_queue) do
         if c.at <= now then
             local cols = 3
+            local bx, by = free_spot(c.x, c.y, taken)   -- one open spot per group, units around it
             for i = 1, c.n do
-                local dx = ((i - 1) % cols - 1) * 1.3
-                local dy = ((i - 1) // cols) * 1.3
-                local sx, sy = free_spot(c.x + dx, c.y + dy, taken)
-                safe_create(owner, c.id, sx, sy, opts)
+                local dx = ((i - 1) % cols - 1) * 1.1
+                local dy = ((i - 1) // cols) * 1.1
+                safe_create(owner, c.id, bx + dx, by + dy, opts)
             end
         else
             rest[#rest + 1] = c
@@ -1397,7 +1457,8 @@ Game.OnSecond(function()
     for id in pairs(cur) do horde_prev[id] = true end
     if kills > 0 then
         for _, p in ipairs(players) do
-            p:AddResource(RES_POINTS, kills * POINTS_PER_KILL) -- everyone gets the same
+            -- everyone gets the same; later rounds' units are tougher and worth more (+2 every 5 rounds)
+            p:AddResource(RES_POINTS, kills * (POINTS_PER_KILL + 2 * (current_round // 5)))
         end
     end
 
