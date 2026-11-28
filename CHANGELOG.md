@@ -1,8 +1,12 @@
 # Wololoader changelog
 
+## 0.7.4
+
+- **Main menu**: the Wololoader text has its own wooden plaque at the bottom of the main menu, above the game's version number. On the sign at the top right it could run into the game's own text. The mouse shows the hand cursor over it.
+
 ## 0.7.3
 
-- **What's new**: click the Wololoader sign at the top right of the main menu to read this changelog in the game.
+- **What's new**: click the Wololoader text in the main menu to read this changelog in the game.
 - **Updates from the game**: when a newer Wololoader is out, the main menu says so. The window shows its release notes and an "Update now" button: the setup is downloaded and installs the update after you quit the game. Coming from 0.7.2 or older, run the setup once by hand; from 0.7.3 on the game updates itself.
 - **Last Stand 2.5**:
   - The Horde grows up with the rounds: Militia become Men-at-Arms, Long Swordsmen, Two-Handed Swordsmen and Champions; Spearmen, Archers, Scouts, Knights and siege upgrade too.

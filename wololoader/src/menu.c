@@ -96,6 +96,62 @@ static void split_label(char *l1, char *l2) {
     if (nl) { *nl = 0; lstrcpynA(l2, nl + 1, 256); } else l2[0] = 0;
 }
 
+// Hand cursor while the mouse is over a panel. Panel::mouse_move (0x4842d0, slot 28) hands the
+// ref-counted cursor at [panel+0xec] to the cursor manager [0xad20c0] (0x456520) when the
+// point is inside the panel; NULL there means the parent's cursor. The game's cursors are
+// CursorSet [[0xada4b8]] +8: array of 19 ref-counted Cursor objects (+4 refs, +0xc index),
+// frames of mcursors.slp (interface 51000.slp); 3 is the gauntlet hand (checked by decoding
+// the SLP and dumping the array in game, 2026-11-28). The panel releases its ref when freed.
+#define ADDR_CURSOR_SET   0xada4b8
+#define CURSOR_HAND       3
+#define CURSOR_COUNT      19
+static void set_hand_cursor(void *panel) {
+    void **holder = *(void ***)ADDR_CURSOR_SET;
+    if (!panel || !holder || !*holder) return;
+    DWORD *set = *holder;
+    void **arr = (void **)set[2], **end = (void **)set[3];
+    if (!arr || end - arr != CURSOR_COUNT || !arr[CURSOR_HAND]) return;
+    BYTE *p = panel;
+    if (*(void **)(p + 0xec)) return;   // a cursor of its own already
+    ((LONG *)arr[CURSOR_HAND])[1]++;
+    *(void **)(p + 0xec) = arr[CURSOR_HAND];
+}
+
+// The plaque behind the label (DrawablePanel, same recipe as ui_mods.c panel_from_drawable;
+// addresses in FINDINGS "DrawablePanel"). Made before the labels, so they draw on top.
+#define ADDR_GAME_NEW             0x8d47df  // game's operator new (cdecl)
+#define ADDR_LOADER_CHAIN         0xada9f4  // [ptr] ui::ImageFileDrawableLoader
+#define ADDR_LOAD_PNG             0x49f1f0  // thiscall(chain, &out, path), ret 8
+#define ADDR_SCALE_RECT           0x491190  // thiscall(scr, out[4], in[4]), ret 8
+#define ADDR_DRAWABLE_PANEL_CTOR  0x47a5d0  // thiscall(mem, parent, rect[4], drawable), ret 0xc
+#define DRAWABLE_PANEL_SIZE       0x134
+typedef void *(__cdecl *GameNew_t)(unsigned size);
+typedef void (__thiscall *LoadPng_t)(void *chain, void **out, const char *path);
+typedef void (__thiscall *ScaleRect_t)(void *screen, int out[4], const int in[4]);
+typedef void *(__thiscall *DrawablePanelCtor_t)(void *mem, void *parent, const int rect[4], void *drawable);
+typedef void (__thiscall *DrawableSetFit_t)(void *drawable, const int *mode);
+static void add_plaque(void *screen, int x, int y) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s\\ui\\menu_plaque.png", g_wl.root);
+    void *chain = *(void **)ADDR_LOADER_CHAIN;
+    if (!chain || GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+        wl_log("menu: %s missing, label without plaque", path);
+        return;
+    }
+    void *d = NULL;
+    ((LoadPng_t)ADDR_LOAD_PNG)(chain, &d, path);
+    if (!d) return;
+    int mode[3] = { 1, 1, 1 };
+    ((DrawableSetFit_t)(*(void ***)d)[3])(d, mode);
+    int in_rect[4] = { x, y, 200, 50 }, out_rect[4] = { 0, 0, 0, 0 };
+    ((ScaleRect_t)ADDR_SCALE_RECT)(screen, out_rect, in_rect);
+    void *panel = ((GameNew_t)ADDR_GAME_NEW)(DRAWABLE_PANEL_SIZE);
+    if (!panel) return;
+    memset(panel, 0, DRAWABLE_PANEL_SIZE);
+    ((DrawablePanelCtor_t)ADDR_DRAWABLE_PANEL_CTOR)(panel, screen, out_rect, d);
+    set_hand_cursor(panel);
+}
+
 static void add_label(void *screen) {
     BYTE *s = screen;
     int cur_w = *(int *)(s + 0xc0), cur_h = *(int *)(s + 0xc4);
@@ -106,15 +162,21 @@ static void add_label(void *screen) {
     wl_loadscreen_close();
 
     // Coordinates are in reference units (= client size when the screen was made); fall back
-    // to 1366x768 if unset. The label sits on the small empty sign hanging top right in
-    // main-menu/default/background.jpg (1366x768: x 843..1052, y 77..114). The game's own
-    // ctor text panels are elsewhere (0x6e19b7 version at 375,720; 0x6e1ddf big sign above
-    // at 782,20 344x36; 0x6e1ec2 copyright at 690,660), and main-menu.json has no button
-    // there, so nothing covers it. The old place (10, h-28) ran into the Exit button.
-    // The background is stretched to the window, so scale the sign rect the same way.
+    // to 1366x768 if unset. Where it goes (1366x768 background.jpg):
+    //  - 0.7.2 bottom left (10, h-28): ran into the Exit button (main-menu.json 174,631 230x137).
+    //  - 0.7.3 on the small empty sign top right (843..1052, 77..114): the game writes its own
+    //    text there in some setups (seen with Steam online, 2026-11-28; the ctor's sign panel
+    //    0x6e1ddf at 782,20 gets text from 0x6eb650), so the two texts overlapped.
+    //  - now: our own plaque (ui\menu_plaque.png, 200x50) on the free cobblestones between the
+    //    Exit sign and the copyright parchment, above the game's "Version" text (0x6e19b7 at
+    //    375,720 250x20). No button, sign or text panel of the game is there.
+    // The background is stretched to the window, so the position is scaled; the PNG is drawn
+    // at its own size (see ui_mods.c ui_icon), so the size is not.
     int rw = (ref_w > 100 && ref_w < 10000) ? ref_w : 1366;
     int rh = (ref_h > 100 && ref_h < 10000) ? ref_h : 768;
-    int lx = 846 * rw / 1366, ly = 78 * rh / 768, lw = 204 * rw / 1366, lh = 35 * rh / 768;
+    int px = 392 * rw / 1366, py = 664 * rh / 768;
+    add_plaque(screen, px, py);
+    int lx = px + 6, ly = py + 7, lw = 188, lh = 36;
 
     // ref_ptr<Font>[4]; the factory copies it, so leaking our refs is harmless.
     static BYTE fonts[16];
@@ -138,6 +200,7 @@ static void add_label(void *screen) {
         if (panel) {
             ((ApplyStyle_t)ADDR_APPLY_STYLE)(screen, panel);
             make_label_clickable(panel);
+            set_hand_cursor(panel);
         }
     }
     wl_log("Menu label panels %p %p: \"%s\" / \"%s\"", g_label_panel[0], g_label_panel[1], l1, l2);

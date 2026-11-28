@@ -115,6 +115,7 @@ release: build/version.dll build/Scriptorium.exe build/wlsetup_stub.exe installe
 ui-icons:
 	mkdir -p build/ui
 	for f in art/ui/*.svg; do for s in 28 22 20 18; do rsvg-convert -w $$s -h $$s "$$f" -o build/ui/$$(basename "$$f" .svg)_$$s.png || exit 1; done; done
+	cp art/ui_static/*.png build/ui/   # fixed-size PNGs (main menu plaque, menu.c)
 
 uninstall:
 	rm -f "$(GAME)/version.dll"
