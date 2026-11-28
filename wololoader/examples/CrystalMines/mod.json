@@ -1,0 +1,31 @@
+{
+  "name": "Crystal Mines",
+  "version": "1.0",
+  "author": "Wololoader",
+  "description": "Adds a gatherable Crystal custom resource with Crystal Deposits and Crystal Miners. Places 2 Crystal Deposits near each player's Town Center at match start; villagers gather them and drop off at Town Centers or Mining Camps.",
+  "enabled": true,
+  "resources": [
+    {
+      "id": "crystal",
+      "name": "Crystal",
+      "icon": "icons/crystal.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "description": "Mined from Crystal Deposits by villagers.",
+      "gather": {
+        "deposit_name": "Crystal Deposit",
+        "amount": 800,
+        "copy_from": 66,
+        "miner_name": "Crystal Miner",
+        "work_rate": 0.45,
+        "carry": 10,
+        "drop_sites": [109, 584],
+        "minimap_color": 92,
+        "deposit_slp": 90001,
+        "carry_male_slp": 90002,
+        "carry_female_slp": 90003
+      }
+    }
+  ]
+}

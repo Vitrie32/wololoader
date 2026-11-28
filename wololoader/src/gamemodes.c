@@ -64,10 +64,15 @@ typedef struct {
     int  script_event;      // mod.json "script_event" flag
     int  one_team;          // mod.json "teams": "all" -> every player on one team (single player)
     int  enemy_player;      // mod.json "enemy_player": true -> an extra computer player on its own team
+    int  reveal_map;        // mod.json "reveal_map": true -> settings+0x9c (mVisibility, autostart.c) = 2 All Visible at start
+    int  default_visibility; // mod.json "default_visibility": "normal"/"explored"/"all" -> set when the mode is picked (-1 = none)
+    int  player_count;      // mod.json "player_count": 2..8 -> force exact player count in SP lobby (0 = unchanged)
+    int  no_auto_defeat;    // mod.json "no_auto_defeat": true -> ignore engine defeat check (Lua p:Defeat still works)
     int  map_type;          // mod.json "map": {"base": ...}: built-in map forced at start (0 = none)
     char map_file[32];      // that map's script file name ("Arena.rms"), served from map_script
     char map_script[MAX_PATH]; // mod.json "map": {"script": ...}: the mod's .rms (full path)
     int  map_min_size;      // mod.json "map": {"min_size": ...}: smallest map size index (0 = Tiny .. 6), -1 = any
+    int  map_lock;          // mod.json "map": {"lock": true} or "map_lock": true: hide map (and size if min_size set) in lobby
     char map_custom[64];    // that script's file name without ".rms": picked as a Custom map in the lobby
 } WlCustomMode;
 
@@ -78,6 +83,10 @@ static char __fastcall hook_setup_start(void *screen, void *edx);
 typedef void (__thiscall *ScreenChanged_t)(void *screen);
 static ScreenChanged_t g_orig_screen_changed;
 static void __fastcall hook_screen_changed(void *screen, void *edx);
+static ScreenChanged_t g_orig_sp_lobby_ui;
+static ScreenChanged_t g_orig_mp_lobby_ui;
+static void __fastcall hook_mp_lobby_ui(void *screen, void *edx);
+static void __fastcall hook_sp_lobby_ui(void *screen, void *edx);
 typedef void (__thiscall *SetStatus_t)(void *player, int status);
 static SetStatus_t g_orig_set_status;
 static void __fastcall hook_set_status(void *player, void *edx, int status);
@@ -195,6 +204,14 @@ static void scan_mod_game_modes(void) {
             const char *teams = wl_json_str(wl_json_get(item, "teams"), "");
             cm->one_team = teams && _stricmp(teams, "all") == 0;
             cm->enemy_player = wl_json_is_true(wl_json_get(item, "enemy_player"));
+            cm->reveal_map = wl_json_is_true(wl_json_get(item, "reveal_map"));
+            {   // Reveal Map ids 0 Normal (fog of war), 1 Explored, 2 All Visible (autostart.c, 0x64d890..)
+                const char *dv = wl_json_str(wl_json_get(item, "default_visibility"), "");
+                cm->default_visibility = !_stricmp(dv, "normal") ? 0 : !_stricmp(dv, "explored") ? 1 : !_stricmp(dv, "all") ? 2 : -1;
+            }
+            int pc = (int)wl_json_num(wl_json_get(item, "player_count"), 0);
+            cm->player_count = (pc >= 2 && pc <= 8) ? pc : 0;
+            cm->no_auto_defeat = wl_json_is_true(wl_json_get(item, "no_auto_defeat"));
 
             // "map": {"base": "arena", "script": "maps/X.rms"}: the mode plays on its own random map.
             // A custom .rms cannot be picked by name yet (the settings field for it is not mapped,
@@ -238,7 +255,9 @@ static void scan_mod_game_modes(void) {
                 } else if (!cm->map_type) {
                     wl_log("gamemodes: '%s': unknown map base '%s' (arabia, fortress, arena, nomad)", key, base ? base : "");
                 }
+                cm->map_lock = wl_json_is_true(wl_json_get(mp, "lock"));
             }
+            if (wl_json_is_true(wl_json_get(item, "map_lock"))) cm->map_lock = 1;
 
             // Register display name & tooltip in civs.c's 0x448370 string hook.
             wl_civs_set_mode_string(g_mode_count * 2, cm->name);
@@ -512,6 +531,19 @@ void wl_install_gamemodes(void) {
             wl_log("gamemodes: 0x657af0 bytes differ, mode maps are not locked in the lobby");
     }
     {
+        static const BYTE exp3[10] = { 0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0x29, 0xf9, 0x94, 0x00 };
+        static const BYTE exp4[7] = { 0x55, 0x8b, 0xec, 0x51, 0x53, 0x8b, 0xd9 };
+        static const BYTE exp5[8] = { 0x56, 0x8b, 0xf1, 0xe8, 0xc8, 0xed, 0xff, 0xff };
+        if (memcmp((void *)0x65efb0, exp4, sizeof exp4) == 0 && memcmp((void *)0x656fa0, exp5, sizeof exp5) == 0)
+            g_orig_mp_lobby_ui = (ScreenChanged_t)wl_hook(0x65efb0, hook_mp_lobby_ui, 7);
+        else
+            wl_log("gamemodes: 0x65efb0 / 0x656fa0 bytes differ, multiplayer lobby rules skipped");
+        if (memcmp((void *)0x65a640, exp3, sizeof exp3) == 0)
+            g_orig_sp_lobby_ui = (ScreenChanged_t)wl_hook(0x65a640, hook_sp_lobby_ui, 10);
+        else
+            wl_log("gamemodes: 0x65a640 bytes differ, map_lock UI hide skipped");
+    }
+    {
         static const BYTE exp[10] = { 0x55, 0x8b, 0xec, 0x6a, 0xff, 0x68, 0xe1, 0xbf, 0x96, 0x00 };
         if (memcmp((void *)0x748a40, exp, sizeof exp) == 0)
             g_orig_set_status = (SetStatus_t)wl_hook(0x748a40, hook_set_status, 10);
@@ -584,11 +616,19 @@ typedef void (__thiscall *SetMapSize_t)(void *screen, int size);
 static void force_mode_size(char *screen, char *settings, const WlCustomMode *cm) {
     if (cm->map_min_size < 0 || g_in_force_map) return;
     int size = *(int *)(settings + 0x90);
-    if (size >= cm->map_min_size && size <= 6) return;
+    if (cm->map_lock ? (size == cm->map_min_size) : (size >= cm->map_min_size && size <= 6)) return;
     g_in_force_map = 1;
     ((SetMapSize_t)0x658a80)(screen, cm->map_min_size);
     g_in_force_map = 0;
     wl_log("gamemodes: '%s': map size %d -> %d", cm->key, size, cm->map_min_size);
+}
+
+static void set_lobby_panel_visible(char *screen, int off, int show) {
+    void *p = *(void **)(screen + off);
+    if (!p || IsBadReadPtr(p, 4)) return;
+    void **vt = *(void ***)p;
+    if (!vt || IsBadReadPtr(vt, 20)) return;
+    ((void (__thiscall *)(void *, int))vt[4])(p, show);
 }
 
 static int force_mode_map(char *screen, char *settings, const WlCustomMode *cm) {
@@ -629,6 +669,141 @@ static const WlCustomMode *mode_of_settings(char *settings) {
     return (g_modes_installed && idx >= 0 && idx < g_mode_count) ? &g_modes[idx] : NULL;
 }
 
+// ---- Multiplayer lobby ------------------------------------------------------------------------
+// 0x657af0 (settings-changed handler) in a multiplayer lobby: if 0x656fa0 says "MP host"
+// (__thiscall(screen) -> al: settings+0x408 == 1 and 0x57d900(comm [screen+0xbd8]) != 0;
+// bytes 56 8b f1 e8 c8 ed ff ff) it calls 0x588840, which sends the host's GameSettings to
+// every client, then 0x65efb0 (MP lobby UI update). So the host may edit GameSettings and call
+// the original 0x657af0: the change reaches everyone exactly like a change made in the lobby UI.
+// Clients never edit; they only hide controls (pure UI).
+static int lobby_is_mp_host(void *screen) {
+    if (wl_mp_rehearsal()) return 1;   // rehearsal: the single player is the "host"
+    return ((BYTE (__thiscall *)(void *))0x656fa0)(screen) != 0;
+}
+
+// 0x615780 PlayerSlot::set_computer __thiscall(slot, GameString ai_name by value), ret 0xc
+// (0x6157fa): resets the slot (0x614510), status +0x54 = 4, moves the string into slot+0x28..0x30.
+// Called like 0x61351c..0x613553 (set_player_count): name = copy (0x432970) of the default AI
+// name *(GameString **)0xadaa10 (0x4a42d0 returns it).
+static void slot_make_computer(char *slot) {
+    WlGameStr name = { (char *)0xad0380, 0, 0 };
+    void *def = *(void **)0xadaa10;
+    if (def) ((void (__thiscall *)(void *, void *))0x432970)(&name, def);
+    ((void (__thiscall *)(void *, char *, int, int))0x615780)(slot, name.data, name.len, name.cap);
+}
+
+static int slot_used(int status) { return status == 2 || status == 3 || status == 4; }
+
+// The MP host keeps a one-team mode's rules in the lobby settings (clients see them at once):
+// every used slot on team 1 (value 2), teams locked, and for "enemy_player" one computer slot on
+// team 2 (value 3) in the first free slot. Returns 1 if something changed (caller broadcasts).
+static int mp_enforce_slots(char *settings, const WlCustomMode *cm) {
+    int changed = 0, enemy = -1, free_slot = -1;
+    if (cm->reveal_map && *(int *)(settings + 0x9c) != 2) { *(int *)(settings + 0x9c) = 2; changed = 1; }
+    // one-team modes, and fixed-size modes with an enemy (Clash of Empires: humans attack, the
+    // computer defends): humans on team 1 (value 2), the enemy computer on team 2 (value 3)
+    if (!cm->one_team && !(cm->player_count && cm->enemy_player)) return changed;
+    for (int i = 0; i < 8; i++) {
+        char *slot = settings + 0xb0 + i * 0x68;
+        int st = *(int *)(slot + 0x54);
+        if (cm->enemy_player && enemy < 0 && st == 4 && *(int *)slot == 3) { enemy = i; continue; }
+        if (slot_used(st)) { if (*(int *)slot != 2) { *(int *)slot = 2; changed = 1; } }
+        else if (st != 6 && free_slot < 0) free_slot = i;
+    }
+    if (*(BYTE *)(settings + 0x405) != 1) { *(BYTE *)(settings + 0x405) = 1; changed = 1; }
+    if (cm->enemy_player && enemy < 0 && free_slot >= 0) {
+        // The player count +0x3f0 must include the new slot: slots at or above it are closed again
+        // by the game on the next refresh (seen in the rehearsal: re-added 244 times with count 4).
+        // 0x6134b0 set_player_count keeps used/open slots below it (status table 0x9c4420).
+        if (*(int *)(settings + 0x3f0) <= free_slot) {
+            typedef void (__thiscall *SetCount_t)(void *settings, int n);
+            ((SetCount_t)0x6134b0)(settings, free_slot + 1);
+        }
+        char *slot = settings + 0xb0 + free_slot * 0x68;
+        if (*(int *)(slot + 0x54) != 4) slot_make_computer(slot);
+        if (*(int *)(slot + 0x54) == 4) {
+            *(int *)slot = 3;
+            changed = 1;
+            wl_log("gamemodes: '%s': multiplayer enemy computer in slot %d", cm->key, free_slot);
+        }
+    }
+    return changed;
+}
+
+static void apply_map_lock_ui(void *screen, const WlCustomMode *cm) {
+    if (!cm->map_lock) return;
+    char *sc = (char *)screen;
+    set_lobby_panel_visible(sc, 0x70c, 0);  // Map Style label
+    set_lobby_panel_visible(sc, 0x718, 0);  // Map Style dropdown
+    set_lobby_panel_visible(sc, 0x724, 0);  // Location label
+    set_lobby_panel_visible(sc, 0x730, 0);  // Location dropdown
+    if (cm->map_min_size >= 0) {
+        set_lobby_panel_visible(sc, 0x73c, 0); // Map Size label
+        set_lobby_panel_visible(sc, 0x748, 0); // Map Size dropdown
+    }
+    static const WlCustomMode *logged_cm;
+    if (logged_cm != cm) {
+        logged_cm = cm;
+        wl_log("gamemodes: '%s': map_lock hid map controls (min_size=%d)", cm->key, cm->map_min_size);
+    }
+}
+
+// settings+0x408 isMultiPlayer, or the multiplayer rehearsal (luagame.c wl_mp_rehearsal)
+static int settings_mp(const char *settings) {
+    return *(const int *)(settings + 0x408) != 0 || wl_mp_rehearsal();
+}
+
+static const WlCustomMode *g_vis_done;   // the mode whose default_visibility was applied in this lobby
+static void apply_lobby_map_rules(void *screen) {
+    if (g_in_force_map) return;
+    DWORD game = *(DWORD *)ADDR_GAME_PTR;
+    void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
+    char *settings = comm ? *(char **)((char *)comm + 0xd54) : NULL;
+    const WlCustomMode *cm = mode_of_settings(settings);
+    if (!cm) { g_vis_done = NULL; return; }
+    int mp = settings_mp(settings) != 0;
+    // Settings are edited in single player and by the multiplayer host only (see above).
+    if (!mp || lobby_is_mp_host(screen)) {
+        // "default_visibility": set once when the mode is picked; the player may change it after
+        if (g_vis_done != cm) {
+            g_vis_done = cm;
+            if (cm->default_visibility >= 0 && *(int *)(settings + 0x9c) != cm->default_visibility) {
+                *(int *)(settings + 0x9c) = cm->default_visibility;
+                g_in_force_map = 1;
+                g_orig_screen_changed(screen);     // redraw the lobby (and send it, as MP host)
+                g_in_force_map = 0;
+                wl_log("gamemodes: '%s': Reveal Map set to %d", cm->key, cm->default_visibility);
+            }
+        }
+        if (cm->map_custom[0]) force_mode_map(screen, settings, cm);
+        else if (cm->map_min_size >= 0) force_mode_size(screen, settings, cm);
+        if (mp && mp_enforce_slots(settings, cm)) {
+            g_in_force_map = 1;
+            g_orig_screen_changed(screen);   // host: send the settings to the clients, redraw the lobby
+            g_in_force_map = 0;
+        }
+    }
+    apply_map_lock_ui(screen, cm);          // every machine
+}
+
+// 0x65efb0 GameSetupScreen multiplayer lobby UI update __thiscall(screen), plain ret (0x65f046,
+// 0x65f233); called from 0x657af0 in multiplayer. It shows the map controls again, so the lock
+// is applied after it too. Stolen 7 bytes: 55 / 8b ec / 51 / 53 / 8b d9 (push ebp; mov ebp,esp;
+// push ecx; push ebx; mov ebx,ecx).
+static void __fastcall hook_mp_lobby_ui(void *screen, void *edx) {
+    (void)edx;
+    g_orig_mp_lobby_ui(screen);
+    apply_lobby_map_rules(screen);
+}
+
+// 0x65a640 GameSetupScreen SP UI update __thiscall(screen): called from 0x6483ac (screen open),
+// 0x656cc1, and 0x657af0 (0x657c8c). Hooking here ensures map_lock hides controls on initial open too.
+static void __fastcall hook_sp_lobby_ui(void *screen, void *edx) {
+    (void)edx;
+    g_orig_sp_lobby_ui(screen);
+    apply_lobby_map_rules(screen);
+}
+
 // 0x657af0 GameSetupScreen settings-changed handler __thiscall(screen), plain ret (0x657cda/0x657d97),
 // called after every lobby change (35 call sites, also at the end of 0x658ab0). After it, a mode
 // with its own map takes it back: picking another map snaps back, so the mode's map is the only one.
@@ -636,13 +811,7 @@ static const WlCustomMode *mode_of_settings(char *settings) {
 static void __fastcall hook_screen_changed(void *screen, void *edx) {
     (void)edx;
     g_orig_screen_changed(screen);
-    if (g_in_force_map) return;
-    DWORD game = *(DWORD *)ADDR_GAME_PTR;
-    void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
-    char *settings = comm ? *(char **)((char *)comm + 0xd54) : NULL;
-    const WlCustomMode *cm = mode_of_settings(settings);
-    // single player only: in a multiplayer lobby the clients must not change the host's map
-    if (cm && cm->map_custom[0] && !*(int *)(settings + 0x408)) force_mode_map(screen, settings, cm);
+    apply_lobby_map_rules(screen);
 }
 
 // ---- "enemy_player": true --------------------------------------------------------------------
@@ -678,35 +847,85 @@ static void add_enemy_slot(char *settings, const char *key) {
     wl_log("gamemodes: '%s': enemy player %d added (slot %d)", key, g_enemy_pid, last + 1);
 }
 
-int wl_gamemode_enemy_player(void) { return g_enemy_pid; }
+// Multiplayer: only the host runs the lobby code, so every machine reads the enemy from the synced
+// settings: the computer slot on team 2 (value 3) of a one-team mode; its player id is its rank
+// among the used slots (= slot + 1 when the slots are contiguous, as in single player).
+static int enemy_pid_from_settings(char *settings, const WlCustomMode *cm) {
+    if (!cm || !cm->enemy_player || (!cm->one_team && !cm->player_count)) return 0;
+    int rank = 0;
+    for (int i = 0; i < 8; i++) {
+        char *slot = settings + 0xb0 + i * 0x68;
+        int st = *(int *)(slot + 0x54);
+        if (!slot_used(st)) continue;
+        rank++;
+        if (st == 4 && *(int *)slot == 3) return rank;
+    }
+    return 0;
+}
+
+int wl_gamemode_enemy_player(void) {
+    DWORD game = *(DWORD *)ADDR_GAME_PTR;
+    void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
+    char *settings = comm ? *(char **)((char *)comm + 0xd54) : NULL;
+    if (settings && g_modes_installed && settings_mp(settings)) {
+        int pid = enemy_pid_from_settings(settings, mode_of_settings(settings));
+        if (pid) return pid;
+    }
+    return g_enemy_pid;
+}
+
+// A loaded savegame does not go through the lobby start (hook_setup_start), so the script tells
+// us again which player is the enemy (it keeps that in a saved resource). Only for the current
+// mode with "enemy_player", and only player ids 1..8.
+int wl_gamemode_set_enemy_player(int pid) {
+    DWORD game = *(DWORD *)ADDR_GAME_PTR;
+    void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
+    char *settings = comm ? *(char **)((char *)comm + 0xd54) : NULL;
+    const WlCustomMode *cm = mode_of_settings(settings);
+    if (!cm || !cm->enemy_player || pid < 1 || pid > 8) return 0;
+    if (g_enemy_pid != pid) wl_log("gamemodes: '%s': enemy player %d (restored by the script)", cm->key, pid);
+    g_enemy_pid = pid;
+    return 1;
+}
 
 // TRIBE_Player::set_game_status 0x748a40 __thiscall(player, int status), ret 4 (0x748d11); status 2 =
 // lost (0x750580 loss_if_game_on calls it through vtable[1] with 2). The enemy player owns nothing
 // between rounds, so the game's own defeat check would remove it and the match would end in a win.
 // Its defeat is ignored until the game is over (world+0x78 = 1, set by 0x72be70 on a win).
 // Stolen 10 bytes: 55 8b ec / 6a ff / 68 e1 bf 96 00 (push ebp; mov ebp,esp; push -1; push imm32).
+static int g_no_auto_defeat;
+
 static void __fastcall hook_set_status(void *player, void *edx, int status) {
     (void)edx;
-    if (status == 2 && g_enemy_pid && player && *(int *)((char *)player + 0x1adc) == g_enemy_pid) {
-        DWORD game = *(DWORD *)0xaf2c58;
-        char *w = game ? *(char **)((char *)game + 0xc8) : NULL;
-        if (w && !*(int *)(w + 0x78)) return;
+    if (status == 2 && !wl_gamecmd_in_defeat() && player) {
+        int pid = *(int *)((char *)player + 0x1adc);
+        int enemy = wl_gamemode_enemy_player();
+        if (g_no_auto_defeat || (enemy && pid == enemy)) {
+            DWORD game = *(DWORD *)0xaf2c58;
+            char *w = game ? *(char **)((char *)game + 0xc8) : NULL;
+            if (w && !*(int *)(w + 0x78)) return;
+        }
     }
     g_orig_set_status(player, status);
 }
 
 static char __fastcall hook_setup_start(void *screen, void *edx) {
     (void)edx;
+    g_vis_done = NULL;   // the next lobby applies the mode's default visibility again
     g_enemy_pid = 0;
+    g_no_auto_defeat = 0;
+    wl_script_clear_session();
     DWORD game = *(DWORD *)ADDR_GAME_PTR;
     void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
     char *settings = comm ? *(char **)((char *)comm + 0xd54) : NULL;
+    if (settings && g_modes_installed && settings_mp(settings) && lobby_is_mp_host(screen))
+        apply_lobby_map_rules(screen);   // multiplayer host (and the rehearsal): the lobby rules once more before launch
     if (settings && g_modes_installed) {
         int mode_id = *(int *)(settings + 0xac);
         int idx = mode_id - WL_MODE_VANILLA_COUNT;
-        int custom_ok = (idx >= 0 && idx < g_mode_count) ? (!*(int *)(settings + 0x408) && force_mode_map((char *)screen, settings, &g_modes[idx])) : 0;
+        int custom_ok = (idx >= 0 && idx < g_mode_count) ? (!settings_mp(settings) && force_mode_map((char *)screen, settings, &g_modes[idx])) : 0;
         if (!custom_ok && idx >= 0 && idx < g_mode_count && g_modes[idx].map_type) {
-            if (*(int *)(settings + 0x408)) {
+            if (settings_mp(settings)) {
                 wl_log("gamemodes: '%s' wants map %d; multiplayer keeps the lobby map", g_modes[idx].key, g_modes[idx].map_type);
             } else {
                 // Same calls as autostart.c: 0x613650 sets +0x98 mUserChosenMapType, 0x6135b0(-3) makes
@@ -717,8 +936,27 @@ static char __fastcall hook_setup_start(void *screen, void *edx) {
                 wl_log("gamemodes: '%s': map type %d (%s)", g_modes[idx].key, g_modes[idx].map_type, g_modes[idx].map_file);
             }
         }
-        if (idx >= 0 && idx < g_mode_count && g_modes[idx].one_team) {
-            if (*(int *)(settings + 0x408)) {
+        if (idx >= 0 && idx < g_mode_count && g_modes[idx].reveal_map) {
+            *(int *)(settings + 0x9c) = 2;   // All Visible: no fog of war (verified field, see autostart.c)
+            wl_log("gamemodes: '%s': map revealed", g_modes[idx].key);
+        }
+        if (idx >= 0 && idx < g_mode_count) {
+            g_no_auto_defeat = g_modes[idx].no_auto_defeat;
+            if (g_modes[idx].player_count >= 2 && !settings_mp(settings)) {
+                typedef void (__thiscall *SetCount_t)(void *settings, int n);
+                ((SetCount_t)0x6134b0)(settings, g_modes[idx].player_count);
+                if (g_modes[idx].player_count == 2 && g_modes[idx].enemy_player) {
+                    *(int *)(settings + 0xb0 + 0 * 0x68) = 2;   // Player 1 = Team 1 (attacker)
+                    *(int *)(settings + 0xb0 + 1 * 0x68) = 3;   // Player 2 = Team 2 (defender)
+                    *(BYTE *)(settings + 0x405) = 1;            // Lock Teams
+                    g_enemy_pid = 2;
+                }
+                wl_log("gamemodes: '%s': forced %d players (enemy=%d)", g_modes[idx].key,
+                       g_modes[idx].player_count, g_enemy_pid);
+            }
+        }
+        if (idx >= 0 && idx < g_mode_count && g_modes[idx].one_team && !g_modes[idx].player_count) {
+            if (settings_mp(settings)) {
                 wl_log("gamemodes: '%s' wants one team; multiplayer keeps the lobby teams", g_modes[idx].key);
             } else {
                 int n = 0;
@@ -761,6 +999,18 @@ int wl_gamemode_map_script(const char *file_name, char *out, size_t out_size) {
     if (_stricmp(file_name, g_modes[idx].map_file) != 0) return 0;
     snprintf(out, out_size, "%s", g_modes[idx].map_script);
     return 1;
+}
+
+// Map side in tiles from the lobby map size (settings+0x90, index 0 Tiny .. 6 LudiKRIS, as in
+// force_mode_size). Sizes as in the Last Stand map script comment. 0 = no game / unknown size.
+int wl_gamemode_map_tiles(void) {
+    static const int k_tiles[7] = { 120, 144, 168, 200, 220, 240, 480 };
+    DWORD game = *(DWORD *)ADDR_GAME_PTR;
+    void *comm = game ? *(void **)((char *)game + 0x98) : NULL;
+    char *settings = comm ? *(char **)((char *)comm + 0xd54) : NULL;
+    if (!settings) return 0;
+    int size = *(int *)(settings + 0x90);
+    return (size >= 0 && size < 7) ? k_tiles[size] : 0;
 }
 
 const char *wl_gamemode_current_key(void) {

@@ -48,6 +48,7 @@
 // A message shown during game_start was lost (game_start runs before the
 // message area works, seen in game 2026-11-15), so messages are queued and
 // shown from the per-frame update, starting 2 s after the game started.
+#include <stdio.h>
 #include "wololoader.h"
 #include <string.h>
 
@@ -216,7 +217,23 @@ static void lua_chat(const char *text, const char *sender, int player) {
 // 0x583640 = lea eax,[ecx+0xd54]): settings = [[[0xaf2c58]+0x98]+0xd54], and
 // settings+0x408 == 1 is 'isMultiPlayer' (serializer string at 0x9ccc6c,
 // read at 0x611cab). Verified in the disassembly 2026-11-15.
+// Multiplayer rehearsal (testing without a second player): when <root>\mp_rehearsal.txt exists,
+// a single-player lobby and match take the multiplayer code paths of Wololoader itself
+// (gamemodes.c lobby rules as "host", gamecmd.c command hold/pacing, Lua Game.IsMultiplayer).
+// The game itself stays single player: nothing is sent over a network.
+int wl_mp_rehearsal(void) {
+    static int state = -1;
+    if (state < 0) {
+        char p[MAX_PATH];
+        snprintf(p, sizeof p, "%s\\mp_rehearsal.txt", g_wl.root);
+        state = GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
+        if (state) wl_log("mp rehearsal: ON (%s): single player runs Wololoader's multiplayer paths", p);
+    }
+    return state;
+}
+
 int wl_is_multiplayer(void) {
+    if (wl_mp_rehearsal()) return 1;
     DWORD game = *(DWORD *)0xaf2c58;
     if (!game) return 0;
     DWORD a = *(DWORD *)(game + 0x98);
@@ -298,8 +315,57 @@ static void __fastcall hook_start_game(void *game, void *edx) {
     g_last_second = g_clock;
     reset_dialog_state();
     wl_counter_reset();
+    wl_ui_set_map_capture(0);
+    wl_ui_set_unit_control_disabled(0);
     wl_script_game_reset(g_clock);   // new game: no timers / waits / asks from the last one
     wl_script_event("game_start");
+}
+
+// Play a WAV/MP3 sound file through the game's SFX channel (SoundSystem::play_sound 0x46ba10,
+// storage_id=0 raw path, chan=1 SFX, SoundObject::play 0x46b010 — verified in victory.c/history.c).
+static void *g_lua_sfx_handle;
+int wl_play_sfx_file(const char *path) {
+    if (!path || !path[0]) return 0;
+    void *ss = *(void **)0xada234;
+    if (!ss) return 0;
+    void *out_handle = NULL;
+    DWORD str_buf[3] = { 0xad0380, 0, 0 };
+    typedef void *(__thiscall *StrAssign_t)(void *str, const char *s);
+    typedef void (__thiscall *StartSound_t)(void *obj);
+    ((StrAssign_t)0x433210)(str_buf, path);
+    __asm__ __volatile__(
+        "pushl $0\n\t"
+        "pushl $1\n\t"
+        "subl $24, %%esp\n\t"
+        "movl %%esp, %%edx\n\t"
+        "movl $0, 0(%%edx)\n\t"
+        "movl $0, 4(%%edx)\n\t"
+        "movl 0(%0), %%eax\n\t"
+        "movl %%eax, 8(%%edx)\n\t"
+        "movl 4(%0), %%eax\n\t"
+        "movl %%eax, 12(%%edx)\n\t"
+        "movl 8(%0), %%eax\n\t"
+        "movl %%eax, 16(%%edx)\n\t"
+        "movl $0, 20(%%edx)\n\t"
+        "pushl %1\n\t"
+        "movl %2, %%ecx\n\t"
+        "movl $0x46ba10, %%eax\n\t"
+        "call *%%eax\n\t"
+        :
+        : "r" (str_buf), "r" (&out_handle), "r" (ss)
+        : "eax", "ecx", "edx", "memory", "cc"
+    );
+    if (!out_handle) return 0;
+    if (g_lua_sfx_handle) {
+        int *ref = (int *)((char *)g_lua_sfx_handle + 4);
+        if (--(*ref) == 0) {
+            typedef void (__thiscall *SoundDtor_t)(void *obj);
+            ((SoundDtor_t)(*(void ***)g_lua_sfx_handle)[0])(g_lua_sfx_handle);
+        }
+    }
+    g_lua_sfx_handle = out_handle;
+    ((StartSound_t)0x46b010)(out_handle);
+    return 1;
 }
 
 void wl_install_lua_game(void) {

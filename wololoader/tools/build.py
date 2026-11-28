@@ -16,6 +16,7 @@ apply_civ_json().
 
 import copy
 import json
+import math
 import os
 import struct
 import sys
@@ -87,7 +88,12 @@ def find_custom_resources(mods_dir):
     if not os.path.isdir(mods_dir):
         return out
     vanilla_names = {"food", "wood", "stone", "gold"}
-    known_keys = {"id", "name", "icon", "start", "max", "show", "description"}
+    known_keys = {"id", "name", "icon", "start", "max", "show", "hidden", "game_mode", "description", "gather"}
+    known_gather_keys = {
+        "deposit_name", "amount", "copy_from", "miner_name",
+        "work_rate", "carry", "drop_sites", "minimap_color",
+        "deposit_slp", "carry_male_slp", "carry_female_slp",
+    }
     for mod in sorted(os.listdir(mods_dir)):
         mdir = os.path.join(mods_dir, mod)
         if not os.path.isdir(mdir):
@@ -150,18 +156,121 @@ def find_custom_resources(mods_dir):
                 rshow = True
             if not isinstance(rshow, bool):
                 raise BuildError("%s: show must be a boolean" % w)
+            rhidden = r.get("hidden", False)
+            if rhidden is None:
+                rhidden = False
+            if not isinstance(rhidden, bool):
+                raise BuildError("%s: hidden must be a boolean" % w)
+            rgmode = r.get("game_mode", "")
+            if rgmode is None:
+                rgmode = ""
+            if not isinstance(rgmode, str) or len(rgmode) > 64 or any(c in rgmode for c in "\t\n\r"):
+                raise BuildError("%s: game_mode must be a string (max 64 chars, no tab/newline)" % w)
             rdesc = r.get("description", "")
             if rdesc is None:
                 rdesc = ""
             if not isinstance(rdesc, str):
                 raise BuildError("%s: description must be a string" % w)
+            gather_spec = None
+            raw_gather = r.get("gather")
+            if raw_gather is not None:
+                gw = "%s gather" % w
+                if not isinstance(raw_gather, dict):
+                    raise BuildError("%s: must be an object" % gw)
+                g_extra = {key for key in raw_gather if not key.startswith("_")} - known_gather_keys
+                if g_extra:
+                    raise BuildError("%s: unknown key(s) %s" % (gw, sorted(g_extra)))
+
+                dep_name = raw_gather.get("deposit_name")
+                if dep_name is None:
+                    dep_name = "%s Deposit" % rname
+                else:
+                    if (not isinstance(dep_name, str) or not dep_name or len(dep_name) > 128 or
+                            any(c in dep_name for c in "\t\n\r")):
+                        raise BuildError("%s: deposit_name must be a non-empty string (max 128 chars, no tab/newline)" % gw)
+
+                miner_name = raw_gather.get("miner_name")
+                if miner_name is None:
+                    miner_name = "%s Miner" % rname
+                else:
+                    if (not isinstance(miner_name, str) or not miner_name or len(miner_name) > 128 or
+                            any(c in miner_name for c in "\t\n\r")):
+                        raise BuildError("%s: miner_name must be a non-empty string (max 128 chars, no tab/newline)" % gw)
+
+                g_amount = raw_gather.get("amount")
+                if g_amount is not None:
+                    if (isinstance(g_amount, bool) or not isinstance(g_amount, (int, float)) or
+                            not math.isfinite(g_amount) or g_amount < 1 or g_amount > 65535):
+                        raise BuildError("%s: amount must be a number 1..65535" % gw)
+                    g_amount = float(g_amount)
+
+                g_copy_from = raw_gather.get("copy_from", 66)
+                if g_copy_from is None:
+                    g_copy_from = 66
+                if isinstance(g_copy_from, bool) or not isinstance(g_copy_from, int) or g_copy_from < 0:
+                    raise BuildError("%s: copy_from must be a non-negative integer" % gw)
+
+                g_work_rate = raw_gather.get("work_rate")
+                if g_work_rate is not None:
+                    if (isinstance(g_work_rate, bool) or not isinstance(g_work_rate, (int, float)) or
+                            not math.isfinite(g_work_rate) or g_work_rate <= 0 or g_work_rate > 1000):
+                        raise BuildError("%s: work_rate must be a number > 0 and <= 1000" % gw)
+                    g_work_rate = float(g_work_rate)
+
+                g_carry = raw_gather.get("carry")
+                if g_carry is not None:
+                    if isinstance(g_carry, bool) or not isinstance(g_carry, int) or not 1 <= g_carry <= 32767:
+                        raise BuildError("%s: carry must be an integer 1..32767" % gw)
+
+                g_drop_sites = raw_gather.get("drop_sites")
+                if g_drop_sites is not None:
+                    if not isinstance(g_drop_sites, list) or not 1 <= len(g_drop_sites) <= 2:
+                        raise BuildError("%s: drop_sites must be a list of 1 or 2 unit ids" % gw)
+                    ds_parsed = []
+                    for di, ds in enumerate(g_drop_sites):
+                        if isinstance(ds, bool) or not isinstance(ds, int) or ds < 0:
+                            raise BuildError("%s: drop_sites[%d] must be a non-negative integer" % (gw, di))
+                        ds_parsed.append(ds)
+                    if len(ds_parsed) == 1:
+                        ds_parsed.append(-1)
+                    g_drop_sites = ds_parsed
+
+                g_minimap_color = raw_gather.get("minimap_color")
+                if g_minimap_color is not None:
+                    if (isinstance(g_minimap_color, bool) or not isinstance(g_minimap_color, int) or
+                            not 0 <= g_minimap_color <= 255):
+                        raise BuildError("%s: minimap_color must be an integer 0..255" % gw)
+
+                g_slps = {}
+                for sk in ("deposit_slp", "carry_male_slp", "carry_female_slp"):
+                    sv = raw_gather.get(sk)
+                    if sv is not None:
+                        if isinstance(sv, bool) or not isinstance(sv, int) or not 0 < sv < 2 ** 31:
+                            raise BuildError("%s: %s must be a positive integer" % (gw, sk))
+                    g_slps[sk] = sv
+
+                gather_spec = {
+                    "deposit_name": dep_name,
+                    "miner_name": miner_name,
+                    "amount": g_amount,
+                    "copy_from": g_copy_from,
+                    "work_rate": g_work_rate,
+                    "carry": g_carry,
+                    "drop_sites": g_drop_sites,
+                    "minimap_color": g_minimap_color,
+                    "deposit_slp": g_slps["deposit_slp"],
+                    "carry_male_slp": g_slps["carry_male_slp"],
+                    "carry_female_slp": g_slps["carry_female_slp"],
+                    "where": gw,
+                }
             rid = CUSTOM_RES_FIRST + len(out)
             if rid > CUSTOM_RES_MAX:
                 raise BuildError("%s: too many custom resources (max id %d)" % (w, CUSTOM_RES_MAX))
             out.append({
                 "id": rid, "mod": mod, "key": rkey, "name": rname, "icon": ricon,
                 "start": float(rstart), "max": float(rmax), "show": 1 if rshow else 0,
-                "description": rdesc,
+                "hidden": 1 if rhidden else 0, "game_mode": rgmode,
+                "description": rdesc, "gather": gather_spec,
             })
     return out
 
@@ -938,7 +1047,7 @@ def add_unique_building(dat, civ, cid, ub, where, ub_k, uu_total, ext):
         raise BuildError("%s: civ_id %d exceeds 114 for unique_building" % (where, cid))
     game_civ = cid < 35   # a building for an existing civ ("extend"): its names go to strings.txt
     B = 1400 - ub_k
-    if B < 1300 or B <= 1225 + 2 * uu_total + ext.get("cu_total", 0):     # buildpage.c treats 1300..1400 as mod buildings
+    if B < 1300 or B <= 1225 + 2 * uu_total + ext.get("cu_total", 0) + ext.get("gather_slots", 0):     # buildpage.c treats 1300..1400 as mod buildings
         raise BuildError("%s: unique building slot %d collides with unique unit slots" % (where, B))
     civ1 = dat.civilizations.civs[1]
     u_check = civ1.units[B] if B < len(civ1.units) else None
@@ -1135,7 +1244,7 @@ def add_building_commands(dat, civ, cid, B, ub, age, avail_eff, where, uu_total,
                 raise BuildError("%s: train copy_from unit %d must be a trainable unit (type 70)" % (w, src))
             slot = 1400 - ext["slots"]
             ext["slots"] += 1
-            if slot < 1300 or slot <= 1225 + 2 * uu_total + ext.get("cu_total", 0):
+            if slot < 1300 or slot <= 1225 + 2 * uu_total + ext.get("cu_total", 0) + ext.get("gather_slots", 0):
                 raise BuildError("%s: no free unit slot left (1300..1400)" % w)
             civ1 = dat.civilizations.civs[1]
             if civ1.units[slot] is None or df.cstr(civ1.units[slot].name) != "RESERVED":
@@ -1696,6 +1805,171 @@ def add_custom_units(dat, civ, cid, cu_list, ub_spec, ub_slot, where, uu_total, 
         dat.researches.count = len(dat.researches.researches)
 
 
+GATHER_MALE_TEMPLATE = 579      # VMGLD: male Gold Miner (villager_mode=1)
+GATHER_FEMALE_TEMPLATE = 581    # VFGLD: female Gold Miner (villager_mode=2)
+
+
+def apply_gather_resources(dat, custom_res, uu_total, ext):
+    """Allocate RESERVED unit slots (deposit, male miner, female miner) for gatherable custom resources.
+
+    Slots count up right after custom units: 1224 + 2*uu_total + cu_total + 3*k.
+    Mirrors wl_apply_gather_resources in datbuild.c byte-for-byte.
+    Returns list of tab-separated lines for cache/gather.txt:
+        key<TAB>resource_id<TAB>deposit_id<TAB>male_id<TAB>female_id
+    """
+    civs = dat.civilizations.civs
+    civ0 = civs[0]
+    civ1 = civs[1]
+    headers = dat.unit_headers.headers
+    gather_lines = []
+    g_k = 0
+    for r in custom_res:
+        g = r.get("gather")
+        if g is None:
+            continue
+        gw = g["where"]
+        rid = r["id"]
+        dep_id = 1224 + 2 * uu_total + ext.get("cu_total", 0) + 3 * g_k
+        male_id = dep_id + 1
+        female_id = dep_id + 2
+        g_k += 1
+
+        if female_id > 1400:
+            raise BuildError("%s: gather unit slot %d exceeds 1400" % (gw, female_id))
+        if female_id > 1400 - ext["slots"]:
+            raise BuildError("%s: gather unit slot %d collides with unique building slots" % (gw, female_id))
+        if female_id >= len(headers):
+            raise BuildError("%s: gather unit slot %d exceeds unit header count" % (gw, female_id))
+
+        for slot in (dep_id, male_id, female_id):
+            u_check = civ1.units[slot] if slot < len(civ1.units) else None
+            if u_check is None or df.cstr(u_check.name) != "RESERVED":
+                raise BuildError("%s: civ 1 unit at %d is not named 'RESERVED'" % (gw, slot))
+
+        copy_from = g["copy_from"]
+        if not 0 <= copy_from < len(civ0.units) or civ0.units[copy_from] is None:
+            raise BuildError("%s: copy_from unit %d does not exist in Gaia" % (gw, copy_from))
+        if copy_from >= len(headers):
+            raise BuildError("%s: copy_from unit %d exceeds unit header count" % (gw, copy_from))
+
+        if g["drop_sites"] is not None:
+            for ds in g["drop_sites"]:
+                if ds >= 0 and ds >= len(civ1.units):
+                    raise BuildError("%s: drop_sites unit %d out of range" % (gw, ds))
+
+        dep_uname = make_unit_name(g["deposit_name"], gw)
+        miner_uname = make_unit_name(g["miner_name"], gw)
+
+        sid_dep = _new_sids(ext)
+        ext["strings"] += [(sid_dep, g["deposit_name"]),
+                           (sid_dep + 1, g["deposit_name"]),
+                           (sid_dep + 2, g["deposit_name"])]
+        sid_miner = _new_sids(ext)
+        ext["strings"] += [(sid_miner, g["miner_name"]),
+                           (sid_miner + 1, g["miner_name"]),
+                           (sid_miner + 2, g["miner_name"])]
+
+        # Section 9: UnitHeaders for deposit (mirrors copy_from) and male/female miners (from 579/581).
+        headers[dep_id] = copy.deepcopy(headers[copy_from])
+        for tmpl_id, slot_id, carry_key in ((GATHER_MALE_TEMPLATE, male_id, "carry_male_slp"),
+                                            (GATHER_FEMALE_TEMPLATE, female_id, "carry_female_slp")):
+            src_hdr = headers[tmpl_id] if tmpl_id < len(headers) else None
+            if src_hdr is None or not src_hdr.exists or not src_hdr.commands:
+                raise BuildError("%s: template miner unit header %d has no commands" % (gw, tmpl_id))
+            new_hdr = copy.deepcopy(src_hdr)
+            # Drop task type 110 (ROCKGX 841) so custom miners only gather their new deposit.
+            kept = [cmd for cmd in new_hdr.commands if cmd.type != 110]
+            found_gather = False
+            carry_slp = g[carry_key]
+            for idx, cmd in enumerate(kept):
+                cmd.id = idx
+                if cmd.type == 5:
+                    cmd.class_id = -1
+                    cmd.unit_id = dep_id
+                    cmd.terrain_id = -1
+                    cmd.resource_in = rid
+                    cmd.resource_productivity_multiplier = -1
+                    cmd.resource_out = rid
+                    if carry_slp is not None and cmd.graphics[3] >= 0:
+                        remapped = SLP_REMAP.get(carry_slp, carry_slp)
+                        cmd.graphics[3] = add_graphic(dat, cmd.graphics[3], remapped, None, None, gw)
+                    found_gather = True
+            if not found_gather:
+                raise BuildError("%s: template miner unit header %d has no Gather (type 5) task" % (gw, tmpl_id))
+            new_hdr.commands = kept
+            headers[slot_id] = new_hdr
+
+        dep_gid = None
+        if g["deposit_slp"] is not None:
+            src_dep_gid = civ0.units[copy_from].standing_graphic[0]
+            if src_dep_gid < 0:
+                raise BuildError("%s: copy_from unit %d has no standing graphic" % (gw, copy_from))
+            remapped = SLP_REMAP.get(g["deposit_slp"], g["deposit_slp"])
+            dep_gid = add_graphic(dat, src_dep_gid, remapped, None, None, gw)
+
+        # Section 10: Deposit in Gaia (and any civ where copy_from is present; absent in civs where copy_from is None).
+        for civ in civs:
+            src_dep = civ.units[copy_from] if copy_from < len(civ.units) else None
+            if src_dep is None:
+                civ.unit_ptrs[dep_id] = 0
+                civ.units[dep_id] = None
+            else:
+                du = copy.deepcopy(src_dep)
+                du.id = dep_id
+                du.id2 = dep_id
+                du.id3 = dep_id
+                du.name = dep_uname
+                du.name_length = len(dep_uname)
+                du.enabled = 1
+                du.language_dll_name = sid_dep
+                du.language_dll_creation = sid_dep + 1
+                du.language_dll_help = 79000 + sid_dep + 2
+                du.language_dll_hotkey_text = 150000 + sid_dep
+                if dep_gid is not None:
+                    du.standing_graphic[0] = dep_gid
+                du.resource_storages[0].type = rid
+                if g["amount"] is not None:
+                    du.resource_storages[0].amount = float(g["amount"])
+                du.resource_storages[1] = df.ResourceStorage(type=-1, amount=0.0, store_mode=0)
+                du.resource_storages[2] = df.ResourceStorage(type=-1, amount=0.0, store_mode=0)
+                if g["minimap_color"] is not None:
+                    du.minimap_color = g["minimap_color"]
+                civ.unit_ptrs[dep_id] = 1
+                civ.units[dep_id] = du
+
+            # Male & female miners in every civ that has villagers (579/581).
+            has_miners = (GATHER_MALE_TEMPLATE < len(civ.units) and civ.units[GATHER_MALE_TEMPLATE] is not None and
+                          GATHER_FEMALE_TEMPLATE < len(civ.units) and civ.units[GATHER_FEMALE_TEMPLATE] is not None)
+            if has_miners:
+                for tmpl_id, slot_id in ((GATHER_MALE_TEMPLATE, male_id), (GATHER_FEMALE_TEMPLATE, female_id)):
+                    mu = copy.deepcopy(civ.units[tmpl_id])
+                    mu.id = slot_id
+                    mu.id2 = slot_id
+                    mu.id3 = slot_id
+                    mu.name = miner_uname
+                    mu.name_length = len(miner_uname)
+                    mu.language_dll_name = sid_miner
+                    mu.language_dll_creation = sid_miner + 1
+                    mu.language_dll_help = 79000 + sid_miner + 2
+                    mu.language_dll_hotkey_text = 150000 + sid_miner
+                    if g["work_rate"] is not None:
+                        mu.work_rate = float(g["work_rate"])
+                    if g["carry"] is not None:
+                        mu.resource_capacity = int(g["carry"])
+                    if g["drop_sites"] is not None:
+                        mu.drop_site = list(g["drop_sites"])
+                    civ.unit_ptrs[slot_id] = 1
+                    civ.units[slot_id] = mu
+            else:
+                civ.unit_ptrs[male_id] = 0
+                civ.units[male_id] = None
+                civ.unit_ptrs[female_id] = 0
+                civ.units[female_id] = None
+
+        gather_lines.append("%s\t%d\t%d\t%d\t%d" % (r["key"], rid, dep_id, male_id, female_id))
+    return gather_lines
+
+
 def find_civ_files(mods_dir):
     """[(mod_folder, json_filename, path)] for enabled mods, sorted."""
     out = []
@@ -1748,7 +2022,9 @@ def build(game_dir):
            "unit_icons": find_icons(mods_dir, "units", UNIT_ICON_BASE),
            "cmd_icons": find_cmd_icons(mods_dir),
            "custom_res": custom_res,
-           "cu_k": 0, "cu_total": 0}
+           "cu_k": 0, "cu_total": 0,
+           "gather_slots": 3 * sum(1 for r in custom_res if r["gather"] is not None)}
+    uu_total = 0
     if files:
         for k in range(NUM_RESERVED):
             ph = copy.deepcopy(civs[1])
@@ -1756,7 +2032,6 @@ def build(game_dir):
             civs.append(ph)
         uu_k = 0
         ub_k = 0
-        uu_total = 0
         for mod, fn, path in files:      # unique unit slots count up, building slots count down
             spec = load_json(path)
             if isinstance(spec, dict):
@@ -1789,17 +2064,21 @@ def build(game_dir):
             print("civ %d: %s (dat name %s) cloned from %d  [%s]"
                   % (cid, spec["name"], df.cstr(civs[cid].name), spec["base"], where))
 
+    gather_lines = apply_gather_resources(dat, custom_res, uu_total, ext)
+
     out = dat.serialize()
     os.makedirs(cache, exist_ok=True)
     out_dat = os.path.join(cache, "empires2_x2_p1.dat")
     res_txt = "".join(
-        "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n" % (
+        "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%d\t%s\n" % (
             r["id"], r["mod"], r["key"], r["name"], r["icon"],
             fmt_res_float(r["start"]), fmt_res_float(r["max"]), r["show"],
             r["description"].replace("\t", " ").replace("\r", "").replace("\n", "\\n"),
+            r["hidden"], r["game_mode"],
         )
         for r in custom_res
     ).encode("utf-8")
+    gather_txt = "".join(l + "\n" for l in gather_lines).encode("utf-8")
     for path, data, mode in ((out_dat, df.compress(out), "wb"),
                              (os.path.join(cache, "civs.txt"),
                               "".join(l + "\n" for l in lines).encode("utf-8"), "wb"),
@@ -1810,7 +2089,8 @@ def build(game_dir):
                                       for i, t in ext["strings"]).encode("utf-8"), "wb"),
                              (os.path.join(cache, "commands.txt"),
                               "".join(l + "\n" for l in ext["lua"]).encode("utf-8"), "wb"),
-                             (os.path.join(cache, "resources.txt"), res_txt, "wb")):
+                             (os.path.join(cache, "resources.txt"), res_txt, "wb"),
+                             (os.path.join(cache, "gather.txt"), gather_txt, "wb")):
         tmp = path + ".tmp"
         with open(tmp, mode) as f:
             f.write(data)

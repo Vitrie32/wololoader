@@ -158,5 +158,5 @@ static int ga_player_civ(int pid) {
 
 static const WlGameApi k_api = { ga_local, ga_count, ga_resource, ga_is_enemy, ga_units,
     wl_cmd_add_resource, wl_cmd_research, wl_cmd_spawn, wl_cmd_delete, ga_selected, ga_time, wl_cmd_set_age, ga_researched, wl_cmd_move, ga_units_of_type, wl_cmd_spawn_neutral,
-    wl_cmd_set_resource, wl_resources_list, wl_resource_resolve, ga_mode, wl_cmd_win, wl_cmd_defeat, ga_player_civ, wl_cmd_attack };
+    wl_cmd_set_resource, wl_resources_list, wl_resource_resolve, ga_mode, wl_cmd_win, wl_cmd_defeat, ga_player_civ, wl_cmd_attack, wl_gather_by_key };
 const WlGameApi *wl_game_api(void) { return &k_api; }

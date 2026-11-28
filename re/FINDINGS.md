@@ -454,3 +454,28 @@ Implementation: `wololoader/src/gamemodes.c`, `wololoader/src/civs.c`, `woloload
 | `0x6134b0` | `GameSettings::set_player_count` | `__thiscall(settings, n)`, `ret 4` (`0x6135a0`). `+0x3f0 = n`; slots < n with status not in {2,0,4,6} (`0x9c4420`) become Computer (`0x615780`), slots >= n closed (`0x615800`). |
 | `0x748a40` | `TRIBE_Player::set_game_status` | `__thiscall(player, int status)`, `ret 4` (`0x748d11`); 2 = lost. Stolen 10 B: `55 8b ec 6a ff 68 e1 bf 96 00`. |
 | String type | `{char *data; int len; int cap}` | copy `0x432970` (`__thiscall(dst, src)`, reads `[src+4]` as length); empty data = `0xad0380`. |
+
+## Gatherable custom resources: unit panel & `random_map.def` (`resbar.c`, `files.c`, verified in disassembly 2026-11-26)
+
+All addresses, offsets, and instruction bytes below were verified directly against `AoK HD.exe` 5.8 (`i686-w64-mingw32-objdump`) and `re/out/decompiled.c`.
+
+### 1. Bottom-left unit panel (`TRIBE_Panel_Object`, vtable `0x9d9488`)
+
+| Address / Offset | Role | Convention / `ret N` / Return | Evidence (verified bytes & details) |
+|---|---|---|---|
+| `GameScreen + 0xb10` | `TRIBE_Panel_Object*` pointer | field | Verified in `GameScreen::ctor` at `0x6b464c..0x6b4657`: `68 f0 54 9d 00` (`push 0x9d54f0` `"Panel_Object"`), `89 87 10 0b 00 00` (`mov [edi+0xb10], eax`). |
+| `0x713f00` | `TRIBE_Panel_Object::draw` (vtable slot 15 `+0x3c`) | `__thiscall(panel)`, plain `ret` (`0x715a81`), `void` | Prologue: `55 8b ec 6a ff 68 ca 6b 96 00`. Resets drawn row count at `0x713f90` (`c7 87 d4 0b 00 00 00 00 00 00`, `mov [edi+0xbd4], 0`). Skips normal draw when `[panel+0xc04] == 2` (`0x713fbb`: `80 bf 04 0c 00 00 02`), `[panel+0xbf4] == NULL` (`0x713fd0`: `8b 8f f4 0b 00 00`), or `[*(panel+0xbf0)+0x254] > 1` (`0x713fde..0x713feb`: `8b 97 f0 0b 00 00; 83 ba 54 02 00 00 01; 7e 0c`). |
+| `0x714c58..0x71516e` | Deposit (`command_attribute == 1`) resource row | inside `0x713f00` | Reads `master = [obj+0xc]` (`8b 50 0c`), `cmd_attr = [master+0x97]` (`8a 8a 97 00 00 00`), checks `cmd_attr == 1` (`0x714ca0`: `80 f9 01`) and `class != 0x28` (`0x714ca9`: `66 83 7a 16 28`). At `0x7150bc`: reads `int16 rid = [obj+0x50]` (`0f bf 40 50`), bails out on `cmp eax, 0x38; ja 0x715a55` (`83 f8 38 0f 87 87 09 00 00`). Reads `float amt = [obj+0x48]` (`0x715154`: `f3 0f 10 41 48`), rounds via `addss xmm0, [0x9afd68]` (`0.5f`, `f3 0f 58 05 68 fd 9a 00`) + `cvttss2si` (`f3 0f 2c c0`). |
+| `0x715783..0x715a53` | Villager/unit (`cmd_attr` in `{3,4,5,6,7,9,12}`) carried row | inside `0x713f00` | Checks `[obj+0x10] == [panel+0xbf0]` (`0x715783`: `8b 41 10 3b 87 f0 0b 00 00`), skips garrison display if `([master+0xa4] & 1) != 0` (`0x715795`: `f6 82 a4 00 00 00 01`), reads `float amt = [obj+0x48]` (`0x71582d`: `f3 0f 10 41 48` and `0x715a2b`: `f3 0f 10 46 48`), checks `(int)(amt + 0.5f) > 0` (`0x715901..0x715913`), reads `int16 rid = [obj+0x50]` (`0x71592e`: `0f bf 46 50`), bails out on `cmp eax, 0x39; ja 0x715a55` (`83 f8 39 0f 87 1a 01 00 00`). |
+| `0x7167c0` | `TRIBE_Panel_Object::draw_item` (vtable slot 52 `+0xd0`) | `__thiscall(panel, row, pic, mode, v1, v2, v3, v4, help)`, `ret 0x20` (`0x716c12`), `void` | Prologue: `55 8b ec 6a ff 68 ab 6c 96 00`. Skips `row > 3` (`0x7167f6`: `83 ff 03 0f 8f f8 03 00 00`). Draws icon at `(panel->x + 15, panel->y + 72 + row*20)` (`0x716824..0x71684b`: `[ebx+0xb8]+0xf`, `[ebx+0xbc]+(row*5+0x12)*4`). Draws text at `(panel->x + 57, panel->y + 74 + row*20)` (`0x716b83..0x716ba2`: `[ebx+0xb8]+0x39`, `[ebx+0xbc]+row*20+0x4a`) using font 6 via `[0xada2a8]` -> `0x472020(6)` (`0x716b03..0x716b0b`, `0x472026`: `8b 04 81`) -> `HFONT` at `[fwrap+8]` (`0x716b4b`: `ff 77 08`), `SetBkMode(TRANSPARENT)` (`0x716b15..0x716b1a`), black ink from `0xada500` (`0x716b20..0x716b42`). Increments `[panel+0xbd4]` (`0x716bf1`: `ff 83 d4 0b 00 00`), so `[panel+0xbd4]` equals the exact next free row index `r`. |
+| `0x472020` | `FontManager::get_font(int idx)` | `__thiscall(fm, idx)`, `ret 4` (`0x47202a`), `void*` | Full body: `55 8b ec 8b 45 08 8b 04 81 5d c2 04 00`. |
+
+### 2. RMS `random_map.def` loose-file loading
+
+| Address / Offset | Role | Evidence (verified bytes & details) |
+|---|---|---|
+| `0x9cb7e8` | `"random_map.def"` string in `.rdata` | Referenced at `0x5fe00e`: `68 e8 b7 9c 00` (`push 0x9cb7e8`), `0x5fe018`: `e8 f3 09 00 00` (`call 0x5fea10`). |
+| `0x5fea10` -> `0x5e21e0` -> `0x5e24f0` -> `0x5d6df0` | Dataset path resolution | Formats `"%s\\%s"` with dataset dir (`"gamedata_x2"` `0x9c9b10` / `"gamedata_x1"` `0x9c9a78`) and `"random_map.def"` under storage `0x0e` (`resources\_common\drs\`). |
+| `0x824b71` / `0x827239` | Win32 file probe & open | `0x5d6df0` checks existence via `0x823720` -> `0x8249f0` -> `0x824b71` (`ff 15 68 c1 9a 00`, `call [FindFirstFileA]`). `0x5fea10` opens via `0x5fe520` -> `0x826d10` -> `0x826e60` -> `0x827239` (`ff 15 e4 c1 9a 00`, `call [CreateFileA]`). AoE2 HD 5.8 ships `gamedata_x1\random_map.def` and `gamedata_x2\random_map.def` as loose files (no `.drs` archives), so `files.c`'s IAT redirect serves `wololoader\cache\random_map_x2.def` / `random_map_x1.def` directly. |
+
+Implementation: `wololoader/src/resources.c`, `wololoader/src/resbar.c`, `wololoader/src/files.c`, `wololoader/src/gameapi.c`, `wololoader/src/script.c`, `wololoader/src/autobuild.c`, `wololoader/src/hotreload.c`, `wololoader/examples/CrystalMines/scripts/main.lua`. Not yet tested in-game.

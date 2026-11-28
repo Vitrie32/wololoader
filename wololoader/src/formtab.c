@@ -128,8 +128,8 @@ static BOOL is_formation_button(void *btn) {
 static void __fastcall hook_update_command_buttons(void *self, void *edx) {
     (void)edx;
 
-    // 1. Let the original game function build Page 1
-    g_orig_update_command_buttons(self);
+    // 1. Let the original game function build Page 1 (through buildpage.c: shared commands of allies)
+    wl_bp_panel_refresh((void *)g_orig_update_command_buttons, self);
 
     // 2. Only modify when active page is Page 1
     int page = *(int *)((char *)self + 0x1288);

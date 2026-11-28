@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bgG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#53402a"/><stop offset="100%" stop-color="#19110a"/></linearGradient>
+    <clipPath id="clip"><rect x="2" y="2" width="32" height="32" rx="2"/></clipPath>
+    <radialGradient id="hl" cx="0.18" cy="0.12" r="0.85"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.24"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+    <linearGradient id="oak" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d39a52"/><stop offset="50%" stop-color="#8a5520"/><stop offset="100%" stop-color="#5a3410"/></linearGradient>
+    <linearGradient id="thatch" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f4d680"/><stop offset="50%" stop-color="#c4943a"/><stop offset="100%" stop-color="#7a561c"/></linearGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.75"><stop offset="0%" stop-color="#000000" stop-opacity="0"/><stop offset="50%" stop-color="#000000" stop-opacity="0"/><stop offset="100%" stop-color="#000000" stop-opacity="0.42"/></radialGradient>
+  </defs>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bgG)"/>
+<g clip-path="url(#clip)">
+<rect width="36" height="36" fill="url(#hl)"/>
+
+<rect x="8" y="4" width="20" height="3.4" rx="1" fill="url(#oak)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><rect x="8" y="28.6" width="20" height="3.4" rx="1" fill="url(#oak)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><path d="M11 7.4 C11 14 16 15.5 16 18 C16 20.5 11 22 11 28.6 L25 28.6 C25 22 20 20.5 20 18 C20 15.5 25 14 25 7.4 Z" fill="#d8eef4" fill-opacity=".55" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><path d="M13 11 C15 14 17 15 18 15 C19 15 21 14 23 11 Z" fill="url(#thatch)"/><path d="M18 17 L18 24" stroke="#e8c060" stroke-width=".8"/><path d="M12.2 28.4 C13 24.6 16 23 18 23 C20 23 23 24.6 23.8 28.4 Z" fill="url(#thatch)"/><path d="M9.4 7.4 V28.6 M26.6 7.4 V28.6" stroke="#1b1106" stroke-width="2.6"/><path d="M9.4 7.4 V28.6 M26.6 7.4 V28.6" stroke="#b07a3a" stroke-width="1.2"/>
+<rect width="36" height="36" fill="url(#vig)"/>
+</g>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="none" stroke="#120b05" stroke-width="1.8"/>
+<rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+</svg>

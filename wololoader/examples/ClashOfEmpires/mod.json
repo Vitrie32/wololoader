@@ -1,0 +1,84 @@
+{
+  "name": "Clash of Empires",
+  "version": "2.0",
+  "author": "Wololoader",
+  "description": "Clash of Clans style attack mode (2 players: Attacker vs Defender). The whole map is visible. You have no village: pick troops with unit icons from the bottom deployment bar and click anywhere on the map to spawn them! Destroy the enemy village in the middle to load a brand-new random map at the next level. Lose all your units and it is over.",
+  "enabled": true,
+  "resources": [
+    {
+      "id": "coe_level",
+      "name": "Level",
+      "icon": "icons/level.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "game_mode": "clash_of_empires",
+      "description": "Current level of Clash of Empires. Each level generates a new random map with a stronger village."
+    },
+    {
+      "id": "coe_army",
+      "name": "Army Points",
+      "icon": "icons/army.png",
+      "start": 0,
+      "max": 0,
+      "show": true,
+      "game_mode": "clash_of_empires",
+      "description": "Spend Army Points on the bottom troop bar: select a unit card and click on the map to deploy it."
+    },
+    {
+      "id": "coe_state",
+      "name": "Clash of Empires save data",
+      "start": 0,
+      "max": 0,
+      "show": false,
+      "hidden": true,
+      "game_mode": "clash_of_empires",
+      "description": "Internal: lets a saved Clash of Empires game continue after loading."
+    }
+  ],
+  "game_modes": [
+    {
+      "id": "clash_of_empires",
+      "name": "Clash of Empires",
+      "description": "Clash of Clans in Age of Empires! 2 players only (Player 1 Attacker with no village vs Player 2 Defender). Full map visible. Pick a unit from the bottom bar and click the map to deploy. Destroy the village to advance to a new random map!",
+      "script_event": true,
+      "player_count": 2,
+      "enemy_player": true,
+      "no_auto_defeat": true,
+      "reveal_map": true,
+      "map": {
+        "base": "arena",
+        "min_size": "small",
+        "lock": true,
+        "script": "resources/_common/random-map-scripts/ClashOfEmpiresField.rms"
+      }
+    }
+  ],
+  "settings": [
+    {
+      "id": "difficulty",
+      "name": "Difficulty (army points you get)",
+      "type": "choice",
+      "choices": ["Easy", "Normal", "Hard"],
+      "default": "Normal"
+    },
+    {
+      "id": "start_level",
+      "name": "Starting level",
+      "type": "number",
+      "min": 1,
+      "max": 30,
+      "step": 1,
+      "default": 1
+    },
+    {
+      "id": "levels",
+      "name": "Levels to win (0 = endless)",
+      "type": "number",
+      "min": 0,
+      "max": 50,
+      "step": 1,
+      "default": 0
+    }
+  ]
+}

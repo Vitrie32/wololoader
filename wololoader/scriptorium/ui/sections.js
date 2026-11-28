@@ -4,6 +4,9 @@
  * The editor shows one mod. Its left nav lists every kind of content the mod can hold, with a
  * count, and the main column shows the section you pick:
  *   Civilizations  new civs and changes to the game's civs (basic.js draws them)
+ *   Game modes     mod.json "game_modes" (custom lobby game modes)
+ *   Resources      mod.json "resources" (custom resources for HUD, costs, effects, Lua)
+ *   Settings       mod.json "settings" (player-configurable options read via MOD.settings)
  *   Scripts        scripts/main.lua (runs at start), modules scripts/**.lua (require), and visual
  *                  scripts (scripts/graphs, graph.js, compiled into scripts/visual.lua)
  *   Sprites        resources/_common/drs/graphics|interface/*.slp (slpviewer.js)
@@ -31,6 +34,12 @@
     code: null,          // path of the open code editor, or null
     codes: new Map(),    // path -> { path, text, saved, dirty }: Lua buffers (kept while unsaved)
     urls: new Map(),     // path -> object URL of a sound (for playing)
+    imgUrls: new Map(),  // path -> Promise<blob URL | null> for PNG previews (resources)
+    hadKey: {            // whether mod.json originally had each optional array key on load
+      game_modes: false,
+      resources: false,
+      settings: false
+    },
     nowPlaying: null,    // { path, url } of the last sound played
     filter: '',          // Files section filter
     mainText: ''         // text of scripts/main.lua as last read (see requiredByMain)
@@ -49,6 +58,56 @@
 
   function folder() { return S.state.currentModData ? S.state.currentModData.folder : ''; }
   function civsOf() { return (S.state.currentModData && S.state.currentModData.civs) || {}; }
+  function modOf() { return (S.state.currentModData && S.state.currentModData.mod) || null; }
+  function modList(key) {
+    const m = modOf();
+    return (m && Array.isArray(m[key])) ? m[key] : [];
+  }
+
+  function afterModJsonChange() {
+    S.checkDirty();
+    renderNav();
+    renderPage();
+  }
+
+  function slugId(text, lowerOnly) {
+    let s = String(text || '').trim().replace(/[\s\-]+/g, '_');
+    s = lowerOnly ? s.toLowerCase().replace(/[^a-z0-9_]+/g, '') : s.replace(/[^A-Za-z0-9_]+/g, '');
+    return s.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  }
+
+  function checkRelPath(path, label) {
+    if (path.length > 256) return `${label} is longer than 256 characters.`;
+    if (/[\t\r\n]/.test(path)) return `${label} cannot contain tabs or line breaks.`;
+    if (path.includes('..') || path.startsWith('/') || path.startsWith('\\') || /^[A-Za-z]:/.test(path)) {
+      return `${label} must be a relative path inside the mod folder (no "..", leading slash, or drive letter).`;
+    }
+    return '';
+  }
+
+  function loadImgUrl(path) {
+    if (!path) return Promise.resolve(null);
+    if (!st.imgUrls.has(path)) {
+      const p = readBlob(path)
+        .then(blob => URL.createObjectURL(blob))
+        .catch(() => null);
+      st.imgUrls.set(path, p);
+    }
+    return st.imgUrls.get(path);
+  }
+
+  function forgetImgUrl(path) {
+    const p = st.imgUrls.get(path);
+    st.imgUrls.delete(path);
+    if (p) p.then(url => { if (url) URL.revokeObjectURL(url); });
+  }
+
+  function clearImgUrls() {
+    for (const p of st.imgUrls.values()) {
+      p.then(url => { if (url) URL.revokeObjectURL(url); });
+    }
+    st.imgUrls.clear();
+  }
 
   function fileUrl(path) {
     return `/api/file?folder=${encodeURIComponent(folder())}&path=${encodeURIComponent(path)}`;
@@ -81,6 +140,16 @@
   const graphFiles = () => treeList().filter(f => /^scripts\/graphs\/[^/]+\.json$/i.test(f.path));
   const spriteFiles = () => treeList().filter(f => /^resources\/_common\/drs\/(graphics|interface)\/[^/]+\.slp$/i.test(f.path));
   const tauntFiles = () => treeList().filter(f => /^taunts\/[^/]+\.(mp3|wav)$/i.test(f.path));
+  const rmsFiles = () => treeList()
+    .filter(f => /^resources\/_common\/random-map-scripts\/.+\.rms$/i.test(f.path))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  const pngFiles = () => treeList()
+    .filter(f => /\.png$/i.test(f.path))
+    .sort((a, b) => {
+      const ai = /^icons\//i.test(a.path) ? 0 : 1;
+      const bi = /^icons\//i.test(b.path) ? 0 : 1;
+      return ai - bi || a.path.localeCompare(b.path);
+    });
 
   // A taunt is "NN name.ext": the number is what the player types in chat.
   function parseTaunt(path, size) {
@@ -150,7 +219,9 @@
   }
 
   function defaultSection() {
-    for (const id of ['civs', 'scripts', 'sprites', 'taunts']) if (countOf(id) > 0) return id;
+    for (const id of ['civs', 'scripts', 'sprites', 'taunts', 'game_modes', 'resources', 'settings']) {
+      if (countOf(id) > 0) return id;
+    }
     return 'civs';
   }
 
@@ -159,6 +230,9 @@
   // ==========================================================================
   const NAV_ICONS = {
     civs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+    game_modes: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V4"/><path d="M4 4h14l-2.5 5L18 14H4"/></svg>',
+    resources: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 20 9 12 22 4 9 12 2"/><polyline points="4 9 20 9"/><polyline points="12 2 9 9 12 22 15 9 12 2"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="8" y2="6"/><line x1="13" y1="6" x2="20" y2="6"/><circle cx="10.5" cy="6" r="2.5"/><line x1="4" y1="12" x2="14" y2="12"/><line x1="19" y1="12" x2="20" y2="12"/><circle cx="16.5" cy="12" r="2.5"/><line x1="4" y1="18" x2="6" y2="18"/><line x1="11" y1="18" x2="20" y2="18"/><circle cx="8.5" cy="18" r="2.5"/></svg>',
     scripts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 7 3 12 8 17"/><polyline points="16 7 21 12 16 17"/><line x1="14" y1="4" x2="10" y2="20"/></svg>',
     sprites: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5-9 9"/></svg>',
     taunts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 010 7"/><path d="M18.5 5.5a9 9 0 010 13"/></svg>',
@@ -219,7 +293,7 @@
     }
     S.showPane('main');
     r.innerHTML = `
-      <div class="sec-page">
+      <div class="sec-page" data-sec="${esc(sec.id)}">
         <header class="sec-head">
           <div class="sec-head-text">
             <h2 class="sec-title">${esc(sec.label)}</h2>
@@ -919,6 +993,48 @@ end)
   }
 
   const AUDIO_RE = /\.(mp3|wav|ogg)$/i;
+  const IMG_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+  const TEXT_RE = /\.(txt|md|rms|lua|json|per|ai|cfg|ini|csv|xml|html|css|js|log)$/i;
+  const SLP_RE = /\.slp$/i;
+
+  const thumbCache = new Map();
+  function fileView() {
+    try { const v = localStorage.getItem('sc-file-view'); if (v === 'icons' || v === 'gallery') return v; } catch (e) { /* ignore */ }
+    return 'list';
+  }
+  // <img src> cannot send the API token header, so pictures are fetched as blobs.
+  async function blobUrlFor(path) {
+    if (thumbCache.has(path)) return thumbCache.get(path);
+    const p = readBlob(path).then(b => URL.createObjectURL(b));
+    thumbCache.set(path, p);
+    p.catch(() => thumbCache.delete(path));
+    return p;
+  }
+  function hydrateThumbs(root) {
+    const load = (img) => {
+      blobUrlFor(img.dataset.thumb).then(u => { img.src = u; img.classList.add('loaded'); })
+        .catch(() => { img.classList.add('broken'); });
+    };
+    const imgs = root.querySelectorAll('img[data-thumb]');
+    if (!('IntersectionObserver' in window)) { imgs.forEach(load); return; }
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(en => { if (en.isIntersecting) { io.unobserve(en.target); load(en.target); } });
+    }, { rootMargin: '200px' });
+    imgs.forEach(i => io.observe(i));
+  }
+  function fileTileHtml(f, view) {
+    const kind = kindOf(f.path);
+    const img = IMG_RE.test(f.path);
+    const act = (AUDIO_RE.test(f.path)) ? 'file-play' : 'file-preview';
+    const visual = img
+      ? `<img class="tile-img" data-thumb="${esc(f.path)}" alt="">`
+      : `<span class="tile-kind kind-tag kind-${kind.toLowerCase().replace(/\s+/g, '-')}">${esc(kind)}</span>`;
+    return `<button type="button" class="file-tile tile-${view}" data-act="${act}" data-path="${esc(f.path)}" title="${esc(f.path)}">
+      <span class="tile-visual">${visual}</span>
+      <span class="tile-name mono">${esc(basename(f.path))}</span>
+      <span class="tile-size">${esc(formatSize(f.size))}</span>
+    </button>`;
+  }
 
   function renderFiles(body) {
     const all = treeList();
@@ -938,6 +1054,11 @@ end)
       <div class="list-toolbar">
         <input type="search" class="form-input file-filter" placeholder="Filter by name or folder" value="${esc(st.filter)}" aria-label="Filter files">
         <span class="list-head-count" data-role="count"></span>
+        <div class="view-switch" role="group" aria-label="View">
+          <button type="button" class="view-btn" data-view="list" title="List">&#9776; List</button>
+          <button type="button" class="view-btn" data-view="icons" title="Large icons">&#9638; Icons</button>
+          <button type="button" class="view-btn" data-view="gallery" title="Gallery (images only)">&#9635; Gallery</button>
+        </div>
       </div>
       <div class="list file-list" data-role="list"></div>
       <p class="list-note">All files in the mod folder (except civs/ and mod.json, which are edited in Civilizations).</p>
@@ -949,9 +1070,19 @@ end)
       const q = st.filter.trim().toLowerCase();
       const shown = all.filter(f => !q || f.path.toLowerCase().includes(q)).sort((a, b) => a.path.localeCompare(b.path));
       countEl.textContent = shown.length + (shown.length === all.length ? ' files' : ` of ${all.length} files`);
-      listEl.innerHTML = shown.length ? shown.map(f => fileRowHtml(f)).join('')
-        : '<div class="inline-empty"><div><strong>No file matches</strong><span>Try another name or folder.</span></div></div>';
+      const view = fileView();
+      listEl.className = 'file-list view-' + view;
+      body.querySelectorAll('.view-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+      let items = shown;
+      if (view === 'gallery') items = shown.filter(f => IMG_RE.test(f.path));
+      listEl.innerHTML = items.length ? items.map(f => view === 'list' ? fileRowHtml(f) : fileTileHtml(f, view)).join('')
+        : '<div class="inline-empty"><div><strong>No file matches</strong><span>' + (view === 'gallery' ? 'No pictures in this mod.' : 'Try another name or folder.') + '</span></div></div>';
+      hydrateThumbs(listEl);
     };
+    body.querySelectorAll('.view-btn').forEach(b => b.addEventListener('click', () => {
+      try { localStorage.setItem('sc-file-view', b.dataset.view); } catch (e) { /* ignore */ }
+      paint();
+    }));
     filter.addEventListener('input', () => { st.filter = filter.value; paint(); });
     paint();
     body.querySelector('.file-replace-input').addEventListener('change', (e) => replaceFileWith(e.target));
@@ -961,13 +1092,20 @@ end)
     const kind = kindOf(f.path);
     const dir = dirname(f.path);
     const audio = AUDIO_RE.test(f.path);
+    const img = IMG_RE.test(f.path);
+    const txt = TEXT_RE.test(f.path);
+    const slp = SLP_RE.test(f.path);
     const lua = /^scripts\/[^/]+\.lua$/i.test(f.path);
     const graph = /^scripts\/graphs\/[^/]+\.json$/i.test(f.path);
     const primary = lua ? `<button class="btn btn-wood btn-sm" data-act="open-code" data-path="${esc(f.path)}">Open</button>`
       : graph ? `<button class="btn btn-wood btn-sm" data-act="open-script" data-path="${esc(basename(f.path))}">Open</button>`
-      : audio ? `<button class="btn btn-wood btn-sm" data-act="file-play" data-path="${esc(f.path)}">&#9654; Play</button>` : '';
+      : audio ? `<button class="btn btn-wood btn-sm" data-act="file-play" data-path="${esc(f.path)}">&#9654; Play</button>`
+      : (img || txt || slp) ? `<button class="btn btn-wood btn-sm" data-act="file-preview" data-path="${esc(f.path)}">Preview</button>` : '';
+    const thumb = img
+      ? `<img class="file-thumb" data-thumb="${esc(f.path)}" alt="">`
+      : `<span class="kind-tag kind-${kind.toLowerCase().replace(/\s+/g, '-')}">${esc(kind)}</span>`;
     return `<div class="file-row" data-path="${esc(f.path)}">
-      <span class="kind-tag kind-${kind.toLowerCase().replace(/\s+/g, '-')}">${esc(kind)}</span>
+      ${thumb}
       <span class="list-main">
         <span class="list-title mono">${dir ? `<span class="dim">${esc(dir)}/</span>` : ''}${esc(basename(f.path))}</span>
       </span>
@@ -977,6 +1115,7 @@ end)
         <div class="sc-more-wrap">
           <button type="button" class="btn btn-ghost btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false" title="More actions">&#8943;</button>
           <div class="sc-more-menu" hidden>
+            ${(lua || graph) ? `<button type="button" class="sc-more-item" data-act="file-preview" data-path="${esc(f.path)}">Preview</button>` : ''}
             <button type="button" class="sc-more-item" data-act="file-download" data-path="${esc(f.path)}">Download</button>
             <button type="button" class="sc-more-item" data-act="file-replace" data-path="${esc(f.path)}">Replace...</button>
             <div class="sc-more-sep"></div>
@@ -985,6 +1124,82 @@ end)
         </div>
       </span>
     </div>`;
+  }
+
+  async function previewFileDialog(path) {
+    if (!path) return;
+    if (SLP_RE.test(path)) {
+      if (window.SlpViewer) {
+        const navBtn = document.querySelector('#mod-nav [data-sec="sprites"]');
+        if (navBtn) navBtn.click();
+        else SlpViewer.open();
+      } else {
+        S.showToast('Open Sprites from the left sidebar to inspect .slp files.', 'info');
+      }
+      return;
+    }
+    const entry = treeList().find(f => f.path === path);
+    const sizeText = entry ? formatSize(entry.size) : '';
+    if (IMG_RE.test(path)) {
+      const url = '';
+      openDialog({
+        title: basename(path),
+        width: 'lg',
+        body: `
+          <div class="file-preview-meta">
+            <code class="rms-path mono">${esc(path)}</code>
+            <span class="muted" data-role="img-dims">${esc(sizeText)}</span>
+            <label class="gm-inline-toggle" style="margin-left:auto">
+              <input type="checkbox" id="fp-pixel" checked>
+              <span>Crisp pixels</span>
+            </label>
+          </div>
+          <div class="file-preview-stage">
+            <img class="file-preview-img pixelated" src="${esc(url)}" alt="${esc(basename(path))}">
+          </div>`,
+        buttons: [
+          { label: 'Download', onClick: () => { downloadFile(path); return false; } },
+          { label: 'Close', primary: true, onClick: () => true }
+        ],
+        onOpen: (dialog) => {
+          const imgEl = dialog.querySelector('.file-preview-img');
+          blobUrlFor(path).then(u => { imgEl.src = u; }).catch(() => { imgEl.alt = 'Could not load picture'; });
+          const dimsEl = dialog.querySelector('[data-role="img-dims"]');
+          const pixChk = dialog.querySelector('#fp-pixel');
+          imgEl.addEventListener('load', () => {
+            if (imgEl.naturalWidth && imgEl.naturalHeight) {
+              dimsEl.textContent = `${imgEl.naturalWidth} × ${imgEl.naturalHeight} px` + (sizeText ? ` · ${sizeText}` : '');
+            }
+          });
+          pixChk.addEventListener('change', () => {
+            imgEl.classList.toggle('pixelated', pixChk.checked);
+          });
+        }
+      });
+      return;
+    }
+    if (TEXT_RE.test(path)) {
+      const raw = await readText(path);
+      const limit = 120000;
+      const truncated = raw.length > limit;
+      const shown = truncated ? raw.slice(0, limit) : raw;
+      const lineCount = shown.split('\n').length;
+      openDialog({
+        title: basename(path),
+        width: 'lg',
+        body: `
+          <div class="file-preview-meta">
+            <code class="rms-path mono">${esc(path)}</code>
+            <span class="muted">${lineCount} lines${sizeText ? ' · ' + esc(sizeText) : ''}${truncated ? ' · truncated at 120 KB' : ''}</span>
+          </div>
+          <pre class="file-preview-code mono">${esc(shown)}</pre>`,
+        buttons: [
+          { label: 'Copy', onClick: () => { copyToClipboard(raw, `Copied ${basename(path)}`); return false; } },
+          { label: 'Download', onClick: () => { downloadFile(path); return false; } },
+          { label: 'Close', primary: true, onClick: () => true }
+        ]
+      });
+    }
   }
 
   async function downloadFile(path) {
@@ -1107,6 +1322,7 @@ end)
     const wasOpen = !!path && st.code === path;
     if (path) {
       forgetUrl(path);
+      forgetImgUrl(path);
       st.codes.delete(path);
       S.setExtraDirty('code:' + path, false);
     }
@@ -1117,6 +1333,1956 @@ end)
       return;
     }
     refresh();
+  }
+
+  // ==========================================================================
+  // Section: Game modes (mod.json "game_modes")
+  // ==========================================================================
+  const GAME_MODE_ID_RULE = /^[a-z0-9_]+$/;
+  const MAP_BASES = [
+    { id: 'arabia', label: 'Arabia' },
+    { id: 'fortress', label: 'Fortress' },
+    { id: 'arena', label: 'Arena' },
+    { id: 'nomad', label: 'Nomad' }
+  ];
+  const MAP_SIZES = [
+    { id: '', label: 'Any (no minimum)' },
+    { id: 'tiny', label: 'Tiny (2 players)' },
+    { id: 'small', label: 'Small (3 players)' },
+    { id: 'medium', label: 'Medium (4 players)' },
+    { id: 'normal', label: 'Normal (6 players)' },
+    { id: 'large', label: 'Large (8 players)' },
+    { id: 'giant', label: 'Giant' },
+    { id: 'ludikris', label: 'Ludikris' }
+  ];
+
+  const COPY_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3 10.5V3.5A1.5 1.5 0 0 1 4.5 2h7"/></svg>';
+
+  const GAME_MODE_PRESETS = [
+    {
+      key: 'coop_survival',
+      label: 'Co-op Survival',
+      summary: 'All one team · Enemy AI · Arena (min: medium)',
+      defaults: {
+        id: 'coop_survival',
+        name: 'Co-op Survival',
+        description: 'All players share one locked team and defend together against an extra enemy AI player.',
+        script_event: true,
+        teams: 'all',
+        enemy_player: true,
+        map: {
+          base: 'arena',
+          min_size: 'medium',
+          lock: true,
+          script: 'resources/_common/random-map-scripts/CoopSurvival.rms'
+        }
+      }
+    },
+    {
+      key: 'clash_1v1',
+      label: '1v1 Clash Attack',
+      summary: '2 players · Enemy AI · Full map visible · No auto-defeat · Arena',
+      defaults: {
+        id: 'clash_attack',
+        name: '1v1 Clash Attack',
+        description: '2-player attacker vs defender mode with the whole map revealed and scripted victory rules.',
+        script_event: true,
+        player_count: 2,
+        enemy_player: true,
+        reveal_map: true,
+        no_auto_defeat: true,
+        map: {
+          base: 'arena',
+          lock: true,
+          script: 'resources/_common/random-map-scripts/ClashAttack.rms'
+        }
+      }
+    },
+    {
+      key: 'custom_rules',
+      label: 'Custom Rules',
+      summary: 'Standard lobby · Script-driven · Fog of war on',
+      defaults: {
+        id: 'custom_rules',
+        name: 'Custom Rules',
+        description: 'Standard lobby setup with custom Lua match rules running on game start.',
+        script_event: true,
+        reveal_map: false
+      }
+    }
+  ];
+
+  async function copyToClipboard(text, toastMsg) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+      S.showToast(toastMsg || 'Copied to clipboard', 'success');
+    } catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        if (ok) S.showToast(toastMsg || 'Copied to clipboard', 'success');
+        else S.showToast('Could not copy to clipboard', 'error');
+      } catch (e2) {
+        S.showToast('Could not copy to clipboard', 'error');
+      }
+    }
+  }
+
+  function luaStringLit(str) {
+    return String(str || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\t/g, '\\t');
+  }
+
+  function modeResourcesFor(modeId) {
+    if (!modeId) return [];
+    return modList('resources').filter(r => r && typeof r === 'object' && r.game_mode === modeId);
+  }
+
+  function uniqueModeId(baseId, list, suffixWord) {
+    const clean = slugId(baseId, true) || 'mode';
+    const used = new Set(list.map(m => (m && typeof m.id === 'string') ? m.id : '').filter(Boolean));
+    const sep = suffixWord ? '_' + suffixWord : '';
+    const first = clean.slice(0, 63 - sep.length) + sep;
+    if (first && !used.has(first)) return first;
+    for (let n = 2; n < 1000; n++) {
+      const tail = sep + '_' + n;
+      const candidate = clean.slice(0, 63 - tail.length) + tail;
+      if (!used.has(candidate)) return candidate;
+    }
+    return clean.slice(0, 55) + '_' + Date.now().toString(36).slice(-6);
+  }
+
+  function uniqueModeName(baseName, list, isCopy) {
+    const clean = String(baseName || '').trim() || 'Mode';
+    const used = new Set(list.map(m => (m && typeof m.name === 'string') ? m.name : '').filter(Boolean));
+    if (isCopy) {
+      const first = `${clean} (Copy)`;
+      if (!used.has(first)) return first;
+      for (let n = 2; n < 1000; n++) {
+        const candidate = `${clean} (Copy ${n})`;
+        if (!used.has(candidate)) return candidate;
+      }
+      return `${clean} (Copy)`;
+    }
+    if (!used.has(clean)) return clean;
+    for (let n = 2; n < 1000; n++) {
+      const candidate = `${clean} ${n}`;
+      if (!used.has(candidate)) return candidate;
+    }
+    return clean;
+  }
+
+  function buildModeLuaBoilerplate(item) {
+    const id = (item && typeof item.id === 'string' && item.id) ? item.id : 'my_mode';
+    const title = (item && typeof item.name === 'string' && item.name) ? item.name : id;
+    const oneTeam = !!(item && typeof item.teams === 'string' && item.teams.toLowerCase() === 'all');
+    const enemy = !!(item && item.enemy_player === true);
+    const revealMap = !!(item && item.reveal_map === true);
+    const noAutoDefeat = !!(item && item.no_auto_defeat === true);
+    const pcRaw = (item && typeof item.player_count === 'number' && Number.isFinite(item.player_count))
+      ? Math.trunc(item.player_count) : 0;
+    const playerCount = (pcRaw >= 2 && pcRaw <= 8) ? pcRaw : 0;
+    const mp = (item && item.map && typeof item.map === 'object' && !Array.isArray(item.map)) ? item.map : null;
+    const resList = modeResourcesFor(id);
+    const visRes = resList.filter(r => r.hidden !== true);
+
+    const lines = [
+      `-- Game mode: ${title} (id: "${id}")`,
+      'local active = false',
+      ''
+    ];
+    if (enemy) {
+      lines.push('local enemy = nil');
+      lines.push('');
+    }
+    lines.push(
+      'Game.OnStart(function()',
+      `    active = (Game.Mode() == "${luaStringLit(id)}")`,
+      '    if not active then return end',
+      '',
+      '    local me = Game.LocalPlayer'
+    );
+    if (revealMap) {
+      lines.push(
+        '    local mapSize = Game.MapSize() or 120',
+        '    local cx, cy = mapSize / 2, mapSize / 2'
+      );
+    }
+    if (enemy) {
+      lines.push(
+        '    enemy = Game.ModeEnemy()',
+        '    if enemy then',
+        '        -- Extra AI opponent for this mode (call Game.SetModeEnemy(enemy.Id) when resuming saves)',
+        '    end'
+      );
+    }
+    if (oneTeam) {
+      lines.push('    -- teams: "all" — all players share one locked team; iterate Game.Players() for allies');
+    }
+    if (playerCount) {
+      lines.push(`    -- player_count: ${playerCount} — lobby locks to ${playerCount} players (Game.Player(1)..Game.Player(${playerCount}))`);
+    }
+    if (noAutoDefeat) {
+      lines.push('    -- no_auto_defeat: call player:Win() or player:Defeat() explicitly when the match ends');
+    }
+    if (mp && mp.script) {
+      lines.push(`    -- Custom map: ${basename(String(mp.script))} (base: ${mp.base || 'arena'})`);
+    }
+    if (visRes.length > 0) {
+      const sample = visRes[0];
+      const names = visRes.map(r => r.name || r.id).join(', ');
+      lines.push(`    -- Mode resources (${names}): e.g. me:AddResource("${luaStringLit(sample.id)}", 0)`);
+    }
+    lines.push(
+      `    UI.Message("${luaStringLit(title)} started!")`,
+      'end)',
+      '',
+      'Game.OnSecond(function()',
+      '    if not active then return end',
+      '    -- Per-second mode logic goes here',
+      'end)'
+    );
+    return lines.join('\n') + '\n';
+  }
+
+  function renderQuickPresetsBar(compact) {
+    if (compact) {
+      return `<div class="sc-more-wrap">
+        <button type="button" class="btn btn-wood btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false">Presets &#9662;</button>
+        <div class="sc-more-menu" hidden>
+          ${GAME_MODE_PRESETS.map(p =>
+            `<button type="button" class="sc-more-item" data-act="mode-preset" data-preset="${esc(p.key)}" title="${esc(p.summary)}">${esc(p.label)}</button>`
+          ).join('')}
+        </div>
+      </div>`;
+    }
+    return `<div class="gm-empty-presets">
+      <div class="gm-empty-presets-head">Quick-start presets</div>
+      <div class="gm-preset-grid">
+        ${GAME_MODE_PRESETS.map(p => `
+          <button type="button" class="gm-preset-card" data-act="mode-preset" data-preset="${esc(p.key)}">
+            <span class="gm-preset-title">${esc(p.label)}</span>
+            <span class="gm-preset-sub">${esc(p.summary)}</span>
+          </button>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  function renderGameModeCard(m, i) {
+    const item = (m && typeof m === 'object') ? m : {};
+    const id = typeof item.id === 'string' ? item.id : '';
+    const title = (typeof item.name === 'string' && item.name) ? item.name : (id || '(unnamed)');
+    const desc = typeof item.description === 'string' ? item.description.trim() : '';
+    const oneTeam = typeof item.teams === 'string' && item.teams.toLowerCase() === 'all';
+    const enemy = item.enemy_player === true;
+    const revealMap = item.reveal_map === true;
+    const noAutoDefeat = item.no_auto_defeat === true;
+    const pcRaw = (typeof item.player_count === 'number' && Number.isFinite(item.player_count)) ? Math.trunc(item.player_count) : 0;
+    const playerCount = (pcRaw >= 2 && pcRaw <= 8) ? pcRaw : 0;
+    const scriptEv = item.script_event !== false;
+    const mp = (item.map && typeof item.map === 'object' && !Array.isArray(item.map)) ? item.map : null;
+    const rawMapScript = mp && typeof mp.script === 'string' ? mp.script.trim() : '';
+    const normMapScript = rawMapScript.replace(/\\/g, '/').replace(/^\.\//, '');
+    const hasMapScript = !!normMapScript;
+    const mapTreeFile = hasMapScript ? treeList().find(f => f.path.toLowerCase() === normMapScript.toLowerCase()) : null;
+
+    // 1. Players & Teams
+    const ptParts = [];
+    if (playerCount) ptParts.push(`${playerCount} Players`);
+    if (oneTeam) ptParts.push('All One Team');
+    if (enemy) ptParts.push('Enemy AI');
+    const ptText = ptParts.length ? ptParts.join(' · ') : 'Standard Lobby';
+
+    // 2. Visibility & Rules
+    const ruleParts = [];
+    if (revealMap) ruleParts.push('All Visible (No Fog)');
+    if (noAutoDefeat) ruleParts.push('No Auto-Defeat');
+    if (!scriptEv) ruleParts.push('No Script Event');
+    const rulesText = ruleParts.length ? ruleParts.join(' + ') : 'Standard Rules';
+
+    // 3. Map
+    let mapHtml = '<span class="gm-spec-muted">Lobby default</span>';
+    if (mp) {
+      const mapName = hasMapScript ? basename(normMapScript) : 'Custom map';
+      const metaParts = [];
+      if (mp.base) metaParts.push('base: ' + mp.base);
+      if (mp.min_size) metaParts.push('min: ' + mp.min_size);
+      if (mp.lock || item.map_lock) metaParts.push('lobby locked');
+      const missingNote = (hasMapScript && !mapTreeFile)
+        ? '<span class="gm-spec-warn">Not created yet — click RMS Map</span>'
+        : '';
+      mapHtml = `<span class="gm-spec-primary mono" title="${esc(normMapScript || mapName)}">${esc(mapName)}</span>`
+        + (metaParts.length ? `<span class="gm-spec-sub">(${esc(metaParts.join(' · '))})</span>` : '')
+        + missingNote;
+    }
+
+    // 4. Mode Resources
+    const modeRes = modeResourcesFor(id);
+    const visRes = modeRes.filter(r => r.hidden !== true);
+    const hidRes = modeRes.filter(r => r.hidden === true);
+    let resHtml = '<span class="gm-spec-muted">None</span>';
+    if (modeRes.length > 0) {
+      const allNames = modeRes.map(r => r.name || r.id).join(', ');
+      if (visRes.length > 0) {
+        const visNames = visRes.map(r => r.name || r.id).join(', ');
+        resHtml = `<span class="gm-spec-primary" title="${esc(allNames)}">${esc(visNames)}</span>`
+          + (hidRes.length ? `<span class="gm-spec-sub">+${hidRes.length} internal</span>` : '');
+      } else {
+        resHtml = `<span class="gm-spec-sub" title="${esc(allNames)}">${hidRes.length} internal (${esc(allNames)})</span>`;
+      }
+    }
+
+    const idChip = id
+      ? `<button type="button" class="gm-id-chip" data-act="mode-copy-id" data-idx="${i}" title="Copy: Game.Mode() == &quot;${esc(id)}&quot;">
+          <code>${esc(id)}</code>${COPY_SVG}
+        </button>`
+      : '<span class="gm-id-chip missing">missing id</span>';
+
+    return `<article class="gm-card" data-idx="${i}">
+      <header class="gm-card-head">
+        <div class="gm-card-identity">
+          <div class="gm-icon" aria-hidden="true">${NAV_ICONS.game_modes}</div>
+          <div class="gm-title-block">
+            <div class="gm-title-row">
+              <h3 class="gm-title">${esc(title)}</h3>
+              ${idChip}
+              ${!scriptEv ? '<span class="pill muted" title="script_event is disabled">Manual</span>' : ''}
+            </div>
+          </div>
+        </div>
+        <div class="gm-card-actions">
+          <button type="button" class="btn btn-wood btn-xs" data-act="mode-edit" data-idx="${i}">Edit</button>
+          ${hasMapScript ? `<button type="button" class="btn btn-wood btn-xs${!mapTreeFile ? ' gm-btn-rms-new' : ''}" data-act="mode-rms" data-idx="${i}" title="${mapTreeFile ? 'View or edit custom .rms map script' : 'Create custom .rms map script'}">RMS Map</button>` : ''}
+          <div class="sc-more-wrap">
+            <button type="button" class="btn btn-ghost btn-xs" data-more-toggle aria-haspopup="true" aria-expanded="false" title="More actions">&#8943;</button>
+            <div class="sc-more-menu" hidden>
+              <button type="button" class="sc-more-item" data-act="mode-duplicate" data-idx="${i}">Duplicate</button>
+              <button type="button" class="sc-more-item" data-act="mode-copy-lua" data-idx="${i}">Copy Lua starter</button>
+              <button type="button" class="sc-more-item danger" data-act="mode-delete" data-idx="${i}">Delete</button>
+            </div>
+          </div>
+        </div>
+      </header>
+      ${desc ? `<p class="gm-desc" title="${esc(desc)}">${esc(desc)}</p>` : ''}
+      <div class="gm-specs">
+        <div class="gm-spec">
+          <span class="gm-spec-label">Players &amp; Teams</span>
+          <span class="gm-spec-val">${ptParts.length ? `<span class="gm-spec-primary">${esc(ptText)}</span>` : `<span class="gm-spec-muted">${esc(ptText)}</span>`}</span>
+        </div>
+        <div class="gm-spec">
+          <span class="gm-spec-label">Visibility &amp; Rules</span>
+          <span class="gm-spec-val">${ruleParts.length ? `<span class="gm-spec-primary">${esc(rulesText)}</span>` : `<span class="gm-spec-muted">${esc(rulesText)}</span>`}</span>
+        </div>
+        <div class="gm-spec">
+          <span class="gm-spec-label">Map</span>
+          <span class="gm-spec-val">${mapHtml}</span>
+        </div>
+        <div class="gm-spec">
+          <span class="gm-spec-label">Mode Resources</span>
+          <span class="gm-spec-val">${resHtml}</span>
+        </div>
+      </div>
+    </article>`;
+  }
+
+  function renderGameModes(body) {
+    const modes = modList('game_modes');
+    if (modes.length === 0) {
+      body.innerHTML = `
+        <div class="empty-card gm-empty-card">
+          <div class="empty-card-icon">${NAV_ICONS.game_modes}</div>
+          <h3 class="empty-card-title">No game modes yet</h3>
+          <p class="empty-card-text">Add a custom lobby game mode to appear in the Game Mode dropdown and run your Lua rules.</p>
+          <div class="empty-card-actions"><button class="btn btn-save btn-sm" data-act="mode-add">Add game mode</button></div>
+          ${renderQuickPresetsBar(false)}
+        </div>`;
+      return;
+    }
+    body.innerHTML = `
+      <div class="list-head gm-list-head">
+        <span><strong>${modes.length}</strong> game mode${modes.length === 1 ? '' : 's'}</span>
+        <span class="gm-head-hint">Click any ID chip to copy its <code class="mono">Game.Mode()</code> check</span>
+      </div>
+      <div class="gm-cards">
+        ${modes.map((m, i) => renderGameModeCard(m, i)).join('')}
+      </div>
+      <p class="list-note">Mode rules are written in a Lua script that checks <code class="mono">Game.Mode() == "&lt;id&gt;"</code> inside <code class="mono">Game.OnStart</code>. Toggling a mode mod in game requires restarting AoE2 HD.</p>`;
+  }
+
+  function openPresetDialog(presetKey) {
+    const preset = GAME_MODE_PRESETS.find(p => p.key === presetKey);
+    if (!preset) {
+      gameModeDialog(null);
+      return;
+    }
+    const list = modList('game_modes');
+    const pre = JSON.parse(JSON.stringify(preset.defaults));
+    pre.id = uniqueModeId(pre.id, list, '');
+    pre.name = uniqueModeName(pre.name, list, false);
+    gameModeDialog(null, pre);
+  }
+
+  function duplicateGameMode(idx) {
+    const mod = modOf();
+    const list = modList('game_modes');
+    if (!mod || !Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+    const orig = (list[idx] && typeof list[idx] === 'object') ? list[idx] : {};
+    const clone = JSON.parse(JSON.stringify(orig));
+    const origId = typeof orig.id === 'string' ? orig.id : '';
+    const origTitle = (typeof orig.name === 'string' && orig.name) ? orig.name : (origId || 'Mode');
+    clone.id = uniqueModeId(origId || 'mode', list, 'copy');
+    clone.name = uniqueModeName(origTitle, list, true);
+    mod.game_modes.splice(idx + 1, 0, clone);
+    afterModJsonChange();
+    S.showToast(`Duplicated "${origTitle}" as ${clone.id}`, 'success');
+  }
+
+  function copyModeLua(idx) {
+    const list = modList('game_modes');
+    if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+    const item = (list[idx] && typeof list[idx] === 'object') ? list[idx] : {};
+    const snippet = buildModeLuaBoilerplate(item);
+    const label = item.name || item.id || 'mode';
+    copyToClipboard(snippet, `Copied Lua starter for "${label}"`);
+  }
+
+  function copyModeId(idx) {
+    const list = modList('game_modes');
+    if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+    const item = (list[idx] && typeof list[idx] === 'object') ? list[idx] : {};
+    const id = typeof item.id === 'string' ? item.id : '';
+    if (!id) {
+      S.showToast('This game mode has no ID set yet.', 'error');
+      return;
+    }
+    const expr = `Game.Mode() == "${luaStringLit(id)}"`;
+    copyToClipboard(expr, `Copied: ${expr}`);
+  }
+
+  function checkRmsFilePath(path) {
+    if (!path) return 'No map script path configured for this game mode.';
+    if (path.length > 200) return 'Map script path exceeds 200 characters.';
+    if (path.includes('..') || path === 'mod.json' || /^civs(\/|$)/i.test(path)) {
+      return 'Map script path must be a relative path inside the mod folder (not mod.json or civs/).';
+    }
+    const segs = path.split('/');
+    if (segs.length > 6 || segs.some(s => !s || !/^[A-Za-z0-9_.\- ]+$/.test(s))) {
+      return 'Map script path may use 1..6 folders/segments with letters, digits, spaces, ".", "-", and "_".';
+    }
+    return '';
+  }
+
+  function rmsStarterTemplate(item) {
+    const title = (item && typeof item.name === 'string' && item.name) ? item.name : (item && item.id ? item.id : 'Custom Mode Map');
+    const mp = (item && item.map && typeof item.map === 'object') ? item.map : {};
+    const base = mp.base || 'arena';
+    return `/* ************ ${title.toUpperCase()} ************ */
+/* Custom random map script for game mode "${item && item.id ? item.id : 'custom_mode'}" (fallback base: ${base}). */
+
+<PLAYER_SETUP>
+  random_placement
+
+<LAND_GENERATION>
+base_terrain GRASS
+
+create_player_lands
+{
+  terrain_type                  GRASS3
+  land_percent                  35
+  base_size                     12
+  border_fuzziness              12
+  other_zone_avoidance_distance 4
+}
+
+<ELEVATION_GENERATION>
+create_elevation 4
+{
+  base_terrain                  GRASS
+  number_of_clumps              10
+  number_of_tiles               400
+  set_scale_by_groups
+  set_scale_by_size
+}
+
+<TERRAIN_GENERATION>
+create_terrain FOREST
+{
+  base_terrain                  GRASS
+  spacing_to_other_terrain_types 5
+  land_percent                  12
+  number_of_clumps              14
+  set_avoid_player_start_areas
+  set_scale_by_groups
+}
+
+create_terrain GRASS2
+{
+  base_terrain                  GRASS
+  number_of_clumps              18
+  spacing_to_other_terrain_types 1
+  land_percent                  6
+  set_scale_by_size
+}
+
+<OBJECTS_GENERATION>
+create_object TOWN_CENTER
+{
+  set_place_for_every_player
+  group_placement_radius        18
+  min_distance_to_players       0
+  max_distance_to_players       0
+}
+
+create_object VILLAGER
+{
+  set_place_for_every_player
+  min_distance_to_players       6
+  max_distance_to_players       6
+}
+
+create_object SCOUT
+{
+  number_of_objects             1
+  set_place_for_every_player
+  min_distance_to_players       7
+  max_distance_to_players       9
+}
+
+create_object OAKTREE
+{
+  number_of_objects             10
+  group_placement_radius        3
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       8
+  max_distance_to_players       11
+}
+
+create_object FORAGE
+{
+  number_of_objects             6
+  group_placement_radius        3
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       8
+  max_distance_to_players       10
+}
+
+create_object SHEEP
+{
+  number_of_objects             6
+  set_loose_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       6
+  max_distance_to_players       9
+}
+
+create_object GOLD
+{
+  number_of_objects             7
+  group_placement_radius        3
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       10
+  max_distance_to_players       13
+}
+
+create_object STONE
+{
+  number_of_objects             5
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       10
+  max_distance_to_players       13
+}
+`;
+  }
+
+  let rmsLoading = false;
+  async function editRmsDialog(idx) {
+    if (rmsLoading) return;
+    const list = modList('game_modes');
+    if (!Number.isInteger(idx) || idx < 0 || idx >= list.length) return;
+    const item = (list[idx] && typeof list[idx] === 'object') ? list[idx] : {};
+    const mp = (item.map && typeof item.map === 'object' && !Array.isArray(item.map)) ? item.map : null;
+    const rawPath = mp && typeof mp.script === 'string' ? mp.script.trim().replace(/\\/g, '/').replace(/^\.\//, '') : '';
+    const bad = checkRmsFilePath(rawPath);
+    if (bad) {
+      S.showToast(bad, 'error');
+      return;
+    }
+
+    const existingEntry = treeList().find(f => f.path.toLowerCase() === rawPath.toLowerCase());
+    const targetPath = existingEntry ? existingEntry.path : rawPath;
+    let isNew = !existingEntry;
+    let initialText = '';
+
+    rmsLoading = true;
+    try {
+      if (existingEntry) {
+        try {
+          initialText = await readText(targetPath);
+        } catch (err) {
+          isNew = true;
+        }
+      }
+      if (isNew) {
+        initialText = rmsStarterTemplate(item);
+      }
+    } catch (e) {
+      S.showToast('Could not read RMS file: ' + (e.message || e), 'error');
+      return;
+    } finally {
+      rmsLoading = false;
+    }
+
+    const starter = rmsStarterTemplate(item);
+    openDialog({
+      title: isNew ? `Create RMS Map — ${item.name || item.id || 'Mode'}` : `Edit RMS Map — ${item.name || item.id || 'Mode'}`,
+      width: 'xl',
+      body: `
+        <div class="rms-meta-bar">
+          <div class="rms-meta-left">
+            <code class="rms-path mono">${esc(targetPath)}</code>
+            <span class="pill ${isNew ? 'warn' : 'ok'}" data-role="rms-status">${isNew ? 'New file — starter template' : 'Existing file'}</span>
+          </div>
+          <button type="button" class="btn btn-wood btn-xs" data-role="rms-template">Insert starter template</button>
+        </div>
+        <textarea class="rms-editor-input" data-role="rms-input" spellcheck="false" wrap="off" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="RMS script source">${esc(initialText)}</textarea>
+        <div class="rms-foot-bar">
+          <span class="mono" data-role="rms-pos">Ln 1, Col 1</span>
+          <span class="rms-dirty" data-role="rms-dirty"></span>
+        </div>
+        <p class="form-error" role="alert"></p>`,
+      buttons: [
+        { label: 'Cancel' },
+        {
+          label: isNew ? 'Create RMS file' : 'Save RMS file',
+          primary: true,
+          onClick: async (dialog) => {
+            const ta = dialog.querySelector('[data-role="rms-input"]');
+            const text = ta ? ta.value : '';
+            try {
+              await writeFile(targetPath, text);
+            } catch (e) {
+              return dialogError(dialog, e.message || 'Could not save RMS file.'), false;
+            }
+            S.showToast(`Saved ${basename(targetPath)}`, 'success');
+            await afterFileChange(targetPath);
+            return true;
+          }
+        }
+      ],
+      onOpen: (dialog) => {
+        const ta = dialog.querySelector('[data-role="rms-input"]');
+        const posEl = dialog.querySelector('[data-role="rms-pos"]');
+        const dirtyEl = dialog.querySelector('[data-role="rms-dirty"]');
+        const tplBtn = dialog.querySelector('[data-role="rms-template"]');
+        let confirmReset = false;
+
+        const updateMeta = () => {
+          const val = ta.value;
+          const before = val.slice(0, ta.selectionStart);
+          const ln = before.split('\n').length;
+          const col = before.length - before.lastIndexOf('\n');
+          const totalLines = val.split('\n').length;
+          posEl.textContent = `Ln ${ln}, Col ${col} · ${totalLines} lines`;
+          if (isNew) {
+            dirtyEl.textContent = 'Not saved on disk yet';
+            dirtyEl.className = 'rms-dirty warn';
+          } else if (val !== initialText) {
+            dirtyEl.textContent = 'Unsaved edits';
+            dirtyEl.className = 'rms-dirty dirty';
+          } else {
+            dirtyEl.textContent = 'Matches disk · Tab inserts 2 spaces';
+            dirtyEl.className = 'rms-dirty';
+          }
+        };
+
+        ta.addEventListener('input', () => {
+          confirmReset = false;
+          tplBtn.textContent = 'Insert starter template';
+          updateMeta();
+        });
+        ta.addEventListener('keyup', updateMeta);
+        ta.addEventListener('click', updateMeta);
+        ta.addEventListener('keydown', (e) => {
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+            e.preventDefault();
+            e.stopPropagation();
+            const saveBtn = dialog.querySelector('.dialog-foot [data-i="1"]');
+            if (saveBtn) saveBtn.click();
+            return;
+          }
+          if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            if (e.shiftKey) {
+              const before = ta.value.slice(0, ta.selectionStart);
+              const lineStart = before.lastIndexOf('\n') + 1;
+              const spaces = (/^ {1,2}/.exec(ta.value.slice(lineStart)) || [''])[0];
+              if (spaces) {
+                ta.setSelectionRange(lineStart, lineStart + spaces.length);
+                insertText(ta, '');
+                ta.dispatchEvent(new Event('input'));
+              }
+            } else {
+              insertText(ta, '  ');
+              ta.dispatchEvent(new Event('input'));
+            }
+          } else if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+            const before = ta.value.slice(0, ta.selectionStart);
+            const lineStart = before.lastIndexOf('\n') + 1;
+            const indent = (/^[ \t]*/.exec(before.slice(lineStart)) || [''])[0];
+            e.preventDefault();
+            insertText(ta, '\n' + indent);
+            ta.dispatchEvent(new Event('input'));
+          }
+        });
+
+        tplBtn.addEventListener('click', () => {
+          if (ta.value.trim() && ta.value !== starter && !confirmReset) {
+            confirmReset = true;
+            tplBtn.textContent = 'Click again to replace text';
+            return;
+          }
+          confirmReset = false;
+          tplBtn.textContent = 'Insert starter template';
+          ta.value = starter;
+          ta.setSelectionRange(0, 0);
+          updateMeta();
+          ta.focus();
+        });
+
+        updateMeta();
+        setTimeout(() => ta.focus(), 30);
+      }
+    });
+  }
+
+  function gameModeDialog(editIdx, preset) {
+    const mod = modOf();
+    if (!mod) return;
+    const list = modList('game_modes');
+    const isEdit = Number.isInteger(editIdx) && editIdx >= 0 && editIdx < list.length;
+    const cur = isEdit && list[editIdx] && typeof list[editIdx] === 'object' ? list[editIdx] : null;
+    const seed = cur || (preset && typeof preset === 'object' ? preset : null);
+
+    const curId = seed && typeof seed.id === 'string' ? seed.id : '';
+    const curName = seed && typeof seed.name === 'string' ? seed.name : '';
+    const curDesc = seed && typeof seed.description === 'string' ? seed.description : '';
+    const curTeamsAll = !!(seed && typeof seed.teams === 'string' && seed.teams.toLowerCase() === 'all');
+    const curEnemy = !!(seed && seed.enemy_player === true);
+    const curRevealMap = !!(seed && seed.reveal_map === true);
+    const curNoAutoDefeat = !!(seed && seed.no_auto_defeat === true);
+    const curPcRaw = seed && typeof seed.player_count === 'number' && Number.isFinite(seed.player_count) ? Math.trunc(seed.player_count) : 0;
+    const curPlayerCount = (curPcRaw >= 2 && curPcRaw <= 8) ? curPcRaw : 0;
+    const curScriptEv = !seed || seed.script_event !== false;
+    const curMap = (seed && seed.map && typeof seed.map === 'object' && !Array.isArray(seed.map)) ? seed.map : null;
+    const curMapScript = curMap && typeof curMap.script === 'string' ? curMap.script : '';
+    const curMapBase = curMap && typeof curMap.base === 'string' ? curMap.base.toLowerCase() : 'arena';
+    const curMapMin = curMap && typeof curMap.min_size === 'string' ? curMap.min_size.toLowerCase() : '';
+    const curMapLock = !!(curMap && curMap.lock === true) || !!(seed && seed.map_lock === true);
+
+    const rms = rmsFiles();
+    const baseOpts = [...MAP_BASES];
+    if (curMap && curMap.base && !baseOpts.some(b => b.id === curMapBase)) {
+      baseOpts.push({ id: String(curMap.base), label: String(curMap.base) });
+    }
+    const sizeOpts = [...MAP_SIZES];
+    if (curMap && curMap.min_size && !sizeOpts.some(z => z.id === curMapMin)) {
+      sizeOpts.push({ id: String(curMap.min_size), label: String(curMap.min_size) });
+    }
+
+    openDialog({
+      title: isEdit ? 'Edit game mode' : (preset ? `New game mode — ${curName || 'Preset'}` : 'Add game mode'),
+      width: 'lg',
+      body: `
+        <div class="gm-tabs" role="tablist">
+          <button type="button" class="gm-tab active" role="tab" data-gm-tab="identity">Identity</button>
+          <button type="button" class="gm-tab" role="tab" data-gm-tab="rules">Lobby &amp; Rules</button>
+          <button type="button" class="gm-tab" role="tab" data-gm-tab="map">Map</button>
+        </div>
+        <section class="gm-form-section" data-gm-pane="identity">
+          <div class="gm-form-sec-head">
+            <h4 class="gm-form-sec-title">Identity</h4>
+            <code class="gm-form-sec-chip mono" data-role="mode-hint">Game.Mode() == "${esc(curId || 'my_mode')}"</code>
+          </div>
+          <div class="gm-form-sec-body">
+            <div class="form-grid-2">
+              <div class="form-field">
+                <label for="gm-name">Display name</label>
+                <input id="gm-name" type="text" class="form-input" placeholder="e.g. Last Stand" value="${esc(curName)}" autocomplete="off">
+              </div>
+              <div class="form-field">
+                <label for="gm-id">ID <span class="muted">lowercase, digits, _</span></label>
+                <input id="gm-id" type="text" class="form-input mono" maxlength="63" placeholder="e.g. last_stand" value="${esc(curId)}" autocomplete="off" spellcheck="false">
+              </div>
+            </div>
+            <div class="form-field gm-field-last">
+              <label for="gm-desc">Description <span class="muted">shown on lobby hover</span></label>
+              <textarea id="gm-desc" class="form-textarea" rows="3" placeholder="Explain how the mode plays and how to win...">${esc(curDesc)}</textarea>
+            </div>
+          </div>
+        </section>
+
+        <section class="gm-form-section" data-gm-pane="rules" hidden>
+          <div class="gm-form-sec-head">
+            <h4 class="gm-form-sec-title">Lobby &amp; Rules</h4>
+            <span class="gm-form-sec-sub">Match setup &amp; Lua flags</span>
+          </div>
+          <div class="gm-form-sec-body">
+            <div class="form-field">
+              <label for="gm-player-count">Player count <span class="muted mono">player_count</span></label>
+              <select id="gm-player-count" class="form-select">
+                <option value="0" ${curPlayerCount === 0 ? 'selected' : ''}>Unchanged (use lobby setting)</option>
+                ${[2, 3, 4, 5, 6, 7, 8].map(n => `<option value="${n}" ${curPlayerCount === n ? 'selected' : ''}>${n} players</option>`).join('')}
+              </select>
+              <p class="form-hint gm-hint-tight">Lock SP lobbies to 2&ndash;8 players. With 2 players + Enemy AI, P1 is Team 1 and P2 is Team 2.</p>
+            </div>
+            <div class="gm-rule-grid">
+              <label class="gm-rule-card">
+                <input type="checkbox" id="gm-script-event" ${curScriptEv ? 'checked' : ''}>
+                <span class="form-check-text">
+                  <span>Script driven <span class="muted mono">script_event</span></span>
+                  <span class="form-check-sub">Fires Lua <code class="mono">Game.OnStart</code> rules (default on).</span>
+                </span>
+              </label>
+              <label class="gm-rule-card">
+                <input type="checkbox" id="gm-teams-all" ${curTeamsAll ? 'checked' : ''}>
+                <span class="form-check-text">
+                  <span>All on one team <span class="muted mono">teams: "all"</span></span>
+                  <span class="form-check-sub">Locks every player onto one shared team (SP).</span>
+                </span>
+              </label>
+              <label class="gm-rule-card">
+                <input type="checkbox" id="gm-enemy-player" ${curEnemy ? 'checked' : ''}>
+                <span class="form-check-text">
+                  <span>Enemy player <span class="muted mono">enemy_player</span></span>
+                  <span class="form-check-sub">Adds an extra AI opponent via <code class="mono">Game.ModeEnemy()</code>.</span>
+                </span>
+              </label>
+              <label class="gm-rule-card">
+                <input type="checkbox" id="gm-reveal-map" ${curRevealMap ? 'checked' : ''}>
+                <span class="form-check-text">
+                  <span>Reveal whole map <span class="muted mono">reveal_map</span></span>
+                  <span class="form-check-sub">Starts with All Visible (no fog of war).</span>
+                </span>
+              </label>
+              <label class="gm-rule-card gm-rule-span">
+                <input type="checkbox" id="gm-no-auto-defeat" ${curNoAutoDefeat ? 'checked' : ''}>
+                <span class="form-check-text">
+                  <span>Disable auto-defeat <span class="muted mono">no_auto_defeat</span></span>
+                  <span class="form-check-sub">Prevents automatic defeat with 0 units/buildings; Lua <code class="mono">p:Defeat()</code> still works.</span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <section class="gm-form-section" data-gm-pane="map" hidden>
+          <div class="gm-form-sec-head">
+            <h4 class="gm-form-sec-title">Custom Map</h4>
+            <label class="gm-inline-toggle">
+              <input type="checkbox" id="gm-own-map" ${curMap ? 'checked' : ''}>
+              <span>Lock lobby to custom <code class="mono">.rms</code></span>
+            </label>
+          </div>
+          <div class="gm-form-sec-body" data-role="map-fields" ${curMap ? '' : 'hidden'}>
+            <div class="form-field">
+              <label for="gm-map-script">Map script (.rms)</label>
+              <div class="picker-row">
+                <input id="gm-map-script" type="text" class="form-input mono" placeholder="resources/_common/random-map-scripts/MyMap.rms" value="${esc(curMapScript)}" autocomplete="off" spellcheck="false">
+                ${rms.length ? `<select id="gm-map-pick" class="form-select" aria-label="Pick a map script from this mod">
+                  <option value="">Pick .rms from mod...</option>
+                  ${rms.map(f => `<option value="${esc(f.path)}" ${f.path === curMapScript ? 'selected' : ''}>${esc(basename(f.path))}</option>`).join('')}
+                </select>` : ''}
+              </div>
+              <p class="form-hint gm-hint-tight" data-role="map-script-hint"></p>
+            </div>
+            <div class="form-grid-2 gm-grid-last">
+              <div class="form-field">
+                <label for="gm-map-base">Base map <span class="muted">fallback</span></label>
+                <select id="gm-map-base" class="form-select">
+                  ${baseOpts.map(b => `<option value="${esc(b.id)}" ${b.id.toLowerCase() === curMapBase ? 'selected' : ''}>${esc(b.label)}</option>`).join('')}
+                </select>
+              </div>
+              <div class="form-field">
+                <label for="gm-map-minsize" data-role="map-size-label">${curMapLock ? 'Locked map size' : 'Minimum map size'}</label>
+                <select id="gm-map-minsize" class="form-select">
+                  ${sizeOpts.map(z => `<option value="${esc(z.id)}" ${z.id.toLowerCase() === curMapMin ? 'selected' : ''}>${esc(z.label)}</option>`).join('')}
+                </select>
+              </div>
+            </div>
+            <label class="gm-rule-card" style="margin-top:8px">
+              <input type="checkbox" id="gm-map-lock" ${curMapLock ? 'checked' : ''}>
+              <span class="form-check-text">
+                <span>Hide map &amp; size in lobby <span class="muted mono">map.lock</span></span>
+                <span class="form-check-sub">Hides Map Style and Location in the lobby (and Map Size when a minimum size is set).</span>
+              </span>
+            </label>
+          </div>
+          <p class="gm-map-off-hint" data-role="map-off-hint" ${curMap ? 'hidden' : ''}>Uses whichever map the player picks in the lobby.</p>
+        </section>
+
+        <p class="form-error" role="alert"></p>`,
+      buttons: [
+        { label: 'Cancel' },
+        {
+          label: isEdit ? 'Save changes' : 'Add game mode',
+          primary: true,
+          onClick: (dialog) => {
+            const id = dialog.querySelector('#gm-id').value.trim();
+            const name = dialog.querySelector('#gm-name').value.trim();
+            const desc = dialog.querySelector('#gm-desc').value;
+            const scriptEv = dialog.querySelector('#gm-script-event').checked;
+            const teamsAll = dialog.querySelector('#gm-teams-all').checked;
+            const enemy = dialog.querySelector('#gm-enemy-player').checked;
+            const revealMap = dialog.querySelector('#gm-reveal-map').checked;
+            const noAutoDefeat = dialog.querySelector('#gm-no-auto-defeat').checked;
+            const playerCount = Number(dialog.querySelector('#gm-player-count').value);
+            const ownMap = dialog.querySelector('#gm-own-map').checked;
+            const mapScript = dialog.querySelector('#gm-map-script').value.trim().replace(/\\/g, '/');
+            const mapBase = dialog.querySelector('#gm-map-base').value;
+            const mapMin = dialog.querySelector('#gm-map-minsize').value;
+            const mapLock = dialog.querySelector('#gm-map-lock').checked;
+
+            if (!id) return dialogError(dialog, 'Enter a mode ID.'), false;
+            if (id.length > 63) return dialogError(dialog, 'The mode ID must be at most 63 characters.'), false;
+            if (!GAME_MODE_ID_RULE.test(id)) return dialogError(dialog, 'The mode ID may use lowercase letters, digits and "_" only.'), false;
+            const dup = list.some((m, idx) => idx !== editIdx && m && typeof m.id === 'string' && m.id === id);
+            if (dup) return dialogError(dialog, `A game mode with ID "${id}" already exists in this mod.`), false;
+
+            if (!Number.isInteger(playerCount) || (playerCount !== 0 && (playerCount < 2 || playerCount > 8))) {
+              return dialogError(dialog, 'Player count must be 0 (unchanged) or between 2 and 8.'), false;
+            }
+
+            if (ownMap) {
+              if (!mapScript) return dialogError(dialog, 'Pick or type a map script path, or turn off "Lock lobby to custom .rms".'), false;
+              const why = checkRelPath(mapScript, 'Map script path');
+              if (why) return dialogError(dialog, why), false;
+              if (!mapBase) return dialogError(dialog, 'Choose a base map.'), false;
+            }
+
+            const entry = cur ? { ...cur } : {};
+            entry.id = id;
+            if (name) entry.name = name;
+            else delete entry.name;
+            if (desc.trim()) entry.description = desc;
+            else if (!cur || cur.description !== '') delete entry.description;
+            entry.script_event = scriptEv;
+            if (teamsAll) {
+              entry.teams = 'all';
+            } else if (typeof entry.teams === 'string' && entry.teams.toLowerCase() === 'all') {
+              delete entry.teams;
+            }
+            if (enemy) {
+              entry.enemy_player = true;
+            } else if (entry.enemy_player === true) {
+              delete entry.enemy_player;
+            }
+            if (revealMap) {
+              entry.reveal_map = true;
+            } else if (entry.reveal_map === true) {
+              delete entry.reveal_map;
+            }
+            if (noAutoDefeat) {
+              entry.no_auto_defeat = true;
+            } else if (entry.no_auto_defeat === true) {
+              delete entry.no_auto_defeat;
+            }
+            if (playerCount >= 2 && playerCount <= 8) {
+              entry.player_count = playerCount;
+            } else if (Object.prototype.hasOwnProperty.call(entry, 'player_count')) {
+              delete entry.player_count;
+            }
+            if (ownMap) {
+              const mp = curMap ? { ...curMap } : {};
+              mp.base = mapBase;
+              if (mapMin) mp.min_size = mapMin;
+              else delete mp.min_size;
+              if (mapLock) mp.lock = true;
+              else delete mp.lock;
+              mp.script = mapScript;
+              entry.map = mp;
+            } else {
+              delete entry.map;
+            }
+            delete entry.map_lock;
+
+            if (!Array.isArray(mod.game_modes)) mod.game_modes = [];
+            if (isEdit) mod.game_modes[editIdx] = entry;
+            else mod.game_modes.push(entry);
+            afterModJsonChange();
+            return true;
+          }
+        }
+      ],
+      onOpen: (dialog) => {
+        dialog.querySelectorAll('.gm-tab').forEach(tab => tab.addEventListener('click', () => {
+          dialog.querySelectorAll('.gm-tab').forEach(t => t.classList.toggle('active', t === tab));
+          dialog.querySelectorAll('[data-gm-pane]').forEach(p => { p.hidden = p.dataset.gmPane !== tab.dataset.gmTab; });
+        }));
+        const nameIn = dialog.querySelector('#gm-name');
+        const idIn = dialog.querySelector('#gm-id');
+        const hintEl = dialog.querySelector('[data-role="mode-hint"]');
+        const ownMapChk = dialog.querySelector('#gm-own-map');
+        const mapBody = dialog.querySelector('[data-role="map-fields"]');
+        const mapOffHint = dialog.querySelector('[data-role="map-off-hint"]');
+        const scriptIn = dialog.querySelector('#gm-map-script');
+        const scriptPick = dialog.querySelector('#gm-map-pick');
+        const scriptHint = dialog.querySelector('[data-role="map-script-hint"]');
+        let idTouched = isEdit;
+
+        const updateHint = () => {
+          const id = idIn.value.trim() || 'my_mode';
+          hintEl.textContent = `Game.Mode() == "${id}"`;
+        };
+        const updateScriptHint = () => {
+          const val = scriptIn.value.trim().replace(/\\/g, '/');
+          if (scriptPick) {
+            const match = rms.some(f => f.path === val);
+            scriptPick.value = match ? val : '';
+          }
+          if (!val) {
+            scriptHint.textContent = rms.length
+              ? 'Pick an .rms file from resources/_common/random-map-scripts/ or type a path.'
+              : 'Type a relative .rms path (after saving, click RMS Map on the card to create it).';
+          } else if (!treeList().some(f => f.path.toLowerCase() === val.toLowerCase())) {
+            scriptHint.textContent = 'Not in mod folder yet — save the mode, then click RMS Map on the card to create it.';
+          } else {
+            scriptHint.textContent = 'Found in the mod folder.';
+          }
+        };
+
+        nameIn.addEventListener('input', () => {
+          if (!idTouched) {
+            idIn.value = slugId(nameIn.value, true).slice(0, 63);
+            updateHint();
+          }
+        });
+        idIn.addEventListener('input', () => { idTouched = true; updateHint(); });
+        ownMapChk.addEventListener('change', () => {
+          mapBody.hidden = !ownMapChk.checked;
+          if (mapOffHint) mapOffHint.hidden = ownMapChk.checked;
+        });
+        const mapLockChk = dialog.querySelector('#gm-map-lock');
+        const mapSizeLbl = dialog.querySelector('[data-role="map-size-label"]');
+        if (mapLockChk && mapSizeLbl) {
+          mapLockChk.addEventListener('change', () => {
+            mapSizeLbl.textContent = mapLockChk.checked ? 'Locked map size' : 'Minimum map size';
+          });
+        }
+        scriptIn.addEventListener('input', updateScriptHint);
+        if (scriptPick) {
+          scriptPick.addEventListener('change', () => {
+            if (scriptPick.value) {
+              scriptIn.value = scriptPick.value;
+              updateScriptHint();
+            }
+          });
+        }
+        updateHint();
+        updateScriptHint();
+        setTimeout(() => nameIn.focus(), 30);
+      }
+    });
+  }
+
+  function deleteGameMode(idx) {
+    const mod = modOf();
+    const list = modList('game_modes');
+    if (!mod || idx < 0 || idx >= list.length) return;
+    const item = list[idx] || {};
+    const label = item.name || item.id || 'this game mode';
+    S.showConfirm('Delete game mode', `Remove "${label}" from mod.json?`, 'Delete', () => {
+      mod.game_modes.splice(idx, 1);
+      if (mod.game_modes.length === 0 && !st.hadKey.game_modes) delete mod.game_modes;
+      afterModJsonChange();
+    });
+  }
+
+  // ==========================================================================
+  // Section: Resources (mod.json "resources")
+  // ==========================================================================
+  const VANILLA_RES_NAMES = new Set(['food', 'wood', 'stone', 'gold']);
+  const PLAIN_INT_RE = /^[+-]?\d+$/;
+
+  function hydrateResourceIcons(container) {
+    if (!container) return;
+    container.querySelectorAll('[data-res-icon]').forEach(el => {
+      const path = el.dataset.resIcon;
+      if (!path) return;
+      loadImgUrl(path).then(url => {
+        if (url && el.isConnected && el.dataset.resIcon === path) {
+          el.innerHTML = `<img src="${url}" alt="">`;
+        }
+      });
+    });
+  }
+
+  function renderResources(body) {
+    const resources = modList('resources');
+    if (resources.length === 0) {
+      body.innerHTML = `
+        <div class="empty-card">
+          <div class="empty-card-icon">${NAV_ICONS.resources}</div>
+          <h3 class="empty-card-title">No custom resources yet</h3>
+          <p class="empty-card-text">Declare custom resources for the top HUD bar, unit and tech costs, effects, and Lua scripts.</p>
+          <div class="empty-card-actions"><button class="btn btn-save btn-sm" data-act="res-add">Add resource</button></div>
+        </div>`;
+      return;
+    }
+    body.innerHTML = `
+      <div class="list-head">
+        <span><strong>${resources.length}</strong> custom resource${resources.length === 1 ? '' : 's'}</span>
+      </div>
+      <div class="list">
+        ${resources.map((r, i) => {
+          const item = (r && typeof r === 'object') ? r : {};
+          const id = typeof item.id === 'string' ? item.id : '';
+          const title = (typeof item.name === 'string' && item.name) ? item.name : (id || '(unnamed)');
+          const icon = typeof item.icon === 'string' ? item.icon : '';
+          const start = (typeof item.start === 'number' && Number.isFinite(item.start)) ? item.start : 0;
+          const max = (typeof item.max === 'number' && Number.isFinite(item.max)) ? item.max : 0;
+          const show = item.show !== false;
+          const hidden = item.hidden === true;
+          const gmode = typeof item.game_mode === 'string' ? item.game_mode : '';
+          const hasGather = !!(item.gather && typeof item.gather === 'object');
+          const desc = typeof item.description === 'string' ? item.description : '';
+          const letter = esc((title.trim().charAt(0) || 'R').toUpperCase());
+          const metaParts = [id || 'missing id', `start ${start}`, max > 0 ? `max ${max}` : 'no cap'];
+          if (icon) metaParts.push(icon);
+          return `<div class="modmeta-row">
+            <button type="button" class="modmeta-row-hit" data-act="res-edit" data-idx="${i}">
+              <span class="res-icon-box" ${icon ? `data-res-icon="${esc(icon)}"` : ''}>${letter}</span>
+              <span class="list-main">
+                <span class="list-title">${esc(title)}</span>
+                <span class="list-sub mono">${esc(metaParts.join(' · '))}</span>
+                ${desc ? `<span class="modmeta-desc" title="${esc(desc)}">${esc(desc)}</span>` : ''}
+              </span>
+              <span class="list-tags">
+                ${hasGather ? '<span class="pill">Gatherable</span>' : ''}
+                ${gmode ? `<span class="pill">Mode: ${esc(gmode)}</span>` : ''}
+                ${hidden ? '<span class="pill muted">Hidden</span>' : (show ? '<span class="pill ok">Top bar</span>' : '<span class="pill muted">Panel only</span>')}
+              </span>
+            </button>
+            <span class="row-actions">
+              <button type="button" class="btn btn-wood btn-sm" data-act="res-edit" data-idx="${i}">Edit</button>
+              <button type="button" class="btn btn-ghost danger btn-sm" data-act="res-delete" data-idx="${i}">Delete</button>
+            </span>
+          </div>`;
+        }).join('')}
+      </div>
+      <p class="list-note">Reference custom resources by ID in civ JSON costs and effects, in Visual Script nodes (<code class="mono">Get Resource</code> / <code class="mono">Add Custom Resource</code> / <code class="mono">Resource Deposit ID</code>), or in Lua.</p>`;
+    hydrateResourceIcons(body);
+  }
+
+  function resourceDialog(editIdx) {
+    const mod = modOf();
+    if (!mod) return;
+    const list = modList('resources');
+    const isEdit = Number.isInteger(editIdx) && editIdx >= 0 && editIdx < list.length;
+    const cur = isEdit && list[editIdx] && typeof list[editIdx] === 'object' ? list[editIdx] : null;
+
+    const curId = cur && typeof cur.id === 'string' ? cur.id : '';
+    const curName = cur && typeof cur.name === 'string' ? cur.name : '';
+    const curIcon = cur && typeof cur.icon === 'string' ? cur.icon : '';
+    const curStart = cur && typeof cur.start === 'number' && Number.isFinite(cur.start) ? cur.start : 0;
+    const curMax = cur && typeof cur.max === 'number' && Number.isFinite(cur.max) ? cur.max : 0;
+    const curShow = !cur || cur.show !== false;
+    const curHidden = !!(cur && cur.hidden === true);
+    const curGameMode = cur && typeof cur.game_mode === 'string' ? cur.game_mode : '';
+    const curDesc = cur && typeof cur.description === 'string' ? cur.description : '';
+
+    const curG = cur && cur.gather && typeof cur.gather === 'object' ? cur.gather : null;
+    const gEnabled = !!curG;
+    const gDepName = curG && typeof curG.deposit_name === 'string' ? curG.deposit_name : '';
+    const gMinerName = curG && typeof curG.miner_name === 'string' ? curG.miner_name : '';
+    const gAmount = curG && typeof curG.amount === 'number' ? curG.amount : 800;
+    const gCopyFrom = curG && typeof curG.copy_from === 'number' ? curG.copy_from : 66;
+    const gWorkRate = curG && typeof curG.work_rate === 'number' ? curG.work_rate : 0.45;
+    const gCarry = curG && typeof curG.carry === 'number' ? curG.carry : 10;
+    const gDropSites = curG && Array.isArray(curG.drop_sites) ? curG.drop_sites.join(', ') : '109, 584';
+    const gMinimap = curG && typeof curG.minimap_color === 'number' ? String(curG.minimap_color) : '';
+    const gDepSlp = curG && typeof curG.deposit_slp === 'number' ? String(curG.deposit_slp) : '';
+    const gMaleSlp = curG && typeof curG.carry_male_slp === 'number' ? String(curG.carry_male_slp) : '';
+    const gFemaleSlp = curG && typeof curG.carry_female_slp === 'number' ? String(curG.carry_female_slp) : '';
+
+    const pngs = pngFiles();
+    const modes = modList('game_modes').filter(m => m && typeof m.id === 'string' && m.id);
+    const slpIds = treeList()
+      .map(f => {
+        const m = /^resources\/_common\/drs\/graphics\/(\d+)\.slp$/i.exec(f.path);
+        return m ? m[1] : null;
+      })
+      .filter(Boolean);
+
+    openDialog({
+      title: isEdit ? 'Edit resource' : 'Add resource',
+      width: 'lg',
+      body: `
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="res-name">Display name</label>
+            <input id="res-name" type="text" class="form-input" maxlength="128" placeholder="e.g. Faith" value="${esc(curName)}" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="res-id">ID <span class="muted">unique key</span></label>
+            <input id="res-id" type="text" class="form-input mono" maxlength="64" placeholder="e.g. faith" value="${esc(curId)}" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <p class="form-hint">Short key used in civ JSON, visual scripts, and Lua (no <code class="mono">:</code>, tabs or line breaks; cannot be <code class="mono">food</code>, <code class="mono">wood</code>, <code class="mono">stone</code>, <code class="mono">gold</code> or a number).</p>
+        <div class="form-field">
+          <label for="res-icon">Icon PNG <span class="muted">relative path, optional</span></label>
+          <div class="picker-row">
+            <span class="res-icon-box" data-role="icon-preview">?</span>
+            <input id="res-icon" type="text" class="form-input mono" maxlength="256" placeholder="icons/faith.png" value="${esc(curIcon)}" autocomplete="off" spellcheck="false">
+            ${pngs.length ? `<select id="res-icon-pick" class="form-select" aria-label="Pick a PNG from this mod">
+              <option value="">Pick PNG from mod...</option>
+              ${pngs.map(f => `<option value="${esc(f.path)}" ${f.path === curIcon ? 'selected' : ''}>${esc(f.path)}</option>`).join('')}
+            </select>` : ''}
+            <button type="button" class="btn btn-wood btn-sm" id="res-icon-lib">Pick from library</button>
+          </div>
+        </div>
+        <p class="form-hint" data-role="icon-hint"></p>
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="res-start">Starting amount</label>
+            <input id="res-start" type="number" step="any" class="form-input" value="${esc(curStart)}">
+          </div>
+          <div class="form-field">
+            <label for="res-max">Maximum cap <span class="muted">0 = no cap</span></label>
+            <input id="res-max" type="number" min="0" step="any" class="form-input" value="${esc(curMax)}">
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="res-gmode">Only show in game mode <span class="muted">optional mode ID</span></label>
+          <div class="picker-row">
+            <input id="res-gmode" type="text" class="form-input mono" maxlength="64" placeholder="Leave empty for all modes (e.g. last_stand)" value="${esc(curGameMode)}" autocomplete="off" spellcheck="false">
+            ${modes.length ? `<select id="res-gmode-pick" class="form-select" aria-label="Pick a game mode from this mod">
+              <option value="">All modes</option>
+              ${modes.map(m => `<option value="${esc(m.id)}" ${m.id === curGameMode ? 'selected' : ''}>${esc(m.name || m.id)} (${esc(m.id)})</option>`).join('')}
+            </select>` : ''}
+          </div>
+        </div>
+        <div class="form-checks">
+          <label class="form-check">
+            <input type="checkbox" id="res-show" ${curShow ? 'checked' : ''}>
+            <span class="form-check-text">
+              <span>Show in top resource bar <span class="muted mono">show</span></span>
+              <span class="form-check-sub">Uncheck to keep this resource inside the "Show all" panel only.</span>
+            </span>
+          </label>
+          <label class="form-check">
+            <input type="checkbox" id="res-hidden" ${curHidden ? 'checked' : ''}>
+            <span class="form-check-text">
+              <span>Hide completely from HUD <span class="muted mono">hidden</span></span>
+              <span class="form-check-sub">Never shown in the top bar, +N badge, or "Show all" panel (for internal / save-game data).</span>
+            </span>
+          </label>
+          <label class="form-check">
+            <input type="checkbox" id="res-gather-on" ${gEnabled ? 'checked' : ''}>
+            <span class="form-check-text">
+              <span>Gatherable on map <span class="muted mono">gather</span></span>
+              <span class="form-check-sub">Generates a Gaia map deposit and villager miners automatically — no dat editing needed.</span>
+            </span>
+          </label>
+        </div>
+        <div id="res-gather-box" class="form-subbox" ${gEnabled ? '' : 'hidden'} style="border:1px solid var(--border);border-radius:6px;padding:12px;margin:8px 0 12px;background:rgba(0,0,0,0.16);">
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="res-g-depname">Deposit name</label>
+              <input id="res-g-depname" type="text" class="form-input" maxlength="128" placeholder="e.g. Crystal Deposit" value="${esc(gDepName)}">
+            </div>
+            <div class="form-field">
+              <label for="res-g-minername">Miner name</label>
+              <input id="res-g-minername" type="text" class="form-input" maxlength="128" placeholder="e.g. Crystal Miner" value="${esc(gMinerName)}">
+            </div>
+          </div>
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="res-g-amount">Deposit amount <span class="muted">1..65535</span></label>
+              <input id="res-g-amount" type="number" min="1" max="65535" step="any" class="form-input" value="${esc(gAmount)}">
+            </div>
+            <div class="form-field">
+              <label for="res-g-copy">Deposit template <span class="muted">unit ID</span></label>
+              <div class="picker-row">
+                <input id="res-g-copy" type="number" min="0" max="65535" class="form-input mono" value="${esc(gCopyFrom)}">
+                <select id="res-g-copy-pick" class="form-select" aria-label="Deposit template preset">
+                  <option value="66" ${gCopyFrom === 66 ? 'selected' : ''}>Gold Mine (66)</option>
+                  <option value="102" ${gCopyFrom === 102 ? 'selected' : ''}>Stone Mine (102)</option>
+                  <option value="59" ${gCopyFrom === 59 ? 'selected' : ''}>Forage Bush (59)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="res-g-rate">Gather speed <span class="muted">work_rate</span></label>
+              <input id="res-g-rate" type="number" min="0.01" max="1000" step="any" class="form-input" value="${esc(gWorkRate)}">
+            </div>
+            <div class="form-field">
+              <label for="res-g-carry">Carry capacity <span class="muted">1..32767</span></label>
+              <input id="res-g-carry" type="number" min="1" max="32767" class="form-input" value="${esc(gCarry)}">
+            </div>
+          </div>
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="res-g-drops">Drop-off buildings <span class="muted">1 or 2 unit IDs</span></label>
+              <input id="res-g-drops" type="text" class="form-input mono" placeholder="109, 584" value="${esc(gDropSites)}">
+              <p class="form-hint">109 = Town Center, 584 = Mining Camp, 562 = Lumber Camp, 68 = Mill.</p>
+            </div>
+            <div class="form-field">
+              <label for="res-g-mm">Minimap color <span class="muted">0..255, optional</span></label>
+              <input id="res-g-mm" type="number" min="0" max="255" class="form-input mono" placeholder="e.g. 92" value="${esc(gMinimap)}">
+            </div>
+          </div>
+          ${slpIds.length ? `<datalist id="res-slp-list">${slpIds.map(s => `<option value="${esc(s)}">`).join('')}</datalist>` : ''}
+          <div class="form-grid-2" style="grid-template-columns:repeat(3,minmax(0,1fr));">
+            <div class="form-field">
+              <label for="res-g-depslp">Deposit SLP <span class="muted">optional</span></label>
+              <input id="res-g-depslp" type="number" min="1" class="form-input mono" list="res-slp-list" placeholder="e.g. 90001" value="${esc(gDepSlp)}">
+            </div>
+            <div class="form-field">
+              <label for="res-g-mslp">Male carry SLP <span class="muted">optional</span></label>
+              <input id="res-g-mslp" type="number" min="1" class="form-input mono" list="res-slp-list" placeholder="e.g. 90002" value="${esc(gMaleSlp)}">
+            </div>
+            <div class="form-field">
+              <label for="res-g-fslp">Female carry SLP <span class="muted">optional</span></label>
+              <input id="res-g-fslp" type="number" min="1" class="form-input mono" list="res-slp-list" placeholder="e.g. 90003" value="${esc(gFemaleSlp)}">
+            </div>
+          </div>
+        </div>
+        <div class="form-field">
+          <label for="res-desc">Description <span class="muted">tooltip on hover, optional</span></label>
+          <textarea id="res-desc" class="form-textarea" rows="3" placeholder="Explain how players earn and spend this resource...">${esc(curDesc)}</textarea>
+        </div>
+        <p class="form-error" role="alert"></p>`,
+      buttons: [
+        { label: 'Cancel' },
+        {
+          label: isEdit ? 'Save changes' : 'Add resource',
+          primary: true,
+          onClick: (dialog) => {
+            const id = dialog.querySelector('#res-id').value.trim();
+            const name = dialog.querySelector('#res-name').value.trim();
+            const icon = dialog.querySelector('#res-icon').value.trim();
+            const startRaw = dialog.querySelector('#res-start').value.trim();
+            const maxRaw = dialog.querySelector('#res-max').value.trim();
+            const gmode = dialog.querySelector('#res-gmode').value.trim();
+            const show = dialog.querySelector('#res-show').checked;
+            const hidden = dialog.querySelector('#res-hidden').checked;
+            const gatherOn = dialog.querySelector('#res-gather-on').checked;
+            const desc = dialog.querySelector('#res-desc').value;
+
+            if (!id) return dialogError(dialog, 'Enter a resource ID.'), false;
+            if (id.length > 64) return dialogError(dialog, 'The resource ID must be at most 64 characters.'), false;
+            if (/[:\t\r\n]/.test(id)) return dialogError(dialog, 'The resource ID cannot contain ":", tabs, or line breaks.'), false;
+            if (VANILLA_RES_NAMES.has(id.toLowerCase()) || PLAIN_INT_RE.test(id)) {
+              return dialogError(dialog, `ID "${id}" conflicts with vanilla or numeric resource IDs.`), false;
+            }
+            const dup = list.some((r, idx) => idx !== editIdx && r && typeof r.id === 'string' && r.id.toLowerCase() === id.toLowerCase());
+            if (dup) return dialogError(dialog, `A resource with ID "${id}" already exists in this mod.`), false;
+
+            if (name.length > 128 || /[\t\r\n]/.test(name)) {
+              return dialogError(dialog, 'Display name must be at most 128 characters with no tabs or line breaks.'), false;
+            }
+            if (gmode.length > 64 || /[\t\r\n]/.test(gmode)) {
+              return dialogError(dialog, 'Game mode ID must be at most 64 characters with no tabs or line breaks.'), false;
+            }
+            if (icon) {
+              const why = checkRelPath(icon, 'Icon path');
+              if (why) return dialogError(dialog, why), false;
+            }
+
+            const startVal = startRaw === '' ? 0 : Number(startRaw);
+            if (!Number.isFinite(startVal)) return dialogError(dialog, 'Starting amount must be a valid number.'), false;
+            const maxVal = maxRaw === '' ? 0 : Number(maxRaw);
+            if (!Number.isFinite(maxVal) || maxVal < 0) return dialogError(dialog, 'Maximum cap must be 0 or greater.'), false;
+
+            let gatherObj = null;
+            if (gatherOn) {
+              const depName = dialog.querySelector('#res-g-depname').value.trim();
+              const minerName = dialog.querySelector('#res-g-minername').value.trim();
+              const amtRaw = dialog.querySelector('#res-g-amount').value.trim();
+              const copyRaw = dialog.querySelector('#res-g-copy').value.trim();
+              const rateRaw = dialog.querySelector('#res-g-rate').value.trim();
+              const carryRaw = dialog.querySelector('#res-g-carry').value.trim();
+              const dropsRaw = dialog.querySelector('#res-g-drops').value.trim();
+              const mmRaw = dialog.querySelector('#res-g-mm').value.trim();
+              const depSlpRaw = dialog.querySelector('#res-g-depslp').value.trim();
+              const mSlpRaw = dialog.querySelector('#res-g-mslp').value.trim();
+              const fSlpRaw = dialog.querySelector('#res-g-fslp').value.trim();
+
+              gatherObj = {};
+              if (depName) gatherObj.deposit_name = depName;
+              if (minerName) gatherObj.miner_name = minerName;
+              if (amtRaw !== '') {
+                const a = Number(amtRaw);
+                if (!Number.isFinite(a) || a < 1 || a > 65535) return dialogError(dialog, 'Deposit amount must be 1..65535.'), false;
+                gatherObj.amount = a;
+              }
+              if (copyRaw !== '') {
+                const c = parseInt(copyRaw, 10);
+                if (!Number.isInteger(c) || c < 0 || c > 65535) return dialogError(dialog, 'Deposit template must be a valid unit ID.'), false;
+                gatherObj.copy_from = c;
+              }
+              if (rateRaw !== '') {
+                const wr = Number(rateRaw);
+                if (!Number.isFinite(wr) || wr <= 0 || wr > 1000) return dialogError(dialog, 'Gather speed must be > 0 and <= 1000.'), false;
+                gatherObj.work_rate = wr;
+              }
+              if (carryRaw !== '') {
+                const ca = parseInt(carryRaw, 10);
+                if (!Number.isInteger(ca) || ca < 1 || ca > 32767) return dialogError(dialog, 'Carry capacity must be an integer 1..32767.'), false;
+                gatherObj.carry = ca;
+              }
+              if (dropsRaw !== '') {
+                const parts = dropsRaw.split(',').map(s => s.trim()).filter(Boolean);
+                if (parts.length < 1 || parts.length > 2) return dialogError(dialog, 'Drop-off buildings must be 1 or 2 unit IDs separated by a comma.'), false;
+                const ds = parts.map(s => Number(s));
+                if (ds.some(v => !Number.isInteger(v) || v < 0 || v > 32767)) return dialogError(dialog, 'Each drop-off building must be a non-negative integer unit ID.'), false;
+                gatherObj.drop_sites = ds;
+              }
+              if (mmRaw !== '') {
+                const mm = parseInt(mmRaw, 10);
+                if (!Number.isInteger(mm) || mm < 0 || mm > 255) return dialogError(dialog, 'Minimap color must be an integer 0..255.'), false;
+                gatherObj.minimap_color = mm;
+              }
+              for (const [k, raw, label] of [
+                ['deposit_slp', depSlpRaw, 'Deposit SLP'],
+                ['carry_male_slp', mSlpRaw, 'Male carry SLP'],
+                ['carry_female_slp', fSlpRaw, 'Female carry SLP'],
+              ]) {
+                if (raw !== '') {
+                  const v = parseInt(raw, 10);
+                  if (!Number.isInteger(v) || v <= 0) return dialogError(dialog, `${label} must be a positive integer.`), false;
+                  gatherObj[k] = v;
+                }
+              }
+            }
+
+            const entry = cur ? { ...cur } : {};
+            entry.id = id;
+            if (name) entry.name = name;
+            else delete entry.name;
+            if (icon) entry.icon = icon;
+            else if (!cur || cur.icon !== '') delete entry.icon;
+            entry.start = startVal;
+            entry.max = maxVal;
+            entry.show = show;
+            if (hidden) entry.hidden = true;
+            else delete entry.hidden;
+            if (gmode) entry.game_mode = gmode;
+            else delete entry.game_mode;
+            if (desc.trim()) entry.description = desc;
+            else if (!cur || cur.description !== '') delete entry.description;
+            if (gatherObj) entry.gather = gatherObj;
+            else delete entry.gather;
+
+            if (!Array.isArray(mod.resources)) mod.resources = [];
+            if (isEdit) mod.resources[editIdx] = entry;
+            else mod.resources.push(entry);
+            afterModJsonChange();
+            return true;
+          }
+        }
+      ],
+      onOpen: (dialog) => {
+        const nameIn = dialog.querySelector('#res-name');
+        const idIn = dialog.querySelector('#res-id');
+        const iconIn = dialog.querySelector('#res-icon');
+        const iconPick = dialog.querySelector('#res-icon-pick');
+        const gmodeIn = dialog.querySelector('#res-gmode');
+        const gmodePick = dialog.querySelector('#res-gmode-pick');
+        const gatherOn = dialog.querySelector('#res-gather-on');
+        const gatherBox = dialog.querySelector('#res-gather-box');
+        const copyIn = dialog.querySelector('#res-g-copy');
+        const copyPick = dialog.querySelector('#res-g-copy-pick');
+        const preview = dialog.querySelector('[data-role="icon-preview"]');
+        const iconHint = dialog.querySelector('[data-role="icon-hint"]');
+        let idTouched = isEdit || !!curId;
+
+        const updateIcon = () => {
+          const path = iconIn.value.trim();
+          const fallback = ((nameIn.value.trim() || idIn.value.trim() || 'R').charAt(0)).toUpperCase();
+          if (iconPick) {
+            iconPick.value = pngs.some(f => f.path === path) ? path : '';
+          }
+          preview.dataset.resIcon = path;
+          if (!path) {
+            preview.textContent = fallback;
+            iconHint.textContent = pngs.length
+              ? 'Drawn at 16x16 in the top bar and 18x18 in the "Show all" panel.'
+              : 'No PNG files in the mod folder yet — add one in Files or type a relative path.';
+            return;
+          }
+          const exists = treeList().some(f => f.path.toLowerCase() === path.toLowerCase());
+          iconHint.textContent = exists
+            ? 'Found in the mod folder (drawn at 16x16 in the top bar).'
+            : 'Note: this PNG is not in the mod folder yet (you can add it in Files).';
+          preview.textContent = fallback;
+          if (exists) {
+            loadImgUrl(path).then(url => {
+              if (url && preview.isConnected && preview.dataset.resIcon === path) {
+                preview.innerHTML = `<img src="${url}" alt="">`;
+              }
+            });
+          }
+        };
+
+        nameIn.addEventListener('input', () => {
+          if (!idTouched) idIn.value = slugId(nameIn.value, true).slice(0, 64);
+          if (!iconIn.value.trim()) updateIcon();
+        });
+        idIn.addEventListener('input', () => {
+          idTouched = true;
+          if (!iconIn.value.trim()) updateIcon();
+        });
+        iconIn.addEventListener('input', updateIcon);
+        if (iconPick) {
+          iconPick.addEventListener('change', () => {
+            if (iconPick.value) {
+              iconIn.value = iconPick.value;
+              updateIcon();
+            }
+          });
+        }
+        dialog.querySelector('#res-icon-lib').addEventListener('click', () => {
+          if (!window.ScIconLib) return;
+          window.ScIconLib.pick({
+            title: 'Pick a resource icon',
+            dest: entry => `icons/${entry.id}.png`,
+            onPicked: async (entry, info) => {
+              // the file is in the mod now: refresh the file list so the preview finds it
+              forgetImgUrl(info.path);
+              await loadTree();
+              iconIn.value = info.path;
+              updateIcon();
+            }
+          });
+        });
+        if (gmodePick) {
+          gmodePick.addEventListener('change', () => {
+            gmodeIn.value = gmodePick.value;
+          });
+        }
+        gatherOn.addEventListener('change', () => {
+          gatherBox.hidden = !gatherOn.checked;
+        });
+        if (copyPick) {
+          copyPick.addEventListener('change', () => {
+            copyIn.value = copyPick.value;
+          });
+        }
+        updateIcon();
+        setTimeout(() => nameIn.focus(), 30);
+      }
+    });
+  }
+
+  function deleteResource(idx) {
+    const mod = modOf();
+    const list = modList('resources');
+    if (!mod || idx < 0 || idx >= list.length) return;
+    const item = list[idx] || {};
+    const label = item.name || item.id || 'this resource';
+    S.showConfirm('Delete resource', `Remove "${label}" from mod.json?`, 'Delete', () => {
+      mod.resources.splice(idx, 1);
+      if (mod.resources.length === 0 && !st.hadKey.resources) delete mod.resources;
+      afterModJsonChange();
+    });
+  }
+
+  // ==========================================================================
+  // Section: Settings (mod.json "settings")
+  // ==========================================================================
+  const SETTING_ID_RULE = /^[A-Za-z0-9_]+$/;
+  const SETTING_MAX = 32;        // WL_MAX_SETTINGS in modsettings.h
+  const CHOICE_MAX = 12;         // WL_MAX_CHOICES in modsettings.h
+  const CHOICE_MAX_LEN = 39;     // choices[WL_MAX_CHOICES][40] in modsettings.h
+
+  function settingTypeOf(s) {
+    const t = s && typeof s.type === 'string' ? s.type : 'bool';
+    return (t === 'number' || t === 'choice' || t === 'bool') ? t : 'bool';
+  }
+
+  function renderSettings(body) {
+    const settings = modList('settings');
+    if (settings.length === 0) {
+      body.innerHTML = `
+        <div class="empty-card">
+          <div class="empty-card-icon">${NAV_ICONS.settings}</div>
+          <h3 class="empty-card-title">No mod settings yet</h3>
+          <p class="empty-card-text">Add options that players can change on the in-game Mods screen and your Lua scripts read from MOD.settings.</p>
+          <div class="empty-card-actions"><button class="btn btn-save btn-sm" data-act="setting-add">Add setting</button></div>
+        </div>`;
+      return;
+    }
+    body.innerHTML = `
+      <div class="list-head">
+        <span><strong>${settings.length}</strong> setting${settings.length === 1 ? '' : 's'}${settings.length > SETTING_MAX ? ` &middot; <span class="warn">the game loads the first ${SETTING_MAX}</span>` : ''}</span>
+      </div>
+      <div class="list">
+        ${settings.map((s, i) => {
+          const item = (s && typeof s === 'object') ? s : {};
+          const id = typeof item.id === 'string' ? item.id : '';
+          const title = (typeof item.name === 'string' && item.name) ? item.name : (id || '(unnamed)');
+          const kind = settingTypeOf(item);
+          const glyphLabel = kind === 'number' ? 'num' : kind === 'choice' ? 'pick' : 'bool';
+          let summary = '';
+          if (kind === 'bool') {
+            summary = `default: ${item.default === true ? 'On' : 'Off'}`;
+          } else if (kind === 'number') {
+            const min = typeof item.min === 'number' ? item.min : 0;
+            const max = typeof item.max === 'number' ? item.max : 100;
+            const step = typeof item.step === 'number' ? item.step : 1;
+            const def = typeof item.default === 'number' ? item.default : min;
+            summary = `default: ${def} · ${min}..${max} (step ${step})`;
+          } else {
+            const ch = Array.isArray(item.choices) ? item.choices : [];
+            const def = typeof item.default === 'string' ? item.default : (ch[0] || '');
+            summary = `default: ${def || '—'} · ${ch.length ? ch.join(', ') : 'no choices'}`;
+          }
+          return `<div class="modmeta-row">
+            <button type="button" class="modmeta-row-hit" data-act="setting-edit" data-idx="${i}">
+              <span class="list-glyph ${kind}">${glyphLabel}</span>
+              <span class="list-main">
+                <span class="list-title">${esc(title)}</span>
+                <span class="list-sub mono">MOD.settings.${esc(id || '?')} &middot; ${esc(summary)}</span>
+              </span>
+              <span class="list-tags"></span>
+            </button>
+            <span class="row-actions">
+              <button type="button" class="btn btn-ghost btn-icon-sm" data-act="setting-up" data-idx="${i}" ${i === 0 ? 'disabled' : ''} title="Move up" aria-label="Move up">&#8593;</button>
+              <button type="button" class="btn btn-ghost btn-icon-sm" data-act="setting-down" data-idx="${i}" ${i === settings.length - 1 ? 'disabled' : ''} title="Move down" aria-label="Move down">&#8595;</button>
+              <button type="button" class="btn btn-wood btn-sm" data-act="setting-edit" data-idx="${i}">Edit</button>
+              <button type="button" class="btn btn-ghost danger btn-sm" data-act="setting-delete" data-idx="${i}">Delete</button>
+            </span>
+          </div>`;
+        }).join('')}
+      </div>
+      <p class="list-note">Players change these on the in-game Mods screen (<strong>Settings</strong> button). Values are read in Lua as <code class="mono">MOD.settings.&lt;id&gt;</code>.</p>`;
+  }
+
+  function settingDialog(editIdx) {
+    const mod = modOf();
+    if (!mod) return;
+    const list = modList('settings');
+    const isEdit = Number.isInteger(editIdx) && editIdx >= 0 && editIdx < list.length;
+    const cur = isEdit && list[editIdx] && typeof list[editIdx] === 'object' ? list[editIdx] : null;
+
+    const curId = cur && typeof cur.id === 'string' ? cur.id : '';
+    const curName = cur && typeof cur.name === 'string' ? cur.name : '';
+    const curType = cur ? settingTypeOf(cur) : 'bool';
+    const curBoolDef = curType === 'bool' ? (cur ? cur.default === true : true) : true;
+    const curMin = cur && typeof cur.min === 'number' && Number.isFinite(cur.min) ? cur.min : 0;
+    const curMax = cur && typeof cur.max === 'number' && Number.isFinite(cur.max) ? cur.max : 100;
+    const curStep = cur && typeof cur.step === 'number' && Number.isFinite(cur.step) ? cur.step : 1;
+    const curNumDef = curType === 'number' && cur && typeof cur.default === 'number' && Number.isFinite(cur.default) ? cur.default : curMin;
+    let choiceValues = (cur && Array.isArray(cur.choices) && cur.choices.length)
+      ? cur.choices.map(c => String(c))
+      : ['Easy', 'Normal', 'Hard'];
+    let choiceDefault = (curType === 'choice' && cur && typeof cur.default === 'string')
+      ? cur.default
+      : (choiceValues[0] || '');
+
+    openDialog({
+      title: isEdit ? 'Edit setting' : 'Add setting',
+      width: 'lg',
+      body: `
+        <div class="form-grid-2">
+          <div class="form-field">
+            <label for="set-name">Label <span class="muted">shown on Mods screen</span></label>
+            <input id="set-name" type="text" class="form-input" maxlength="63" placeholder="e.g. Difficulty" value="${esc(curName)}" autocomplete="off">
+          </div>
+          <div class="form-field">
+            <label for="set-id">ID <span class="muted">letters, digits, _</span></label>
+            <input id="set-id" type="text" class="form-input mono" maxlength="47" placeholder="e.g. difficulty" value="${esc(curId)}" autocomplete="off" spellcheck="false">
+          </div>
+        </div>
+        <p class="form-hint">Read in Lua as <code class="mono" data-role="set-hint">MOD.settings.${esc(curId || 'my_setting')}</code>.</p>
+        <div class="form-field">
+          <label for="set-type">Type</label>
+          <select id="set-type" class="form-select">
+            <option value="bool" ${curType === 'bool' ? 'selected' : ''}>Toggle (bool)</option>
+            <option value="number" ${curType === 'number' ? 'selected' : ''}>Number</option>
+            <option value="choice" ${curType === 'choice' ? 'selected' : ''}>Choice</option>
+          </select>
+        </div>
+
+        <div class="form-fieldset" data-panel="bool" ${curType === 'bool' ? '' : 'hidden'}>
+          <label class="form-check" style="margin-bottom: 8px;">
+            <input type="checkbox" id="set-bool-default" ${curBoolDef ? 'checked' : ''}>
+            <span class="form-check-text">
+              <span data-role="bool-label">Default: ${curBoolDef ? 'On (true)' : 'Off (false)'}</span>
+              <span class="form-check-sub">Initial value until the player toggles it on the Mods screen.</span>
+            </span>
+          </label>
+        </div>
+
+        <div class="form-fieldset" data-panel="number" ${curType === 'number' ? '' : 'hidden'}>
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="set-num-min">Minimum <span class="muted mono">min</span></label>
+              <input id="set-num-min" type="number" step="any" class="form-input" value="${esc(curMin)}">
+            </div>
+            <div class="form-field">
+              <label for="set-num-max">Maximum <span class="muted mono">max</span></label>
+              <input id="set-num-max" type="number" step="any" class="form-input" value="${esc(curMax)}">
+            </div>
+            <div class="form-field">
+              <label for="set-num-step">Step <span class="muted mono">step</span></label>
+              <input id="set-num-step" type="number" step="any" class="form-input" value="${esc(curStep)}">
+            </div>
+            <div class="form-field">
+              <label for="set-num-default">Default <span class="muted mono">default</span></label>
+              <input id="set-num-default" type="number" step="any" class="form-input" value="${esc(curNumDef)}">
+            </div>
+          </div>
+        </div>
+
+        <div class="form-fieldset" data-panel="choice" ${curType === 'choice' ? '' : 'hidden'}>
+          <div class="form-field">
+            <label>Choices <span class="muted" data-role="choices-count"></span></label>
+            <div class="choice-editor-list" data-role="choices-list"></div>
+            <div class="choice-editor-foot">
+              <button type="button" class="btn btn-wood btn-sm" data-role="choice-add">+ Add choice</button>
+              <span class="muted" style="font-size:11.5px;">Up to ${CHOICE_MAX} choices, max ${CHOICE_MAX_LEN} chars each</span>
+            </div>
+          </div>
+          <div class="form-field">
+            <label for="set-choice-default">Default choice <span class="muted mono">default</span></label>
+            <select id="set-choice-default" class="form-select"></select>
+          </div>
+        </div>
+
+        <p class="form-error" role="alert"></p>`,
+      buttons: [
+        { label: 'Cancel' },
+        {
+          label: isEdit ? 'Save changes' : 'Add setting',
+          primary: true,
+          onClick: (dialog) => {
+            const id = dialog.querySelector('#set-id').value.trim();
+            const name = dialog.querySelector('#set-name').value.trim();
+            const type = dialog.querySelector('#set-type').value;
+
+            if (!id) return dialogError(dialog, 'Enter a setting ID.'), false;
+            if (id.length > 47) return dialogError(dialog, 'The setting ID must be at most 47 characters.'), false;
+            if (!SETTING_ID_RULE.test(id)) return dialogError(dialog, 'The setting ID may use letters, digits and "_" only.'), false;
+            const dup = list.some((s, idx) => idx !== editIdx && s && typeof s.id === 'string' && s.id === id);
+            if (dup) return dialogError(dialog, `A setting with ID "${id}" already exists in this mod.`), false;
+
+            const entry = cur ? { ...cur } : {};
+            entry.id = id;
+            if (name) entry.name = name;
+            else delete entry.name;
+            entry.type = type;
+
+            if (type === 'bool') {
+              entry.default = dialog.querySelector('#set-bool-default').checked;
+              delete entry.min;
+              delete entry.max;
+              delete entry.step;
+              delete entry.choices;
+            } else if (type === 'number') {
+              const minRaw = dialog.querySelector('#set-num-min').value.trim();
+              const maxRaw = dialog.querySelector('#set-num-max').value.trim();
+              const stepRaw = dialog.querySelector('#set-num-step').value.trim();
+              const defRaw = dialog.querySelector('#set-num-default').value.trim();
+              if (!minRaw || !maxRaw || !stepRaw || !defRaw) {
+                return dialogError(dialog, 'Fill in min, max, step, and default.'), false;
+              }
+              const minVal = Number(minRaw);
+              const maxVal = Number(maxRaw);
+              const stepVal = Number(stepRaw);
+              const defVal = Number(defRaw);
+              if (!Number.isFinite(minVal) || !Number.isFinite(maxVal) || !Number.isFinite(stepVal) || !Number.isFinite(defVal)) {
+                return dialogError(dialog, 'Min, max, step, and default must be valid numbers.'), false;
+              }
+              if (maxVal < minVal) return dialogError(dialog, 'Maximum must be greater than or equal to minimum.'), false;
+              if (stepVal <= 0) return dialogError(dialog, 'Step must be greater than 0.'), false;
+              if (defVal < minVal || defVal > maxVal) {
+                return dialogError(dialog, `Default must be between ${minVal} and ${maxVal}.`), false;
+              }
+              entry.min = minVal;
+              entry.max = maxVal;
+              entry.step = stepVal;
+              entry.default = defVal;
+              delete entry.choices;
+            } else if (type === 'choice') {
+              const trimmed = choiceValues.map(c => c.trim());
+              if (trimmed.length === 0) return dialogError(dialog, 'Add at least one choice.'), false;
+              if (trimmed.length > CHOICE_MAX) return dialogError(dialog, `At most ${CHOICE_MAX} choices are supported.`), false;
+              if (trimmed.some(c => !c)) return dialogError(dialog, 'Choices cannot be blank. Remove or fill in empty choices.'), false;
+              if (trimmed.some(c => c.length > CHOICE_MAX_LEN)) {
+                return dialogError(dialog, `Each choice must be at most ${CHOICE_MAX_LEN} characters.`), false;
+              }
+              if (new Set(trimmed).size !== trimmed.length) {
+                return dialogError(dialog, 'Choices must be unique.'), false;
+              }
+              const defVal = dialog.querySelector('#set-choice-default').value;
+              if (!trimmed.includes(defVal)) {
+                return dialogError(dialog, 'Pick a default choice from the list.'), false;
+              }
+              entry.choices = trimmed;
+              entry.default = defVal;
+              delete entry.min;
+              delete entry.max;
+              delete entry.step;
+            }
+
+            if (!Array.isArray(mod.settings)) mod.settings = [];
+            if (isEdit) mod.settings[editIdx] = entry;
+            else mod.settings.push(entry);
+            afterModJsonChange();
+            return true;
+          }
+        }
+      ],
+      onOpen: (dialog) => {
+        const nameIn = dialog.querySelector('#set-name');
+        const idIn = dialog.querySelector('#set-id');
+        const hintEl = dialog.querySelector('[data-role="set-hint"]');
+        const typeSel = dialog.querySelector('#set-type');
+        const boolChk = dialog.querySelector('#set-bool-default');
+        const boolLbl = dialog.querySelector('[data-role="bool-label"]');
+        const choicesList = dialog.querySelector('[data-role="choices-list"]');
+        const choicesCount = dialog.querySelector('[data-role="choices-count"]');
+        const addChoiceBtn = dialog.querySelector('[data-role="choice-add"]');
+        const defSel = dialog.querySelector('#set-choice-default');
+        let idTouched = isEdit || !!curId;
+
+        const updateHint = () => {
+          hintEl.textContent = `MOD.settings.${idIn.value.trim() || 'my_setting'}`;
+        };
+        const syncPanels = () => {
+          const t = typeSel.value;
+          dialog.querySelectorAll('[data-panel]').forEach(p => { p.hidden = p.dataset.panel !== t; });
+        };
+        const syncDefaultSelect = () => {
+          const nonEmpty = choiceValues.map(c => c.trim()).filter(Boolean);
+          const unique = [...new Set(nonEmpty)];
+          if (!unique.includes(choiceDefault)) choiceDefault = unique[0] || '';
+          defSel.innerHTML = unique.length
+            ? unique.map(c => `<option value="${esc(c)}" ${c === choiceDefault ? 'selected' : ''}>${esc(c)}</option>`).join('')
+            : '<option value="">(Add a choice first)</option>';
+        };
+        const paintChoices = (focusIdx) => {
+          choicesCount.textContent = `${choiceValues.length} / ${CHOICE_MAX}`;
+          addChoiceBtn.disabled = choiceValues.length >= CHOICE_MAX;
+          choicesList.innerHTML = choiceValues.map((val, idx) => `
+            <div class="choice-editor-row" data-choice-idx="${idx}">
+              <input type="text" class="form-input" maxlength="${CHOICE_MAX_LEN}" value="${esc(val)}" placeholder="Choice ${idx + 1}" autocomplete="off">
+              <button type="button" class="btn btn-ghost btn-icon-sm" data-choice-act="up" ${idx === 0 ? 'disabled' : ''} title="Move up" aria-label="Move up">&#8593;</button>
+              <button type="button" class="btn btn-ghost btn-icon-sm" data-choice-act="down" ${idx === choiceValues.length - 1 ? 'disabled' : ''} title="Move down" aria-label="Move down">&#8595;</button>
+              <button type="button" class="btn btn-ghost danger btn-icon-sm" data-choice-act="rm" title="Remove choice" aria-label="Remove choice">&times;</button>
+            </div>`).join('');
+          syncDefaultSelect();
+          if (Number.isInteger(focusIdx)) {
+            const inp = choicesList.querySelector(`[data-choice-idx="${focusIdx}"] input`);
+            if (inp) inp.focus();
+          }
+        };
+
+        choicesList.addEventListener('input', (e) => {
+          const row = e.target.closest('[data-choice-idx]');
+          if (!row) return;
+          const idx = Number(row.dataset.choiceIdx);
+          const prev = choiceValues[idx].trim();
+          const next = e.target.value;
+          choiceValues[idx] = next;
+          if (choiceDefault === prev) choiceDefault = next.trim();
+          syncDefaultSelect();
+        });
+        choicesList.addEventListener('click', (e) => {
+          const btn = e.target.closest('[data-choice-act]');
+          const row = e.target.closest('[data-choice-idx]');
+          if (!btn || !row || btn.disabled) return;
+          const idx = Number(row.dataset.choiceIdx);
+          const act = btn.dataset.choiceAct;
+          if (act === 'up' && idx > 0) {
+            [choiceValues[idx - 1], choiceValues[idx]] = [choiceValues[idx], choiceValues[idx - 1]];
+            paintChoices(idx - 1);
+          } else if (act === 'down' && idx < choiceValues.length - 1) {
+            [choiceValues[idx], choiceValues[idx + 1]] = [choiceValues[idx + 1], choiceValues[idx]];
+            paintChoices(idx + 1);
+          } else if (act === 'rm') {
+            choiceValues.splice(idx, 1);
+            paintChoices();
+          }
+        });
+        addChoiceBtn.addEventListener('click', () => {
+          if (choiceValues.length >= CHOICE_MAX) return;
+          choiceValues.push('');
+          paintChoices(choiceValues.length - 1);
+        });
+        defSel.addEventListener('change', () => { choiceDefault = defSel.value; });
+        boolChk.addEventListener('change', () => {
+          boolLbl.textContent = boolChk.checked ? 'Default: On (true)' : 'Default: Off (false)';
+        });
+        typeSel.addEventListener('change', () => {
+          dialogError(dialog, '');
+          syncPanels();
+        });
+        nameIn.addEventListener('input', () => {
+          if (!idTouched) {
+            idIn.value = slugId(nameIn.value, true).slice(0, 47);
+            updateHint();
+          }
+        });
+        idIn.addEventListener('input', () => { idTouched = true; updateHint(); });
+
+        updateHint();
+        syncPanels();
+        paintChoices();
+        setTimeout(() => nameIn.focus(), 30);
+      }
+    });
+  }
+
+  function deleteSetting(idx) {
+    const mod = modOf();
+    const list = modList('settings');
+    if (!mod || idx < 0 || idx >= list.length) return;
+    const item = list[idx] || {};
+    const label = item.name || item.id || 'this setting';
+    S.showConfirm('Delete setting', `Remove "${label}" from mod.json?`, 'Delete', () => {
+      mod.settings.splice(idx, 1);
+      if (mod.settings.length === 0 && !st.hadKey.settings) delete mod.settings;
+      afterModJsonChange();
+    });
+  }
+
+  function moveSetting(idx, dir) {
+    const mod = modOf();
+    if (!mod || !Array.isArray(mod.settings)) return;
+    const target = idx + dir;
+    if (idx < 0 || idx >= mod.settings.length || target < 0 || target >= mod.settings.length) return;
+    [mod.settings[idx], mod.settings[target]] = [mod.settings[target], mod.settings[idx]];
+    afterModJsonChange();
   }
 
   // ==========================================================================
@@ -1133,6 +3299,31 @@ end)
       count: () => Object.keys(civsOf()).length,
       actions: () => '<button class="btn btn-save btn-sm" data-act="new-element">New element</button>',
       render: renderCivs
+    },
+    {
+      id: 'game_modes', label: 'Game modes',
+      sub: 'Custom lobby game modes added to the Game Mode dropdown.',
+      count: () => modList('game_modes').length,
+      actions: () => {
+        const hasModes = modList('game_modes').length > 0;
+        return (hasModes ? renderQuickPresetsBar(true) : '')
+          + '<button class="btn btn-save btn-sm" data-act="mode-add">Add game mode</button>';
+      },
+      render: renderGameModes
+    },
+    {
+      id: 'resources', label: 'Resources',
+      sub: 'Custom resources shown in the top bar and used in costs, effects and Lua scripts.',
+      count: () => modList('resources').length,
+      actions: () => '<button class="btn btn-save btn-sm" data-act="res-add">Add resource</button>',
+      render: renderResources
+    },
+    {
+      id: 'settings', label: 'Settings',
+      sub: 'Options players can change on the in-game Mods screen (read from MOD.settings).',
+      count: () => modList('settings').length,
+      actions: () => '<button class="btn btn-save btn-sm" data-act="setting-add">Add setting</button>',
+      render: renderSettings
     },
     {
       id: 'scripts', label: 'Scripts',
@@ -1180,6 +3371,22 @@ end)
 
   const ACTIONS = {
     'new-element': () => window.BasicWorkspace && BasicWorkspace.newElement(),
+    'mode-add': () => gameModeDialog(null),
+    'mode-preset': (el) => openPresetDialog(el.dataset.preset),
+    'mode-edit': (el) => gameModeDialog(Number(el.dataset.idx)),
+    'mode-duplicate': (el) => duplicateGameMode(Number(el.dataset.idx)),
+    'mode-rms': (el) => editRmsDialog(Number(el.dataset.idx)).catch(taskFailed),
+    'mode-copy-lua': (el) => copyModeLua(Number(el.dataset.idx)),
+    'mode-copy-id': (el) => copyModeId(Number(el.dataset.idx)),
+    'mode-delete': (el) => deleteGameMode(Number(el.dataset.idx)),
+    'res-add': () => resourceDialog(null),
+    'res-edit': (el) => resourceDialog(Number(el.dataset.idx)),
+    'res-delete': (el) => deleteResource(Number(el.dataset.idx)),
+    'setting-add': () => settingDialog(null),
+    'setting-edit': (el) => settingDialog(Number(el.dataset.idx)),
+    'setting-delete': (el) => deleteSetting(Number(el.dataset.idx)),
+    'setting-up': (el) => moveSetting(Number(el.dataset.idx), -1),
+    'setting-down': (el) => moveSetting(Number(el.dataset.idx), 1),
     'visual-new': () => window.BasicWorkspace && BasicWorkspace.createNewScript(),
     'open-script': (el) => {
       if (window.BasicWorkspace) BasicWorkspace.openScript(el.dataset.path);
@@ -1266,6 +3473,7 @@ end)
     'taunt-play': (el) => playSound(el.dataset.path),
     'file-play': (el) => playSound(el.dataset.path),
     'file-add': () => addFileDialog(),
+    'file-preview': (el) => previewFileDialog(el.dataset.path).catch(taskFailed),
     'file-download': (el) => downloadFile(el.dataset.path),
     'file-replace': (el) => {
       replacePath = el.dataset.path;
@@ -1325,11 +3533,18 @@ end)
   S.onModLoaded(async () => {
     for (const url of st.urls.values()) URL.revokeObjectURL(url);
     st.urls.clear();
+    clearImgUrls();
     st.nowPlaying = null;
     st.codes.clear();
     st.code = null;
     st.tree = null;
     st.filter = '';
+    const loadedMod = modOf() || {};
+    st.hadKey = {
+      game_modes: Object.prototype.hasOwnProperty.call(loadedMod, 'game_modes'),
+      resources: Object.prototype.hasOwnProperty.call(loadedMod, 'resources'),
+      settings: Object.prototype.hasOwnProperty.call(loadedMod, 'settings')
+    };
     if (!S.state.currentModData) {
       const nav = $('mod-nav');
       if (nav) nav.innerHTML = '';

@@ -1,0 +1,272 @@
+/* ************ CLASH OF EMPIRES FIELD ************ */
+/* Random map for Clash of Empires (2 players: Attacker vs Defender).                           */
+/* Every level rolls a fresh biome (Green Plains, Snow Highlands, Desert Oasis, Autumn Woods)   */
+/* with a clear open field in the centre for the enemy village — no forced sand/dirt centre!    */
+
+<PLAYER_SETUP>
+  random_placement
+
+<LAND_GENERATION>
+
+start_random
+  percent_chance 35 #define COE_PLAINS
+  percent_chance 25 #define COE_SNOW
+  percent_chance 20 #define COE_AUTUMN
+  percent_chance 20 #define COE_DESERT
+end_random
+
+if COE_SNOW
+  base_terrain SNOW
+elseif COE_DESERT
+  base_terrain DESERT
+elseif COE_AUTUMN
+  base_terrain GRASS2
+else
+  base_terrain GRASS
+endif
+
+/* Clear central field for the enemy village (matches the map's biome, never forced sand) */
+create_land
+{
+  if COE_SNOW
+    terrain_type                GRASS_SNOW
+  elseif COE_DESERT
+    terrain_type                DIRT
+  elseif COE_AUTUMN
+    terrain_type                GRASS
+  else
+    terrain_type                GRASS3
+  endif
+  land_percent                  12
+  base_size                     19
+  land_position                 50 50
+  border_fuzziness              14
+  other_zone_avoidance_distance 4
+}
+
+create_player_lands
+{
+  if COE_SNOW
+    terrain_type                SNOW
+  elseif COE_DESERT
+    terrain_type                DESERT
+  elseif COE_AUTUMN
+    terrain_type                GRASS2
+  else
+    terrain_type                GRASS
+  endif
+  land_percent                  4
+  base_size                     4
+  left_border                   5
+  right_border                  85
+  top_border                    25
+  bottom_border                 25
+  border_fuzziness              8
+  other_zone_avoidance_distance 4
+}
+
+<ELEVATION_GENERATION>
+
+create_elevation 3
+{
+  if COE_SNOW
+    base_terrain                SNOW
+  elseif COE_DESERT
+    base_terrain                DESERT
+  elseif COE_AUTUMN
+    base_terrain                GRASS2
+  else
+    base_terrain                GRASS
+  endif
+  number_of_clumps              10
+  number_of_tiles               380
+  set_scale_by_groups
+  set_scale_by_size
+}
+
+<TERRAIN_GENERATION>
+
+if COE_SNOW
+  create_terrain SNOW_FOREST
+  {
+    base_terrain                  SNOW
+    spacing_to_other_terrain_types 5
+    land_percent                  11
+    number_of_clumps              14
+    set_scale_by_groups
+  }
+  create_terrain PINE_FOREST
+  {
+    base_terrain                  SNOW
+    spacing_to_other_terrain_types 5
+    land_percent                  4
+    number_of_clumps              8
+    set_scale_by_groups
+  }
+  create_terrain ICE
+  {
+    base_terrain                  SNOW
+    spacing_to_other_terrain_types 5
+    land_percent                  2
+    number_of_clumps              3
+    set_flat_terrain_only
+    set_scale_by_groups
+  }
+elseif COE_DESERT
+  create_terrain PALM_DESERT
+  {
+    base_terrain                  DESERT
+    spacing_to_other_terrain_types 5
+    land_percent                  10
+    number_of_clumps              14
+    set_scale_by_groups
+  }
+  create_terrain WATER
+  {
+    base_terrain                  DESERT
+    spacing_to_other_terrain_types 6
+    land_percent                  2
+    number_of_clumps              2
+    set_flat_terrain_only
+    set_scale_by_groups
+  }
+  create_terrain DIRT2
+  {
+    base_terrain                  DESERT
+    number_of_clumps              16
+    spacing_to_other_terrain_types 1
+    land_percent                  5
+    set_scale_by_size
+  }
+elseif COE_AUTUMN
+  create_terrain FOREST
+  {
+    base_terrain                  GRASS2
+    spacing_to_other_terrain_types 5
+    land_percent                  11
+    number_of_clumps              15
+    set_scale_by_groups
+  }
+  create_terrain LEAVES
+  {
+    base_terrain                  GRASS2
+    number_of_clumps              22
+    spacing_to_other_terrain_types 1
+    land_percent                  8
+    set_scale_by_size
+  }
+  create_terrain DIRT3
+  {
+    base_terrain                  GRASS2
+    number_of_clumps              14
+    spacing_to_other_terrain_types 1
+    land_percent                  4
+    set_scale_by_size
+  }
+  create_terrain SHALLOW
+  {
+    base_terrain                  GRASS2
+    spacing_to_other_terrain_types 4
+    land_percent                  2
+    number_of_clumps              3
+    set_flat_terrain_only
+    set_scale_by_groups
+  }
+else
+  create_terrain FOREST
+  {
+    base_terrain                  GRASS
+    spacing_to_other_terrain_types 5
+    land_percent                  10
+    number_of_clumps              14
+    set_scale_by_groups
+  }
+  create_terrain PINE_FOREST
+  {
+    base_terrain                  GRASS
+    spacing_to_other_terrain_types 5
+    land_percent                  5
+    number_of_clumps              10
+    set_scale_by_groups
+  }
+  create_terrain WATER
+  {
+    base_terrain                  GRASS
+    spacing_to_other_terrain_types 6
+    land_percent                  2
+    number_of_clumps              3
+    set_flat_terrain_only
+    set_scale_by_groups
+  }
+  create_terrain GRASS2
+  {
+    base_terrain                  GRASS
+    number_of_clumps              20
+    spacing_to_other_terrain_types 1
+    land_percent                  5
+    set_scale_by_size
+  }
+  create_terrain LEAVES
+  {
+    base_terrain                  GRASS
+    number_of_clumps              14
+    spacing_to_other_terrain_types 1
+    land_percent                  3
+    set_scale_by_size
+  }
+endif
+
+<OBJECTS_GENERATION>
+
+/* Minimal placeholder TC (deleted immediately by main.lua on game_start) */
+create_object TOWN_CENTER
+{
+  set_place_for_every_player
+  min_distance_to_players       0
+  max_distance_to_players       0
+}
+
+/* Scenic wildlife & scattered trees outside the central village field */
+create_object DEER
+{
+  number_of_groups              4
+  number_of_objects             3
+  group_placement_radius        3
+  set_loose_grouping
+  set_gaia_object_only
+  min_distance_group_placement  10
+}
+
+if COE_SNOW
+  create_object PINETREE
+  {
+    number_of_groups              14
+    number_of_objects             4
+    group_placement_radius        4
+    set_loose_grouping
+    set_gaia_object_only
+    min_distance_group_placement  6
+    terrain_to_place_on           SNOW
+  }
+elseif COE_DESERT
+  create_object PALMTREE
+  {
+    number_of_groups              14
+    number_of_objects             4
+    group_placement_radius        4
+    set_loose_grouping
+    set_gaia_object_only
+    min_distance_group_placement  6
+    terrain_to_place_on           DESERT
+  }
+else
+  create_object OAKTREE
+  {
+    number_of_groups              14
+    number_of_objects             4
+    group_placement_radius        4
+    set_loose_grouping
+    set_gaia_object_only
+    min_distance_group_placement  6
+  }
+endif

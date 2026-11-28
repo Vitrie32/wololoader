@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bgG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#53402a"/><stop offset="100%" stop-color="#19110a"/></linearGradient>
+    <clipPath id="clip"><rect x="2" y="2" width="32" height="32" rx="2"/></clipPath>
+    <radialGradient id="hl" cx="0.18" cy="0.12" r="0.85"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.24"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#fffbe6"/><stop offset="50%" stop-color="#ead8a8"/><stop offset="100%" stop-color="#a88a50"/></linearGradient>
+    <linearGradient id="red" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f07a5e"/><stop offset="50%" stop-color="#c03424"/><stop offset="100%" stop-color="#6e1410"/></linearGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.75"><stop offset="0%" stop-color="#000000" stop-opacity="0"/><stop offset="50%" stop-color="#000000" stop-opacity="0"/><stop offset="100%" stop-color="#000000" stop-opacity="0.42"/></radialGradient>
+  </defs>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bgG)"/>
+<g clip-path="url(#clip)">
+<rect width="36" height="36" fill="url(#hl)"/>
+
+<path d="M9 7 H27 V27 H9 Z" fill="url(#paper)" stroke="#1b1106" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/><path d="M12 12 H24 M12 15.5 H24 M12 19 H21" stroke="#8a6a3a" stroke-width=".9"/><rect x="7" y="4.5" width="22" height="4.6" rx="2.3" fill="url(#paper)" stroke="#1b1106" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/><rect x="7" y="25" width="22" height="4.6" rx="2.3" fill="url(#paper)" stroke="#1b1106" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/><path d="M22 27 L21 33 L23 31.6 L25 33 L24.4 27 Z" fill="url(#red)" stroke="#1b1106" stroke-width="0.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="23" cy="26.4" r="2.6" fill="url(#red)" stroke="#1b1106" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round"/>
+<rect width="36" height="36" fill="url(#vig)"/>
+</g>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="none" stroke="#120b05" stroke-width="1.8"/>
+<rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+</svg>

@@ -6,7 +6,7 @@
 // Builder output revision: part of the autobuild fingerprint (autobuild.c).
 // Bump it whenever wl_dat_build produces different bytes for the same mods,
 // so players' caches are rebuilt automatically.
-#define WL_BUILDER_REV "customres1"  // bump: custom resources in mod.json + cache/resources.txt
+#define WL_BUILDER_REV "gather1"  // bump: gatherable custom resources + cache/gather.txt
 
 typedef struct {
     int (*inflate_raw)(const unsigned char *in, size_t in_len, unsigned char **out, size_t *out_len);

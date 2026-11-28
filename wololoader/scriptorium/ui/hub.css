@@ -6,8 +6,8 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-left: 14px;
-  padding: 3px;
+  margin-left: 16px;
+  padding: 4px;
   background: var(--surface-1);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -16,14 +16,15 @@
 .home-tab {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 11px;
+  gap: 7px;
+  min-height: 36px;
+  padding: 6px 14px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-2);
   font-family: var(--ui);
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: background .12s, color .12s;
@@ -43,13 +44,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 5px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
   border-radius: 99px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -66,9 +67,10 @@
 }
 
 .hub-select {
-  height: 30px;
-  padding: 4px 10px !important;
-  font-size: 12.5px !important;
+  height: 38px;
+  min-height: 38px;
+  padding: 6px 12px !important;
+  font-size: 14px !important;
   background: var(--surface-0) !important;
   border: 1px solid var(--line-strong) !important;
   border-radius: var(--radius) !important;
@@ -79,22 +81,22 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: 22px 24px;
 }
 
 .hub-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   align-content: start;
-  gap: 14px;
+  gap: 18px;
 }
 
 .hub-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  min-height: 156px;
-  padding: 14px 16px;
+  gap: 10px;
+  min-height: 174px;
+  padding: 18px 20px;
   background: var(--surface-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -118,11 +120,11 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
 }
 
 .hub-card-desc {
-  font-size: 12.5px;
+  font-size: 14px;
   color: var(--text-2);
   line-height: 1.45;
   display: -webkit-box;
@@ -132,34 +134,34 @@
 }
 
 .hub-card-author {
-  font-size: 12px;
-  color: var(--text-3);
+  font-size: 13.5px;
+  color: var(--text-2);
 }
 
 .hub-card-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
   margin-top: auto;
-  padding-top: 2px;
+  padding-top: 4px;
 }
 
 .hub-tag {
   display: inline-block;
-  padding: 1px 7px;
-  border-radius: 5px;
+  padding: 2px 8px;
+  border-radius: 6px;
   background: var(--surface-2);
   border: 1px solid var(--line);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .hub-badge {
   display: inline-flex;
   align-items: center;
-  font-size: 11px;
+  font-size: 12.5px;
   font-weight: 600;
-  padding: 2px 9px;
+  padding: 3px 10px;
   border-radius: 99px;
   white-space: nowrap;
 }
@@ -198,13 +200,13 @@
 }
 
 .hub-state-title {
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 650;
   color: var(--text);
 }
 
 .hub-state-text {
-  font-size: 13px;
+  font-size: 14.5px;
   color: var(--text-2);
   line-height: 1.5;
   word-break: break-word;
@@ -212,12 +214,12 @@
 
 .hub-state-url {
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 11.5px;
-  color: var(--text-3);
+  font-size: 13px;
+  color: var(--text-2);
   background: var(--surface-0);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  padding: 6px 9px;
+  padding: 8px 11px;
   word-break: break-all;
 }
 
@@ -297,7 +299,7 @@
 }
 
 .hub-detail-title {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 650;
   color: var(--text);
 }
@@ -306,8 +308,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
+  gap: 10px;
+  font-size: 14px;
   color: var(--text-2);
 }
 
@@ -389,13 +391,13 @@
 }
 
 .hub-section-heading {
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 650;
   color: var(--text);
 }
 
 .hub-full-desc {
-  font-size: 13px;
+  font-size: 14.5px;
   color: var(--text-2);
   line-height: 1.6;
   white-space: pre-wrap;
@@ -404,14 +406,14 @@
 .hub-dep-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .hub-dep-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
+  padding: 10px 14px;
   background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -428,23 +430,23 @@
 
 .hub-kv-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
 }
 
 .hub-kv-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .hub-kv-label {
-  font-size: 11px;
-  color: var(--text-3);
+  font-size: 12.5px;
+  color: var(--text-2);
 }
 
 .hub-kv-val {
-  font-size: 12.5px;
-  color: var(--text-2);
+  font-size: 13.5px;
+  color: var(--text);
   word-break: break-all;
 }

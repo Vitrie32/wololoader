@@ -61,6 +61,13 @@ static int lobby_is_mp(void) {
     return settings && *(int *)(settings + 0x408) == 1;
 }
 
+static int readable(const void *p, size_t n) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if ((UINT_PTR)p < 0x10000 || !VirtualQuery(p, &mbi, sizeof mbi)) return 0;
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || !mbi.Protect) return 0;
+    return (const char *)p + n <= (const char *)mbi.BaseAddress + mbi.RegionSize;
+}
+
 static void *__fastcall lobby_ctor_hook(void *self, void *edx, void *parent) {
     (void)edx;
     void *ret = o_lobby_ctor(self, parent);
@@ -88,7 +95,10 @@ static void *__fastcall lobby_ctor_hook(void *self, void *edx, void *parent) {
         void *vt = *(void **)probe, *cln = NULL;
         for (int off = 0; off + 4 <= 0xbe0; off += 4) {           // GameSetupScreen size 0xbe0
             void *c = *(void **)((char *)self + off);
-            if (!c || c == probe || IsBadReadPtr(c, 0xc8) || *(void **)c != vt) continue;
+            // Most fields are ints, floats or flags, not panels. VirtualQuery says whether the
+            // address is readable without touching it: IsBadReadPtr probes by faulting, and our
+            // vectored logger (crash.c) printed each of those as an "EXCEPTION" (seen 2026-11-28).
+            if (!c || c == probe || !readable(c, 0xc8) || *(void **)c != vt) continue;
             // Closest to the top-left corner (x + 2y): "Change Lobby Name". "Reset" (top right)
             // sits a few pixels higher, so "topmost" picked it (seen in game 2026-11-15).
             int score = *(int *)((char *)c + 0xb8) + 2 * *(int *)((char *)c + 0xbc);

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bgG" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#53402a"/><stop offset="100%" stop-color="#19110a"/></linearGradient>
+    <clipPath id="clip"><rect x="2" y="2" width="32" height="32" rx="2"/></clipPath>
+    <radialGradient id="hl" cx="0.18" cy="0.12" r="0.85"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.24"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5"><stop offset="0%" stop-color="#fffbd8" stop-opacity="0.95"/><stop offset="50%" stop-color="#ffd850" stop-opacity="0.45"/><stop offset="100%" stop-color="#ffd040" stop-opacity="0"/></radialGradient>
+    <linearGradient id="red" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f07a5e"/><stop offset="50%" stop-color="#c03424"/><stop offset="100%" stop-color="#6e1410"/></linearGradient>
+    <linearGradient id="team" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#8ab2f2"/><stop offset="50%" stop-color="#3a62c0"/><stop offset="100%" stop-color="#1c3478"/></linearGradient>
+    <linearGradient id="cream" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#fbf2da"/><stop offset="50%" stop-color="#d8c49a"/><stop offset="100%" stop-color="#8e7a52"/></linearGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.75"><stop offset="0%" stop-color="#000000" stop-opacity="0"/><stop offset="50%" stop-color="#000000" stop-opacity="0"/><stop offset="100%" stop-color="#000000" stop-opacity="0.42"/></radialGradient>
+  </defs>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bgG)"/>
+<g clip-path="url(#clip)">
+<rect width="36" height="36" fill="url(#hl)"/>
+
+<circle cx="18" cy="18" r="12" fill="url(#glow)"/><path d="M18 5.5 A12.5 12.5 0 0 1 30.4 16.4 L33 16.4 L28.4 22 L23.6 16.4 L26.2 16.4 A8.4 8.4 0 0 0 18 9.6 Z" fill="url(#red)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><path d="M18 30.5 A12.5 12.5 0 0 1 5.6 19.6 L3 19.6 L7.6 14 L12.4 19.6 L9.8 19.6 A8.4 8.4 0 0 0 18 26.4 Z" fill="url(#team)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><circle cx="18" cy="15.6" r="2.3" fill="url(#cream)" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><path d="M14 23 C14 19 22 19 22 23 Z" fill="url(#cream)" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/>
+<rect width="36" height="36" fill="url(#vig)"/>
+</g>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="none" stroke="#120b05" stroke-width="1.8"/>
+<rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+</svg>

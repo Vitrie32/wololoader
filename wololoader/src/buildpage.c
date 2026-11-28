@@ -98,6 +98,75 @@ static int civ_matches(int want, int actual) {
     return want < 0 || want == actual;
 }
 
+// ---- Shared commands: an ally's building shows its shared runtime commands ------------------
+// The game builds a selected object's command panel only for its owner: 0x6c9dc0 (GameScreen
+// command panel refresh, __thiscall(screen), plain ret 0x6cb960, prologue 55 8b ec 6a ff) compares
+// the object's owner [obj+0x10] with the local player at 0x6c9ec1 (`39 79 10 cmp [ecx+0x10],edi`)
+// and only the owner path reaches 0x6bb100 (0x6ca030). For a finished building of an ally (not an
+// enemy, 0x74f320) that has Game.AddCommand commands with shared = true, the owner is set to the
+// local player for the duration of that call only, and bldg_panel_hook then shows just those
+// commands (every game button, train and research item is skipped, so nothing of the owner's can
+// be clicked). The commands run as Lua handlers on the clicking player's machine.
+typedef void (__thiscall *PanelRefresh_t)(void *screen);
+static int g_shared_view;
+
+static int building_has_shared(int bldg_id, int civ) {
+    int nr = 0;
+    const WlRuntimeCmd *rc = wl_rt_commands(&nr);
+    for (int i = 0; i < nr; i++)
+        if (rc[i].used && rc[i].shared && rc[i].building == bldg_id && civ_matches(rc[i].civ, civ)) return 1;
+    return 0;
+}
+
+// Is player `id` an ally of player object `me`? Diplomacy stance bytes [player+0x70][id] (read by
+// is_enemy 0x74f320: `8b 4e 70; 80 3c 08 03` = 3 enemy, bounds = player table count
+// [[player+4]+0x188 - +0x184] / 8). 0 = ally, 1 = neutral in the Genie engine (the ally value is
+// not checked in this exe; neutral and enemy are refused either way).
+static int is_ally(void *me, int id) {
+    if (!me || id <= 0 || id == *(int *)((char *)me + 0x1adc)) return 0;
+    char *w = *(char **)((char *)me + 4);
+    if (!w) return 0;
+    int n = (int)((*(char **)(w + 0x188) - *(char **)(w + 0x184)) / 8);
+    BYTE *stance = *(BYTE **)((char *)me + 0x70);
+    return id < n && stance && stance[id] == 0;
+}
+
+// Runs the panel refresh `orig` (0x6c9dc0 or the trampoline) with the shared view when it applies.
+// formtab.c hooks 0x6c9dc0 first when its feature is on, and calls this instead of its original.
+void wl_bp_panel_refresh(void *orig, void *screen) {
+    PanelRefresh_t o_panel_refresh = (PanelRefresh_t)orig;
+    BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
+    void *game = *(void **)0xaf2c58;
+    void *me = game ? ((LocalPlayer_t)0x540c90)(game) : NULL;
+    void *owner = unit ? *(void **)(unit + 0x10) : NULL;
+    if (unit && me && owner && owner != me && unit[0x4c] == 2) {
+        BYTE *master = *(BYTE **)(unit + 0xc);
+        int my_id = *(int *)((char *)me + 0x1adc), their_id = *(int *)((char *)owner + 0x1adc);
+        (void)my_id;
+        if (master && master[4] == 80 && building_has_shared(*(short *)(master + 0x10), get_player_civ(me)) &&
+            is_ally(me, their_id)) {
+            *(void **)(unit + 0x10) = me;
+            g_shared_view = 1;
+            o_panel_refresh(screen);
+            g_shared_view = 0;
+            *(void **)(unit + 0x10) = owner;
+            return;
+        }
+    }
+    o_panel_refresh(screen);
+}
+
+static PanelRefresh_t o_panel_refresh;
+static void __fastcall panel_refresh_hook(void *screen, void *edx) {
+    (void)edx;
+    wl_bp_panel_refresh((void *)o_panel_refresh, screen);
+}
+
+// In the shared view only commands marked shared count (buttons, pages, Next Page).
+static int rt_visible(const WlRuntimeCmd *rc) {
+    return rc->used && (!g_shared_view || rc->shared);
+}
+
 // Active building command-page filter context (set during bldg_panel_hook -> o_bldg_panel).
 static int g_bldg_active_page = 1;
 static void *g_bldg_last_unit = NULL;
@@ -109,6 +178,7 @@ static int g_filter_unit_id = -1;
 
 // Returns 1 to let 0x6bb100 populate this train/research item, 0 to skip it at the source.
 static int filter_bldg_item(const char *kind, int target_id) {
+    if (g_shared_view) return 0;          // an ally's building: none of the owner's items
     if (!g_filter_active) return 1;
     int nb = 0;
     const WlBuildingCmd *bcmds = wl_building_commands(&nb);
@@ -348,7 +418,7 @@ static int scan_bldg_pages(const WlBuildingCmd *bcmds, int nb,
         }
     }
     for (int i = 0; i < nr; i++) {
-        if (!rcmds[i].used) continue;
+        if (!rt_visible(&rcmds[i])) continue;
         if (rcmds[i].building == bldg && civ_matches(rcmds[i].civ, civ)) {
             int p = rcmds[i].page >= 1 ? rcmds[i].page : 1;
             rt_cnt++;
@@ -366,7 +436,7 @@ static int scan_bldg_pages(const WlBuildingCmd *bcmds, int nb,
             if (bcmds[i].building == bldg && civ_matches(bcmds[i].civ, civ) && cp == p) found = 1;
         }
         for (int i = 0; !found && i < nr; i++) {
-            if (!rcmds[i].used) continue;
+            if (!rt_visible(&rcmds[i])) continue;
             int cp = rcmds[i].page >= 1 ? rcmds[i].page : 1;
             if (rcmds[i].building == bldg && civ_matches(rcmds[i].civ, civ) && cp == p) found = 1;
         }
@@ -389,7 +459,7 @@ static int page_has_commands(const WlBuildingCmd *bcmds, int nb,
         if (bcmds[i].building == bldg && civ_matches(bcmds[i].civ, civ) && cp == page) return 1;
     }
     for (int i = 0; i < nr; i++) {
-        if (!rcmds[i].used) continue;
+        if (!rt_visible(&rcmds[i])) continue;
         int cp = rcmds[i].page >= 1 ? rcmds[i].page : 1;
         if (rcmds[i].building == bldg && civ_matches(rcmds[i].civ, civ) && cp == page) return 1;
     }
@@ -399,12 +469,18 @@ static int page_has_commands(const WlBuildingCmd *bcmds, int nb,
 // Re-verify on click that the selected unit is still an owned, finished building
 // matching the expected master id, civ, and condition (guards against stale buttons
 // or hotkeys after conversion / selection switch).
+static int g_click_shared;   // set for a shared runtime command: an ally's building is accepted
 static int validate_cmd_unit(void *screen, int want_bldg, int want_civ,
                              const char *cond_name, int *out_unit_id) {
     BYTE *unit = *(BYTE **)((char *)screen + 0xd5c);
     void *game = *(void **)0xaf2c58;
     void *me = game ? ((LocalPlayer_t)0x540c90)(game) : NULL;
-    if (!unit || !me || *(void **)(unit + 0x10) != me || unit[0x4c] != 2) return 0;
+    if (!unit || !me || unit[0x4c] != 2) return 0;
+    void *owner = *(void **)(unit + 0x10);
+    if (owner != me) {
+        int their_id = owner ? *(int *)((char *)owner + 0x1adc) : 0;
+        if (!g_click_shared || !is_ally(me, their_id)) return 0;
+    }
     BYTE *master = *(BYTE **)(unit + 0xc);
     if (!master || master[4] != 80 || *(short *)(master + 0x10) != want_bldg) return 0;
     if (!civ_matches(want_civ, get_player_civ(me))) return 0;
@@ -423,6 +499,7 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
     int nb = 0, nr = 0;
     const WlBuildingCmd *bcmds = wl_building_commands(&nb);
     const WlRuntimeCmd *rcmds = wl_rt_commands(&nr);
+    if (g_shared_view) nb = 0;            // an ally's building: only shared runtime commands
 
     int id = -1, civ = -1, unit_id = -1;
     int count = 0, bldg_cnt = 0, rt_cnt = 0, first_page = 1, max_page = 1, num_pages = 0;
@@ -469,6 +546,10 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
     AddButton_t add = (AddButton_t)0x6c9200;
     DWORD sheet = *(DWORD *)((char *)screen + 0xab4);
     int need_finalize = 0;
+    if (g_shared_view) {                  // hide the owner's own buttons (gather point, unload...)
+        for (int k = 0; k < 15; k++)
+            if (buttons[k] && *(int *)((char *)buttons[k] + 0x720)) { set_button_visible(buttons[k], 0); need_finalize = 1; }
+    }
 
     // 0x6bb100 already filtered train/research commands at the source (0x6bb507/0x6bb703)
     // and called 0x6bf840. Now add active-page Lua buttons, apply disable/hide conditions
@@ -511,7 +592,7 @@ static void __fastcall bldg_panel_hook(void *screen, void *edx) {
     int max_rt_btn = num_pages > 1 ? 14 : 15;
     for (int i = 0; rt_cnt > 0 && i < nr; i++) {
         const WlRuntimeCmd *rc = &rcmds[i];
-        if (!rc->used) continue;
+        if (!rt_visible(rc)) continue;
         int rpage = rc->page >= 1 ? rc->page : 1;
         if (rc->building != id || !civ_matches(rc->civ, civ) || rpage != g_bldg_active_page) continue;
         if (rc->button < 1 || rc->button > max_rt_btn) continue;
@@ -573,7 +654,10 @@ static void __fastcall command_hook(void *screen, void *edx, int cmd, int a, int
                     }
                     if (next_page == 0) next_page = first_page;
                     g_bldg_active_page = next_page;
-                    bldg_panel_hook(screen, NULL);
+                    // An ally's building: rebuild through 0x6c9dc0 (hooked: wl_bp_panel_refresh sets
+                    // the shared view); our own buildings keep the direct call.
+                    if (*(void **)(unit + 0x10) != me) ((void (__thiscall *)(void *))0x6c9dc0)(screen);
+                    else bldg_panel_hook(screen, NULL);
                 }
             }
         }
@@ -597,8 +681,11 @@ static void __fastcall command_hook(void *screen, void *edx, int cmd, int a, int
         const WlRuntimeCmd *rcmds = wl_rt_commands(&nr);
         int idx = cmd - WL_RT_LUA_CMD;
         int unit_id = -1;
-        if (idx < nr && rcmds[idx].used &&
-            validate_cmd_unit(screen, rcmds[idx].building, rcmds[idx].civ, rcmds[idx].cond_name, &unit_id)) {
+        g_click_shared = idx < nr && rcmds[idx].shared;
+        int valid = idx < nr && rcmds[idx].used &&
+            validate_cmd_unit(screen, rcmds[idx].building, rcmds[idx].civ, rcmds[idx].cond_name, &unit_id);
+        g_click_shared = 0;
+        if (valid) {
             char name[64];
             lstrcpynA(name, rcmds[idx].name, sizeof name);
             wl_cmd_set_local_ctx(1);
@@ -656,6 +743,20 @@ void wl_install_buildpage(void) {
     ok = ok && (o_command = (Command_t)wl_hook(0x6bfc40, command_hook, 5)) != NULL;
     // Stolen 5 bytes at 0x6bb100: 55 8b ec 6a ff (push ebp; mov ebp,esp; push -1)
     ok = ok && (o_bldg_panel = (BldgPanel_t)wl_hook(0x6bb100, bldg_panel_hook, 5)) != NULL;
+    {   // 0x6c9dc0 command panel refresh, stolen 5 bytes 55 8b ec 6a ff; owner compare at 0x6c9ec1
+        static const BYTE b_ref[] = { 0x55, 0x8b, 0xec, 0x6a, 0xff };
+        static const BYTE b_cmp[] = { 0x39, 0x79, 0x10 };
+        if (memcmp((void *)0x6c9ec1, b_cmp, sizeof b_cmp))
+            wl_log("buildpage: 0x6c9ec1 bytes differ, shared commands off");
+        else if (*(BYTE *)0x6c9dc0 == 0xe9)
+            wl_log("buildpage: 0x6c9dc0 already hooked (formtab.c), it calls wl_bp_panel_refresh");
+        else if (!memcmp((void *)0x6c9dc0, b_ref, sizeof b_ref))
+            o_panel_refresh = (PanelRefresh_t)wl_hook(0x6c9dc0, panel_refresh_hook, 5);
+        else
+            wl_log("buildpage: 0x6c9dc0 bytes differ (%02x %02x %02x %02x %02x / %02x %02x %02x), shared commands off",
+                   ((BYTE *)0x6c9dc0)[0], ((BYTE *)0x6c9dc0)[1], ((BYTE *)0x6c9dc0)[2], ((BYTE *)0x6c9dc0)[3], ((BYTE *)0x6c9dc0)[4],
+                   ((BYTE *)0x6c9ec1)[0], ((BYTE *)0x6c9ec1)[1], ((BYTE *)0x6c9ec1)[2]);
+    }
     // Verified prologue at 0x6c6490 (refresh active command panel):
     // push esi; mov esi,ecx; mov ecx,[0xaf2c58]; call 0x540c90
     static const BYTE b_refresh[] = { 0x56, 0x8b, 0xf1, 0x8b, 0x0d, 0x58, 0x2c, 0xaf, 0x00, 0xe8, 0xf2, 0xa7, 0xe7, 0xff };

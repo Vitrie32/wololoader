@@ -13,6 +13,13 @@
 
 WlState g_wl;
 BOOL g_wl_vanilla;
+int wl_gamemode_enemy_player(void) { return 0; }
+int wl_gamemode_set_enemy_player(int pid) { (void)pid; return 0; }
+int wl_gamemode_map_tiles(void) { return 120; }
+void wl_ui_set_map_capture(int on) { (void)on; }
+void wl_ui_set_unit_control_disabled(int off) { (void)off; }
+int wl_ui_request_restart(void) { return 1; }
+int wl_play_sfx_file(const char *path) { (void)path; return 1; }
 
 // Captured log
 static char g_lines[256][512];
@@ -141,6 +148,12 @@ static int fg_resource_resolve(const char *key, const char *prefer_mod) {
         if (strcmp(g_fres[i].key, key) == 0) return g_fres[i].id;
     }
     return -1;
+}
+static WlGatherDef g_fgather[1];
+static const WlGatherDef *fg_gather_by_key(const char *key, const char *prefer_mod) {
+    (void)prefer_mod;
+    if (key && strcmp(g_fgather[0].key, key) == 0) return &g_fgather[0];
+    return NULL;
 }
 static int fg_is_enemy(int a, int b) { (void)a; (void)b; return 0; }
 static int fg_units(int pid, WlUnitInfo *out, int max) {
@@ -839,11 +852,19 @@ int main(void) {
     g_fres_val[211] = 10.0f;
     g_fres_val[212] = 0.0f;
 
+    memset(&g_fgather, 0, sizeof g_fgather);
+    snprintf(g_fgather[0].key, sizeof g_fgather[0].key, "crystal");
+    g_fgather[0].resource_id = 213;
+    g_fgather[0].deposit_id = 1226;
+    g_fgather[0].male_id = 1227;
+    g_fgather[0].female_id = 1228;
+
     static WlGameApi rfg;
     memset(&rfg, 0, sizeof rfg);
     rfg.local_player = fg_local; rfg.player_count = fg_count; rfg.resource = fg_resource;
     rfg.add_resource = fg_add_resource; rfg.set_resource = fg_set_resource;
     rfg.resources_list = fg_resources_list; rfg.resource_resolve = fg_resource_resolve;
+    rfg.gather_by_key = fg_gather_by_key;
     wl_script_set_game(&rfg);
 
     write_mod(0, "restest",
@@ -858,6 +879,10 @@ int main(void) {
         "  wl.log('RES_AFTER_SET', tostring(ok2), p:GetResource('faith'))\n"
         "  local ok_bad, err_bad = pcall(function() return p:GetResource('nope') end)\n"
         "  wl.log('RES_BAD', tostring(ok_bad), tostring(err_bad))\n"
+        "  local dep = Game.ResourceDeposit('crystal')\n"
+        "  local gi = Game.GatherInfo('crystal')\n"
+        "  wl.log('GATHER_OK', tostring(dep), gi and gi.resource, gi and gi.deposit, gi and gi.male, gi and gi.female)\n"
+        "  wl.log('GATHER_NIL', tostring(Game.ResourceDeposit('faith')), tostring(Game.GatherInfo('nope')))\n"
         "end)\n");
     g_wl.listed_count = 1;
     wl_script_restart();
@@ -873,6 +898,8 @@ int main(void) {
     CHECK(has_line("[lua:restest] RES_AFTER_SET\ttrue\t42.0") ||
           has_line("[lua:restest] RES_AFTER_SET\ttrue\t42"));
     CHECK(has_line("[lua:restest] RES_BAD\tfalse\t") && has_line("unknown resource: nope"));
+    CHECK(has_line("[lua:restest] GATHER_OK\t1226\t213\t1226\t1227\t1228"));
+    CHECK(has_line("[lua:restest] GATHER_NIL\tnil\tnil"));
     wl_script_set_game(NULL);
 
     // ---- Custom game modes: Game.Mode(), Player:Win([team]), Player:Defeat() ---------

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bgB" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#5f8cb4"/><stop offset="100%" stop-color="#1d3654"/></linearGradient>
+    <clipPath id="clip"><rect x="2" y="2" width="32" height="32" rx="2"/></clipPath>
+    <radialGradient id="hl" cx="0.18" cy="0.12" r="0.85"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.24"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+    <linearGradient id="grass" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#8cbc58"/><stop offset="50%" stop-color="#4a7a26"/><stop offset="100%" stop-color="#28461a"/></linearGradient>
+    <linearGradient id="oak" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d39a52"/><stop offset="50%" stop-color="#8a5520"/><stop offset="100%" stop-color="#5a3410"/></linearGradient>
+    <linearGradient id="thatch" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f4d680"/><stop offset="50%" stop-color="#c4943a"/><stop offset="100%" stop-color="#7a561c"/></linearGradient>
+    <linearGradient id="leather" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c48a52"/><stop offset="50%" stop-color="#8a5428"/><stop offset="100%" stop-color="#4e2c12"/></linearGradient>
+    <linearGradient id="steel" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#f4f8fc"/><stop offset="50%" stop-color="#a9b6c4"/><stop offset="100%" stop-color="#56616e"/></linearGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.75"><stop offset="0%" stop-color="#000000" stop-opacity="0"/><stop offset="50%" stop-color="#000000" stop-opacity="0"/><stop offset="100%" stop-color="#000000" stop-opacity="0.42"/></radialGradient>
+  </defs>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bgB)"/>
+<g clip-path="url(#clip)">
+<rect width="36" height="36" fill="url(#hl)"/>
+<path d="M0 27.5 C9 25.8 27 25.8 36 27.5 L36 36 L0 36 Z" fill="url(#grass)"/><path d="M0 27.5 C9 25.8 27 25.8 36 27.5" fill="none" stroke="#c8e890" stroke-width=".5" stroke-opacity=".6"/>
+<ellipse cx="18" cy="30.4" rx="15" ry="2" fill="#000" fill-opacity=".35"/><path d="M3 29.4 L5 14 L20 14 L20 29.4 Z" fill="url(#oak)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><path d="M2 15 L6 9 L21.6 9 L21.6 15 Z" fill="url(#thatch)" stroke="#1b1106" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/><path d="M6 29.4 V18 H18 V29.4" fill="#2a1608" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="8.6" cy="27.4" r="2.4" fill="url(#leather)" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="8.6" cy="27.4" r="1.4" fill="#f0cf94"/><circle cx="8.6" cy="27.4" r=".4" fill="#8a5520"/><circle cx="13.4" cy="27.4" r="2.4" fill="url(#leather)" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="13.4" cy="27.4" r="1.4" fill="#f0cf94"/><circle cx="13.4" cy="27.4" r=".4" fill="#8a5520"/><circle cx="11" cy="23.4" r="2.4" fill="url(#leather)" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="11" cy="23.4" r="1.4" fill="#f0cf94"/><circle cx="11" cy="23.4" r=".4" fill="#8a5520"/><circle cx="15.8" cy="23.4" r="2.4" fill="url(#leather)" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><circle cx="15.8" cy="23.4" r="1.4" fill="#f0cf94"/><circle cx="15.8" cy="23.4" r=".4" fill="#8a5520"/><path d="M22 30 L22 25.4 C24 24.6 28 24.6 30 25.4 L30 30 Z" fill="url(#oak)" stroke="#1b1106" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/><ellipse cx="26" cy="25.4" rx="4" ry="1.4" fill="#f0cf94" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><g transform="translate(25.4 25.6) rotate(25) scale(0.95)"><rect x="-.9" y="-10" width="1.8" height="10" rx=".6" fill="url(#oak)" stroke="#1b1106" stroke-width="0.8" stroke-linejoin="round" stroke-linecap="round"/><path d="M.5 -9 L4 -12.5 C7 -9 7 -5 4 -2 L.5 -5 Z" fill="url(#steel)" stroke="#1b1106" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/></g>
+<rect width="36" height="36" fill="url(#vig)"/>
+</g>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="none" stroke="#120b05" stroke-width="1.8"/>
+<rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+</svg>

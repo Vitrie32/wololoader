@@ -62,7 +62,69 @@ static DWORD g_last_paint;
 static int g_scr_w = 1, g_scr_h = 1;
 static int g_last_scr_w, g_last_scr_h;
 static HWND g_hwnd;
+extern int wl_is_multiplayer(void);
 static WNDPROC g_old_proc;
+static HWND g_game_hwnd;
+#define WM_WL_RESTART (WM_APP + 0x57)
+
+// Map-tile click capture (RGE_View::pick at 0x87cbd0, __thiscall ret 0x18, verified in exe.s).
+// GameScreen+0xb08 = TRIBE_Main_View*; +0xb8/+0xbc/+0xc0/+0xc4 = panel rect (x, y, w, h).
+typedef struct {
+    float x, y;
+    short scr_x, scr_y;
+    void *obj;
+    void *tile;
+} RgePickInfo;
+typedef unsigned char (__thiscall *RgeViewPick_t)(
+    void *view, int pick_type, int sub_type, int sx, int sy, RgePickInfo *out, int last_obj);
+typedef struct { float x, y; int btn; } MapClickEv;
+static int g_map_capture;
+static int g_no_unit_control;
+static int g_map_dragging;
+static DWORD g_last_drag_tick;
+static MapClickEv g_mclicks[32];
+static int g_nmclicks;
+
+void wl_ui_set_map_capture(int on) {
+    g_map_capture = on ? 1 : 0;
+    if (!g_map_capture) { g_nmclicks = 0; g_map_dragging = 0; }
+}
+
+void wl_ui_set_unit_control_disabled(int off) {
+    g_no_unit_control = off ? 1 : 0;
+}
+
+static int in_main_view(int sx, int sy) {
+    void *gs = *(void **)0xaf3d90;
+    char *mv = gs ? *(char **)((char *)gs + 0xb04) : NULL;
+    if (!mv) return 0;
+    int px = *(int *)(mv + 0xb8), py = *(int *)(mv + 0xbc);
+    int pw = *(int *)(mv + 0xc0), ph = *(int *)(mv + 0xc4);
+    return sx >= px && sy >= py && sx < px + pw && sy < py + ph;
+}
+
+int wl_ui_request_restart(void) {
+    if (!g_game_hwnd || wl_is_multiplayer()) return 0;
+    PostMessageA(g_game_hwnd, WM_WL_RESTART, 0, 0);
+    return 1;
+}
+
+static int pick_map_tile(int sx, int sy, float *ox, float *oy) {
+    void *gs = *(void **)0xaf3d90;
+    if (!gs) return 0;
+    char *mv = *(char **)((char *)gs + 0xb04);  // TRIBE_Main_View* (verified 0x6b4450)
+    if (!mv) return 0;
+    int px = *(int *)(mv + 0xb8), py = *(int *)(mv + 0xbc);
+    int pw = *(int *)(mv + 0xc0), ph = *(int *)(mv + 0xc4);
+    if (sx < px || sy < py || sx >= px + pw || sy >= py + ph) return 0;
+    RgePickInfo info;
+    memset(&info, 0, sizeof info);
+    unsigned char rc = ((RgeViewPick_t)0x87cbd0)(mv, 0x28, 0, sx, sy, &info, 0);
+    if (rc != 0x33) return 0;
+    *ox = info.x;
+    *oy = info.y;
+    return 1;
+}
 static int g_hover = -1, g_pressed = -1, g_z;
 static int g_clicks[32], g_nclicks;
 static int g_hovers[64], g_nhovers;  // hover enter/leave event queue
@@ -72,7 +134,7 @@ static int g_keys[64], g_nkeys;      // key events for focused text box: (id << 
 static int g_scrolls[64], g_nscrolls;// wheel events: (id << 16) | (1=up, 2=down)
 
 #define MAX_IMAGES 64
-typedef struct { char path[MAX_PATH]; HBITMAP bmp; int w, h; } ImgCache;
+typedef struct { char path[MAX_PATH]; HBITMAP bmp; int w, h, has_alpha; } ImgCache;
 static ImgCache g_images[MAX_IMAGES];
 static int g_nimages;
 
@@ -357,7 +419,7 @@ static ImgCache *load_image(const char *path) {
 
     HRESULT hr = CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
                                   &IID_IWICImagingFactory, (void **)&factory);
-    if (FAILED(hr)) goto img_cleanup;
+    if (FAILED(hr)) { wl_log("ui: WIC CoCreateInstance failed (0x%08lx) for %s", (unsigned long)hr, path); goto img_cleanup; }
 
     wchar_t wpath[MAX_PATH];
     if (!MultiByteToWideChar(CP_ACP, 0, path, -1, wpath, MAX_PATH)) goto img_cleanup;
@@ -389,9 +451,11 @@ static ImgCache *load_image(const char *path) {
     if (FAILED(hr)) { free(pixels); goto img_cleanup; }
 
     // Premultiply alpha for AlphaBlend (BGRA, alpha in byte 3 of each pixel).
+    int has_alpha = 0;
     for (UINT i = 0; i < bytes; i += 4) {
         BYTE a = pixels[i + 3];
         if (a != 255) {
+            has_alpha = 1;
             pixels[i + 0] = (BYTE)((pixels[i + 0] * a) / 255);
             pixels[i + 1] = (BYTE)((pixels[i + 1] * a) / 255);
             pixels[i + 2] = (BYTE)((pixels[i + 2] * a) / 255);
@@ -405,8 +469,15 @@ static ImgCache *load_image(const char *path) {
     bi.bmiHeader.biPlanes = 1;
     bi.bmiHeader.biBitCount = 32;
     bi.bmiHeader.biCompression = BI_RGB;
+    // AoE2 HD's GDI overlay surface uses 0x00 in byte 3 for opaque GDI pixels (FillRect/DrawTextA)
+    // and treats 0xFF as transparent. Clear byte 3 on opaque images so BitBlt/StretchBlt stays opaque.
+    if (!has_alpha) {
+        for (UINT i = 0; i < bytes; i += 4) pixels[i + 3] = 0;
+    }
+    void *dib_bits = NULL;
     HDC screen_dc = GetDC(NULL);
-    bmp = CreateDIBitmap(screen_dc, &bi.bmiHeader, CBM_INIT, pixels, &bi, DIB_RGB_COLORS);
+    bmp = CreateDIBSection(screen_dc, &bi, DIB_RGB_COLORS, &dib_bits, NULL, 0);
+    if (bmp && dib_bits) memcpy(dib_bits, pixels, bytes);
     ReleaseDC(NULL, screen_dc);
     free(pixels);
 
@@ -417,12 +488,14 @@ img_cleanup:
     if (factory) IWICImagingFactory_Release(factory);
     if (need_uninit) CoUninitialize();
 
-    if (!bmp) return NULL;
+    if (!bmp) { wl_log("ui: image '%s' failed to create bitmap", path); return NULL; }
     ImgCache *ic = &g_images[g_nimages++];
     lstrcpynA(ic->path, path, sizeof ic->path);
     ic->bmp = bmp;
     ic->w = (int)w;
     ic->h = (int)h;
+    ic->has_alpha = has_alpha;
+    wl_log("ui: loaded image '%s' (%ux%u, alpha=%d)", path, w, h, has_alpha);
     return ic;
 }
 
@@ -475,11 +548,18 @@ static void draw_el(HDC dc, int i) {
                 int dw = img_rect.right - img_rect.left;
                 int dh = img_rect.bottom - img_rect.top;
                 if (dw > 0 && dh > 0) {
-                    if (ab) {
+                    BOOL drawn = FALSE;
+                    if (ic->has_alpha && ab) {
                         BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-                        ab(dc, img_rect.left, img_rect.top, dw, dh, mem, 0, 0, ic->w, ic->h, bf);
-                    } else {
-                        StretchBlt(dc, img_rect.left, img_rect.top, dw, dh, mem, 0, 0, ic->w, ic->h, SRCCOPY);
+                        drawn = ab(dc, img_rect.left, img_rect.top, dw, dh, mem, 0, 0, ic->w, ic->h, bf);
+                    }
+                    if (!drawn) {
+                        if (dw == ic->w && dh == ic->h) {
+                            BitBlt(dc, img_rect.left, img_rect.top, dw, dh, mem, 0, 0, SRCCOPY);
+                        } else {
+                            SetStretchBltMode(dc, COLORONCOLOR);
+                            StretchBlt(dc, img_rect.left, img_rect.top, dw, dh, mem, 0, 0, ic->w, ic->h, SRCCOPY);
+                        }
                     }
                 }
                 SelectObject(mem, old);
@@ -735,6 +815,21 @@ static int current_mods(void) {
 }
 
 static LRESULT CALLBACK ui_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
+    g_game_hwnd = h;
+    if (msg == WM_WL_RESTART) {
+        // Deferred GameScreen::restart_game (0x6c6470 -> TRIBE_Game::restart_game 0x6350c0),
+        // invoked cleanly from the Windows message pump just like clicking Restart in the menu.
+        void *gs = *(void **)0xaf3d90;
+        if (gs && !wl_is_multiplayer()) {
+            g_map_capture = 0;
+            g_no_unit_control = 0;
+            g_map_dragging = 0;
+            g_nmclicks = 0;
+            typedef void (__thiscall *RestartGame_t)(void *screen);
+            ((RestartGame_t)0x6c6470)(gs);
+        }
+        return 0;
+    }
     int active = GetTickCount() - g_last_paint < 300;     // the game screen is on and painting
 
     if (wl_resbar_wndproc(h, msg, wp, lp, active, g_scr_w, g_scr_h)) return 0;
@@ -832,23 +927,66 @@ static LRESULT CALLBACK ui_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         int i = hit(x, y, &blocking);
         if (msg == WM_MOUSEMOVE) {
             update_hover(i);                              // frames and buttons (hit skips labels)
+            if (g_map_dragging && g_map_capture && !blocking && (wp & MK_LBUTTON)) {
+                DWORD now_t = GetTickCount();
+                if (now_t - g_last_drag_tick >= 110) {
+                    float tx = 0, ty = 0;
+                    if (pick_map_tile(x, y, &tx, &ty) && g_nmclicks < 32) {
+                        g_mclicks[g_nmclicks].x = tx;
+                        g_mclicks[g_nmclicks].y = ty;
+                        g_mclicks[g_nmclicks].btn = 1;
+                        g_nmclicks++;
+                        g_last_drag_tick = now_t;
+                    }
+                }
+                return 0;
+            }
         } else if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONDBLCLK) {
             g_focus = (i >= 0 && g_el[i].type == T_TEXTBOX) ? i : -1;   // click elsewhere = leave the box
             if (blocking) {
                 g_pressed = (g_el[i].type == T_BUTTON) ? i : -1;
                 return 0;
             }
+            if (g_map_capture) {
+                float tx = 0, ty = 0;
+                if (pick_map_tile(x, y, &tx, &ty)) {
+                    if (g_nmclicks < 32) {
+                        g_mclicks[g_nmclicks].x = tx;
+                        g_mclicks[g_nmclicks].y = ty;
+                        g_mclicks[g_nmclicks].btn = 1;
+                        g_nmclicks++;
+                    }
+                    g_map_dragging = 1;
+                    g_last_drag_tick = GetTickCount();
+                    return 0;   // consume left click while deploying
+                }
+            }
         } else if (msg == WM_LBUTTONUP) {
+            g_map_dragging = 0;
             if (g_pressed >= 0) {
                 if (i == g_pressed && g_nclicks < 32) g_clicks[g_nclicks++] = i + 1;
                 g_pressed = -1;
                 return 0;
             }
             if (blocking) return 0;
+        } else if (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) {
+            if (blocking) return 0;
+            if (msg == WM_RBUTTONDOWN && g_map_capture) {
+                float tx = 0, ty = 0;
+                if (pick_map_tile(x, y, &tx, &ty) && g_nmclicks < 32) {
+                    g_mclicks[g_nmclicks].x = tx;
+                    g_mclicks[g_nmclicks].y = ty;
+                    g_mclicks[g_nmclicks].btn = 2;
+                    g_nmclicks++;
+                }
+                return 0;   // right-click cancels placement cleanly without ordering units
+            }
+            if (g_no_unit_control && in_main_view(x, y)) return 0;  // block manual move/attack orders
         } else if (blocking) return 0;                    // right button over our UI
     } else if (!active) {
         update_hover(-1);
         g_pressed = -1;
+        g_map_dragging = 0;
     }
     return CallWindowProcA(g_old_proc, h, msg, wp, lp);
 }
@@ -859,6 +997,15 @@ void wl_ui_frame(void) {
         g_last_scr_w = g_scr_w;
         g_last_scr_h = g_scr_h;
         wl_script_event_int("ui_resize", (g_scr_w << 16) | (g_scr_h & 0xffff));
+    }
+    int nm = g_nmclicks;
+    if (nm) {
+        MapClickEv ev[32];
+        memcpy(ev, g_mclicks, sizeof(MapClickEv) * (size_t)nm);
+        g_nmclicks = 0;
+        wl_cmd_set_local_ctx(1);
+        for (int i = 0; i < nm; i++) wl_script_event_map_click(ev[i].x, ev[i].y, ev[i].btn);
+        wl_cmd_set_local_ctx(0);
     }
     int n = g_nclicks;
     if (n) {

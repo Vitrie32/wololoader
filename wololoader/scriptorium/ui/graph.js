@@ -18,6 +18,14 @@
       inputs: [],
       outputs: [{ name: 'exec', kind: 'flow' }]
     },
+    OnGameModeStart: {
+      category: 'event',
+      title: 'On Game Mode Start',
+      tooltip: 'Runs at game start only when the given custom game mode is active',
+      inputs: [],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { mode: '' }
+    },
     EverySecond: {
       category: 'event',
       title: 'Every Second',
@@ -84,6 +92,18 @@
       outputs: [{ name: 'exec', kind: 'flow' }],
       values: { seconds: 5 }
     },
+    OnMapClick: {
+      category: 'event',
+      title: 'On Map Click',
+      tooltip: 'Runs on map click while map click capture is enabled (button is "left" or "right")',
+      inputs: [],
+      outputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'x', type: 'number' },
+        { name: 'y', type: 'number' },
+        { name: 'button', type: 'text' }
+      ]
+    },
 
     // Actions (blue, flow in+out)
     AddResource: {
@@ -108,10 +128,11 @@
         { name: 'player', type: 'player', required: true },
         { name: 'unit', type: 'number', required: true },
         { name: 'x', type: 'number', required: true },
-        { name: 'y', type: 'number', required: true }
+        { name: 'y', type: 'number', required: true },
+        { name: 'capturable', label: 'Can be captured', type: 'bool' }
       ],
       outputs: [{ name: 'exec', kind: 'flow' }],
-      values: { unit: 125 }
+      values: { unit: 125, capturable: true }
     },
     ResearchTech: {
       category: 'action',
@@ -182,6 +203,17 @@
       outputs: [{ name: 'exec', kind: 'flow' }],
       values: { sound: 'Chat' }
     },
+    PlaySoundFile: {
+      category: 'action',
+      title: 'Play Sound File',
+      tooltip: 'Play a WAV or MP3 sound file relative to the game folder (Sound.PlayFile)',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'path', type: 'text', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { path: '' }
+    },
     Wait: {
       category: 'action',
       title: 'Wait',
@@ -227,6 +259,183 @@
       outputs: [{ name: 'exec', kind: 'flow' }],
       values: { available: true }
     },
+    AddBuildingButton: {
+      category: 'action',
+      title: 'Add Building Button',
+      tooltip: 'Register a custom command button on a building (run once at game start)',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'building', type: 'number', required: true },
+        { name: 'page', type: 'number' },
+        { name: 'button', type: 'number', required: true },
+        { name: 'name', type: 'text', required: true },
+        { name: 'text', type: 'text' },
+        { name: 'help', type: 'text' },
+        { name: 'icon', type: 'text' },
+        { name: 'shared', label: 'Allies can use it', type: 'bool' }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { building: 84, page: 1, button: 10, name: '', text: '', help: '', icon: '32', shared: false }
+    },
+    WinGame: {
+      category: 'action',
+      title: 'Win Game',
+      tooltip: 'Declare a player (and optionally their allies) the winner',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'player', type: 'player', required: true },
+        { name: 'withAllies', label: 'with allies', type: 'bool' }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { withAllies: false }
+    },
+    DefeatPlayer: {
+      category: 'action',
+      title: 'Defeat Player',
+      tooltip: 'Immediately defeat a player',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'player', type: 'player', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }]
+    },
+    MoveUnit: {
+      category: 'action',
+      title: 'Move Unit',
+      tooltip: 'Order a unit to move to map coordinates',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'unit', type: 'unit', required: true },
+        { name: 'x', type: 'number', required: true },
+        { name: 'y', type: 'number', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { x: 0, y: 0 }
+    },
+    AttackUnit: {
+      category: 'action',
+      title: 'Attack',
+      tooltip: 'Order a unit to attack a target unit or building',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'unit', type: 'unit', required: true },
+        { name: 'target', type: 'unit', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }]
+    },
+    AddCustomResource: {
+      category: 'action',
+      title: 'Add Custom Resource',
+      tooltip: 'Add or subtract a custom or numeric resource (by key, name, or ID)',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'player', type: 'player', required: true },
+        { name: 'resource', type: 'text', required: true },
+        { name: 'amount', type: 'number', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { resource: '', amount: 0 }
+    },
+    SetResource: {
+      category: 'action',
+      title: 'Set Resource',
+      tooltip: 'Set a vanilla, custom, or numeric resource to an exact amount',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'player', type: 'player', required: true },
+        { name: 'resource', type: 'text', required: true },
+        { name: 'amount', type: 'number', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { resource: 'Gold', amount: 0 }
+    },
+    SpawnNearUnit: {
+      category: 'action',
+      title: 'Spawn Near Unit',
+      tooltip: 'Spawn a unit or deposit at an (dx, dy) tile offset from an existing unit',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'player', type: 'player', required: true },
+        { name: 'unit', label: 'unit ID', type: 'number', required: true },
+        { name: 'near', label: 'near unit', type: 'unit', required: true },
+        { name: 'dx', type: 'number' },
+        { name: 'dy', type: 'number' },
+        { name: 'capturable', label: 'Can be captured', type: 'bool' }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { unit: 4, dx: 3, dy: 0, capturable: false }
+    },
+    SetCounter: {
+      category: 'action',
+      title: 'Set HUD Counter',
+      tooltip: 'Create or update a named HUD counter in the top-right countdown area',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'name', type: 'text', required: true },
+        { name: 'text', type: 'text', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { name: 'status', text: 'Score: 0' }
+    },
+    HideCounter: {
+      category: 'action',
+      title: 'Hide HUD Counter',
+      tooltip: 'Hide a named HUD counter created with Set HUD Counter',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'name', type: 'text', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { name: 'status' }
+    },
+    SetMapClickCapture: {
+      category: 'action',
+      title: 'Set Map Click Capture',
+      tooltip: 'Enable or disable capturing map clicks for On Map Click instead of normal game clicks',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'enabled', type: 'bool', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { enabled: true }
+    },
+    SetUnitControlDisabled: {
+      category: 'action',
+      title: 'Set Unit Control Disabled',
+      tooltip: 'Disable or re-enable manual right-click unit move and attack orders',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'disabled', type: 'bool', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { disabled: true }
+    },
+    RestartMatch: {
+      category: 'action',
+      title: 'Restart Match',
+      tooltip: 'Restart the current single-player match with a new random map (keeps session data)',
+      inputs: [{ name: 'exec', kind: 'flow' }],
+      outputs: [{ name: 'exec', kind: 'flow' }]
+    },
+    SetSession: {
+      category: 'action',
+      title: 'Set Session Value',
+      tooltip: 'Save a number or text value across Match Restart (cleared on new lobby matches)',
+      inputs: [
+        { name: 'exec', kind: 'flow' },
+        { name: 'key', type: 'text', required: true },
+        { name: 'value', type: 'any', required: true }
+      ],
+      outputs: [{ name: 'exec', kind: 'flow' }],
+      values: { key: '', value: '' }
+    },
+    ClearSession: {
+      category: 'action',
+      title: 'Clear Session',
+      tooltip: 'Clear all saved session values (Game.ClearSession)',
+      inputs: [{ name: 'exec', kind: 'flow' }],
+      outputs: [{ name: 'exec', kind: 'flow' }]
+    },
 
     // Flow control (yellow)
     Branch: {
@@ -257,6 +466,19 @@
         { name: 'done', kind: 'flow' }
       ],
       values: { from: 1, to: 10 }
+    },
+    ForEachPlayer: {
+      category: 'flow',
+      title: 'For Each Player',
+      tooltip: 'Loop over every player in the match (Game.Players())',
+      inputs: [
+        { name: 'exec', kind: 'flow' }
+      ],
+      outputs: [
+        { name: 'body', kind: 'flow' },
+        { name: 'player', type: 'player' },
+        { name: 'done', kind: 'flow' }
+      ]
     },
     ForEachUnit: {
       category: 'flow',
@@ -455,12 +677,333 @@
       inputs: [{ name: 'var', type: 'text', required: true }],
       outputs: [{ name: 'value', type: 'any' }],
       values: { var: '' }
+    },
+    GameMode: {
+      category: 'data',
+      title: 'Game Mode',
+      tooltip: 'Key of the active custom game mode (or nil for vanilla modes)',
+      inputs: [],
+      outputs: [{ name: 'mode', type: 'text' }]
+    },
+    ModeEnemyPlayer: {
+      category: 'data',
+      title: 'Mode Enemy Player',
+      tooltip: 'The custom game mode enemy player (or nil if none)',
+      inputs: [],
+      outputs: [{ name: 'player', type: 'player' }]
+    },
+    UnitsOfType: {
+      category: 'data',
+      title: 'Units Of Type',
+      tooltip: 'Get all units of a specific unit type ID owned by a player',
+      inputs: [
+        { name: 'player', type: 'player', required: true },
+        { name: 'unitType', label: 'unit type', type: 'number', required: true }
+      ],
+      outputs: [{ name: 'units', type: 'units' }],
+      values: { unitType: 125 }
+    },
+    ModSetting: {
+      category: 'data',
+      title: 'Mod Setting',
+      tooltip: 'Read a mod setting value declared in mod.json (MOD.settings)',
+      inputs: [{ name: 'setting', type: 'text', required: true }],
+      outputs: [{ name: 'value', type: 'any' }],
+      values: { setting: '' }
+    },
+    PlayerCiv: {
+      category: 'data',
+      title: 'Player Civ',
+      tooltip: 'Get player civilization ID (1-31 vanilla, 35+ custom)',
+      inputs: [{ name: 'player', type: 'player', required: true }],
+      outputs: [{ name: 'civ', type: 'number' }]
+    },
+    GetResource: {
+      category: 'data',
+      title: 'Get Resource',
+      tooltip: 'Get a vanilla, custom, or numeric resource amount (by key, name, or ID)',
+      inputs: [
+        { name: 'player', type: 'player', required: true },
+        { name: 'resource', type: 'text', required: true }
+      ],
+      outputs: [{ name: 'amount', type: 'number' }],
+      values: { resource: '' }
+    },
+    GaiaPlayer: {
+      category: 'data',
+      title: 'Gaia Player',
+      tooltip: 'Neutral Gaia player (Game.Player(0)) — use for spawning deposits, relics, and animals',
+      inputs: [],
+      outputs: [{ name: 'player', type: 'player' }]
+    },
+    ResourceDeposit: {
+      category: 'data',
+      title: 'Resource Deposit ID',
+      tooltip: 'Get the Gaia deposit unit ID for a gatherable custom resource (Game.ResourceDeposit)',
+      inputs: [{ name: 'resource', type: 'text', required: true }],
+      outputs: [{ name: 'unit', label: 'unit ID', type: 'number' }],
+      values: { resource: 'crystal' }
+    },
+    PlayerIsEnemy: {
+      category: 'data',
+      title: 'Is Enemy',
+      tooltip: 'True when player A considers player B an enemy',
+      inputs: [
+        { name: 'a', label: 'player A', type: 'player', required: true },
+        { name: 'b', label: 'player B', type: 'player', required: true }
+      ],
+      outputs: [{ name: 'result', type: 'bool' }]
+    },
+    SelectedUnits: {
+      category: 'data',
+      title: 'Selected Units',
+      tooltip: 'Units currently selected by the local player (Game.Selected())',
+      inputs: [],
+      outputs: [{ name: 'units', type: 'units' }]
+    },
+    UnitPosition: {
+      category: 'data',
+      title: 'Unit Position',
+      tooltip: 'Get both X and Y map coordinates of a unit',
+      inputs: [{ name: 'unit', type: 'unit', required: true }],
+      outputs: [
+        { name: 'x', type: 'number' },
+        { name: 'y', type: 'number' }
+      ]
+    },
+    MapSize: {
+      category: 'data',
+      title: 'Map Size',
+      tooltip: 'Side length of the map in tiles from the lobby size (Game.MapSize())',
+      inputs: [],
+      outputs: [{ name: 'tiles', type: 'number' }]
+    },
+    GetSession: {
+      category: 'data',
+      title: 'Get Session Value',
+      tooltip: 'Read a value saved with Set Session Value across Match Restart (nil if unset)',
+      inputs: [{ name: 'key', type: 'text', required: true }],
+      outputs: [{ name: 'value', type: 'any' }],
+      values: { key: '' }
     }
   };
 
   // ==========================================================================
-  // Graph Creation
+  // Categories, Templates & Graph Creation
   // ==========================================================================
+
+  const CATEGORY_ORDER = ['event', 'action', 'flow', 'data'];
+  const CATEGORY_LABELS = {
+    event: 'Events',
+    action: 'Actions',
+    flow: 'Flow',
+    data: 'Values'
+  };
+
+  const TEMPLATES = [
+    {
+      id: 'unit-created-gold',
+      title: 'Give gold when a unit is created',
+      desc: 'On Unit Created -> Unit Owner -> Add Resource (Gold)',
+      nodes: [
+        { ref: 'ev', type: 'OnUnitCreated', x: 60, y: 120 },
+        { ref: 'own', type: 'UnitOwner', x: 340, y: 205 },
+        { ref: 'add', type: 'AddResource', x: 620, y: 120, values: { resource: 'Gold', amount: 25 } }
+      ],
+      links: [
+        ['ev', 'exec', 'add', 'exec'],
+        ['ev', 'unit', 'own', 'unit'],
+        ['own', 'player', 'add', 'player']
+      ]
+    },
+    {
+      id: 'market-button',
+      title: 'Button on the Market',
+      desc: 'Register a command button on Market (84) and handle clicks',
+      nodes: [
+        { ref: 'start', type: 'OnGameStart', x: 60, y: 80 },
+        { ref: 'btn', type: 'AddBuildingButton', x: 350, y: 80, values: { building: 84, page: 1, button: 10, name: 'market_gift', text: 'Trade Gift', help: 'Gain 50 Gold', icon: '32' } },
+        { ref: 'press', type: 'OnBuildingButton', x: 60, y: 420, values: { button: 'market_gift' } },
+        { ref: 'own', type: 'UnitOwner', x: 350, y: 505 },
+        { ref: 'gold', type: 'AddResource', x: 630, y: 420, values: { resource: 'Gold', amount: 50 } }
+      ],
+      links: [
+        ['start', 'exec', 'btn', 'exec'],
+        ['press', 'exec', 'gold', 'exec'],
+        ['press', 'building', 'own', 'unit'],
+        ['own', 'player', 'gold', 'player']
+      ]
+    },
+    {
+      id: 'game-mode-rules',
+      title: 'Game mode rules at start',
+      desc: 'On Game Mode Start -> give starting gold and show a message',
+      nodes: [
+        { ref: 'mode', type: 'OnGameModeStart', x: 60, y: 110, values: { mode: 'my_mode' } },
+        { ref: 'lp', type: 'LocalPlayer', x: 60, y: 270 },
+        { ref: 'gold', type: 'AddResource', x: 360, y: 110, values: { resource: 'Gold', amount: 500 } },
+        { ref: 'msg', type: 'ShowMessage', x: 660, y: 110, values: { text: 'Mode started!', color: 36 } }
+      ],
+      links: [
+        ['mode', 'exec', 'gold', 'exec'],
+        ['lp', 'player', 'gold', 'player'],
+        ['gold', 'exec', 'msg', 'exec']
+      ]
+    },
+    {
+      id: 'every-10s-custom-res',
+      title: 'Every 10 seconds add a custom resource',
+      desc: 'Every N Seconds (10) -> Local Player -> Add Custom Resource',
+      nodes: [
+        { ref: 'ev', type: 'EveryNSeconds', x: 60, y: 120, values: { seconds: 10 } },
+        { ref: 'lp', type: 'LocalPlayer', x: 60, y: 270 },
+        { ref: 'res', type: 'AddCustomResource', x: 360, y: 120, values: { resource: 'faith', amount: 5 } }
+      ],
+      links: [
+        ['ev', 'exec', 'res', 'exec'],
+        ['lp', 'player', 'res', 'player']
+      ]
+    },
+    {
+      id: 'spawn-deposits-tc',
+      title: 'Spawn custom deposits near every Town Center',
+      desc: 'On Game Start -> For Each Player -> Town Centers (109) -> Spawn Near Unit (Gaia)',
+      nodes: [
+        { ref: 'start', type: 'OnGameStart', x: 40, y: 100 },
+        { ref: 'fep', type: 'ForEachPlayer', x: 280, y: 100 },
+        { ref: 'tcs', type: 'UnitsOfType', x: 280, y: 280, values: { unitType: 109 } },
+        { ref: 'feu', type: 'ForEachUnit', x: 560, y: 100 },
+        { ref: 'gaia', type: 'GaiaPlayer', x: 560, y: 290 },
+        { ref: 'dep', type: 'ResourceDeposit', x: 560, y: 390, values: { resource: 'crystal' } },
+        { ref: 'sp1', type: 'SpawnNearUnit', x: 860, y: 100, values: { dx: 5, dy: 0 } },
+        { ref: 'sp2', type: 'SpawnNearUnit', x: 1140, y: 100, values: { dx: -5, dy: 0 } }
+      ],
+      links: [
+        ['start', 'exec', 'fep', 'exec'],
+        ['fep', 'body', 'feu', 'exec'],
+        ['fep', 'player', 'tcs', 'player'],
+        ['tcs', 'units', 'feu', 'units'],
+        ['feu', 'body', 'sp1', 'exec'],
+        ['gaia', 'player', 'sp1', 'player'],
+        ['dep', 'unit', 'sp1', 'unit'],
+        ['feu', 'unit', 'sp1', 'near'],
+        ['sp1', 'exec', 'sp2', 'exec'],
+        ['gaia', 'player', 'sp2', 'player'],
+        ['dep', 'unit', 'sp2', 'unit'],
+        ['feu', 'unit', 'sp2', 'near']
+      ]
+    },
+    {
+      id: 'passive-building-income',
+      title: 'Passive custom resource per building',
+      desc: 'Every 10s -> For Each Player -> count Monasteries (104) -> Add Custom Resource',
+      nodes: [
+        { ref: 'ev', type: 'EveryNSeconds', x: 40, y: 110, values: { seconds: 10 } },
+        { ref: 'fep', type: 'ForEachPlayer', x: 300, y: 110 },
+        { ref: 'bld', type: 'UnitsOfType', x: 300, y: 290, values: { unitType: 104 } },
+        { ref: 'cnt', type: 'Count', x: 580, y: 290 },
+        { ref: 'add', type: 'AddCustomResource', x: 840, y: 110, values: { resource: 'faith', amount: 1 } }
+      ],
+      links: [
+        ['ev', 'exec', 'fep', 'exec'],
+        ['fep', 'body', 'add', 'exec'],
+        ['fep', 'player', 'bld', 'player'],
+        ['bld', 'units', 'cnt', 'list'],
+        ['fep', 'player', 'add', 'player'],
+        ['cnt', 'count', 'add', 'amount']
+      ]
+    },
+    {
+      id: 'hud-counter-update',
+      title: 'Live HUD counter in top-right bar',
+      desc: 'Every Second -> read custom resource -> Set HUD Counter',
+      nodes: [
+        { ref: 'ev', type: 'EverySecond', x: 40, y: 110 },
+        { ref: 'lp', type: 'LocalPlayer', x: 40, y: 260 },
+        { ref: 'res', type: 'GetResource', x: 280, y: 260, values: { resource: 'crystal' } },
+        { ref: 'txt', type: 'ToText', x: 540, y: 260 },
+        { ref: 'join', type: 'JoinText', x: 760, y: 260, values: { a: 'Crystal: ' } },
+        { ref: 'ctr', type: 'SetCounter', x: 1020, y: 110, values: { name: 'crystal_hud' } }
+      ],
+      links: [
+        ['ev', 'exec', 'ctr', 'exec'],
+        ['lp', 'player', 'res', 'player'],
+        ['res', 'amount', 'txt', 'value'],
+        ['txt', 'text', 'join', 'b'],
+        ['join', 'result', 'ctr', 'text']
+      ]
+    },
+    {
+      id: 'castle-spend-resource',
+      title: 'Spend custom resource at Castle to summon a unit',
+      desc: 'Castle (82) button with cost check (50 crystal) -> deduct resource & spawn Champion',
+      nodes: [
+        { ref: 'start', type: 'OnGameStart', x: 40, y: 60 },
+        { ref: 'btn', type: 'AddBuildingButton', x: 320, y: 60, values: { building: 82, page: 1, button: 10, name: 'summon_champ', text: 'Summon Champion', help: 'Costs 50 Crystal', icon: '32' } },
+        { ref: 'cond', type: 'ButtonCondition', x: 40, y: 380, values: { button: 'summon_champ' } },
+        { ref: 'cown', type: 'UnitOwner', x: 320, y: 470 },
+        { ref: 'cres', type: 'GetResource', x: 560, y: 470, values: { resource: 'crystal' } },
+        { ref: 'cmp', type: 'Compare', x: 820, y: 470, values: { op: '>=', b: 50 } },
+        { ref: 'avail', type: 'SetButtonAvailable', x: 1060, y: 380 },
+        { ref: 'press', type: 'OnBuildingButton', x: 40, y: 660, values: { button: 'summon_champ' } },
+        { ref: 'pown', type: 'UnitOwner', x: 320, y: 760 },
+        { ref: 'pay', type: 'AddCustomResource', x: 580, y: 660, values: { resource: 'crystal', amount: -50 } },
+        { ref: 'sp', type: 'SpawnNearUnit', x: 880, y: 660, values: { unit: 567, dx: 3, dy: 3 } }
+      ],
+      links: [
+        ['start', 'exec', 'btn', 'exec'],
+        ['cond', 'exec', 'avail', 'exec'],
+        ['cond', 'building', 'cown', 'unit'],
+        ['cown', 'player', 'cres', 'player'],
+        ['cres', 'amount', 'cmp', 'a'],
+        ['cmp', 'result', 'avail', 'available'],
+        ['press', 'exec', 'pay', 'exec'],
+        ['press', 'building', 'pown', 'unit'],
+        ['pown', 'player', 'pay', 'player'],
+        ['pay', 'exec', 'sp', 'exec'],
+        ['pown', 'player', 'sp', 'player'],
+        ['press', 'building', 'sp', 'near']
+      ]
+    },
+    {
+      id: 'click-to-spawn',
+      title: 'Click on the map to spawn units',
+      desc: 'Enable map click capture at start -> On Map Click -> left-click spawns Archer + plays Villager sound, right-click exits',
+      nodes: [
+        { ref: 'start', type: 'OnGameStart', x: 40, y: 60 },
+        { ref: 'cap_on', type: 'SetMapClickCapture', x: 320, y: 60, values: { enabled: true } },
+        { ref: 'click', type: 'OnMapClick', x: 40, y: 260 },
+        { ref: 'cmp', type: 'Compare', x: 320, y: 380, values: { op: '==', b: 'left' } },
+        { ref: 'br', type: 'Branch', x: 600, y: 260 },
+        { ref: 'lp', type: 'LocalPlayer', x: 600, y: 420 },
+        { ref: 'spawn', type: 'CreateUnit', x: 880, y: 220, values: { unit: 4, capturable: true } },
+        { ref: 'sfx', type: 'PlaySound', x: 1180, y: 220, values: { sound: 'Villager' } },
+        { ref: 'cap_off', type: 'SetMapClickCapture', x: 880, y: 440, values: { enabled: false } }
+      ],
+      links: [
+        ['start', 'exec', 'cap_on', 'exec'],
+        ['click', 'exec', 'br', 'exec'],
+        ['click', 'button', 'cmp', 'a'],
+        ['cmp', 'result', 'br', 'condition'],
+        ['br', 'true', 'spawn', 'exec'],
+        ['lp', 'player', 'spawn', 'player'],
+        ['click', 'x', 'spawn', 'x'],
+        ['click', 'y', 'spawn', 'y'],
+        ['spawn', 'exec', 'sfx', 'exec'],
+        ['br', 'false', 'cap_off', 'exec']
+      ]
+    }
+  ];
+
+  function escHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
 
   function newGraph(name) {
     return {
@@ -526,8 +1069,26 @@
     const toolbar = document.createElement('div');
     toolbar.className = 'scgraph-toolbar';
     toolbar.innerHTML = `
-      <button class="btn btn-save btn-sm" id="scg-add-node" title="Add Node (Space)">+ Node</button>
-      <button class="btn btn-wood btn-sm" id="scg-fit" title="Fit View">Fit</button>
+      <button type="button" class="btn btn-save btn-sm" id="scg-add-node" title="Add Node (Space or double-click canvas)">+ Add node</button>
+      <div class="sc-more-wrap">
+        <button type="button" class="btn btn-wood btn-sm" id="scg-templates-btn" data-more-toggle aria-haspopup="true" aria-expanded="false" title="Insert a ready-made starter graph">Templates &#9662;</button>
+        <div class="sc-more-menu scgraph-more-menu scgraph-templates-menu" hidden>
+          ${TEMPLATES.map(t => `
+            <button type="button" class="sc-more-item scgraph-tpl-item" data-template="${t.id}">
+              <span class="scgraph-tpl-title">${escHtml(t.title)}</span>
+              <span class="scgraph-tpl-desc">${escHtml(t.desc)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      <div class="scgraph-toolbar-sep" aria-hidden="true"></div>
+      <div class="scgraph-zoom-group" role="group" aria-label="Zoom controls">
+        <button type="button" class="btn btn-wood btn-sm" id="scg-zoom-out" title="Zoom out">&minus;</button>
+        <span class="scgraph-zoom-pct" id="scg-zoom-pct">100%</span>
+        <button type="button" class="btn btn-wood btn-sm" id="scg-zoom-in" title="Zoom in">+</button>
+        <button type="button" class="btn btn-wood btn-sm" id="scg-fit" title="Fit all nodes in view">Fit</button>
+      </div>
+      <button type="button" class="btn btn-wood btn-sm scg-delete-btn" id="scg-delete" title="Delete selected node or wire (Delete)" disabled>Delete</button>
       <div class="sc-more-wrap">
         <button type="button" class="btn btn-wood btn-sm" data-more-toggle aria-haspopup="true" aria-expanded="false">More &#9662;</button>
         <div class="sc-more-menu scgraph-more-menu" hidden>
@@ -535,6 +1096,7 @@
           <button type="button" class="sc-more-item" id="scg-lua" title="Show Generated Lua">Generated Lua</button>
         </div>
       </div>
+      <span class="scgraph-help-line">Drag from a pin to connect; Space to add a node</span>
     `;
     container.appendChild(toolbar);
 
@@ -542,7 +1104,7 @@
     emptyHint.className = 'scgraph-empty-hint';
     emptyHint.id = 'scg-empty-hint';
     emptyHint.hidden = graph.nodes.length > 0;
-    emptyHint.innerHTML = 'Empty script &mdash; click <strong>+ Node</strong> (or press Space) to add an event such as <em>On Game Start</em>.';
+    emptyHint.innerHTML = 'Empty script &mdash; click <strong>+ Add node</strong> (or press <strong>Space</strong> / double-click) to add a node, or pick a starter from <strong>Templates</strong>.';
     container.appendChild(emptyHint);
 
     const canvas = document.createElement('div');
@@ -559,7 +1121,13 @@
 
     // Event handlers
     toolbar.querySelector('#scg-add-node').addEventListener('click', () => openFinder(state, null));
+    toolbar.querySelectorAll('[data-template]').forEach(btn => {
+      btn.addEventListener('click', () => insertTemplate(state, btn.dataset.template));
+    });
+    toolbar.querySelector('#scg-zoom-out').addEventListener('click', () => zoomBy(state, 1 / 1.2));
+    toolbar.querySelector('#scg-zoom-in').addEventListener('click', () => zoomBy(state, 1.2));
     toolbar.querySelector('#scg-fit').addEventListener('click', () => fitView(state));
+    toolbar.querySelector('#scg-delete').addEventListener('click', () => deleteSelected(state));
     toolbar.querySelector('#scg-vars').addEventListener('click', () => toggleVars(state));
     toolbar.querySelector('#scg-lua').addEventListener('click', () => toggleLua(state));
 
@@ -567,10 +1135,16 @@
     canvas.addEventListener('mousemove', e => onCanvasMouseMove(state, e));
     canvas.addEventListener('mouseup', e => onCanvasMouseUp(state, e));
     canvas.addEventListener('wheel', e => onCanvasWheel(state, e), { passive: false });
+    canvas.addEventListener('dblclick', e => {
+      if (e.target !== state.canvas && !e.target.classList.contains('scgraph-nodes')) return;
+      openFinder(state, { x: e.clientX, y: e.clientY });
+    });
     canvas.addEventListener('contextmenu', e => { e.preventDefault(); openFinder(state, { x: e.clientX, y: e.clientY }); });
 
-    document.addEventListener('keydown', e => onKeyDown(state, e));
-    document.addEventListener('keyup', e => onKeyUp(state, e));
+    const onKeyDownBound = e => onKeyDown(state, e);
+    const onKeyUpBound = e => onKeyUp(state, e);
+    document.addEventListener('keydown', onKeyDownBound);
+    document.addEventListener('keyup', onKeyUpBound);
 
     // Resize observer
     const resizeObserver = new ResizeObserver(() => {
@@ -579,6 +1153,7 @@
     });
     resizeObserver.observe(container);
 
+    state.toolbar = toolbar;
     state.canvas = canvas;
     state.svg = svg;
     state.nodesDiv = nodesDiv;
@@ -590,6 +1165,8 @@
     return {
       getGraph: () => JSON.parse(JSON.stringify(state.graph)),
       destroy: () => {
+        document.removeEventListener('keydown', onKeyDownBound);
+        document.removeEventListener('keyup', onKeyUpBound);
         resizeObserver.disconnect();
         container.innerHTML = '';
       },
@@ -604,6 +1181,15 @@
   function render(state) {
     renderNodes(state);
     renderWires(state);
+    updateToolbarState(state);
+  }
+
+  function updateToolbarState(state) {
+    if (!state.toolbar) return;
+    const delBtn = state.toolbar.querySelector('#scg-delete');
+    if (delBtn) delBtn.disabled = state.selectedNodes.size === 0 && state.selectedWire === null;
+    const zoomEl = state.toolbar.querySelector('#scg-zoom-pct');
+    if (zoomEl) zoomEl.textContent = `${Math.round(state.zoom * 100)}%`;
   }
 
   function renderNodes(state) {
@@ -649,12 +1235,13 @@
 
         const label = document.createElement('span');
         label.className = 'scgraph-port-label';
-        label.textContent = inp.name;
+        label.textContent = inp.label || inp.name;
         row.appendChild(label);
 
         // Inline input if no link
         if (!inp.kind && !hasLinkTo(graph, node.id, inp.name)) {
-          const input = createInlineInput(state, node, inp, values[inp.name]);
+          const val = values[inp.name] !== undefined ? values[inp.name] : (def.values ? def.values[inp.name] : undefined);
+          const input = createInlineInput(state, node, inp, val);
           if (input) row.appendChild(input);
         }
 
@@ -669,10 +1256,12 @@
         row.className = 'scgraph-port-row setting';
         const label = document.createElement('span');
         label.className = 'scgraph-port-label';
-        label.textContent = key;
+        label.textContent = (def.labels && def.labels[key]) || key;
         row.appendChild(label);
-        const kind = typeof def.values[key] === 'number' ? 'number' : 'text';
-        const input = createInlineInput(state, node, { name: key, type: kind }, values[key]);
+        const defVal = def.values[key];
+        const kind = typeof defVal === 'number' ? 'number' : (typeof defVal === 'boolean' ? 'bool' : 'text');
+        const val = values[key] !== undefined ? values[key] : defVal;
+        const input = createInlineInput(state, node, { name: key, type: kind }, val);
         if (input) row.appendChild(input);
         body.appendChild(row);
       });
@@ -736,7 +1325,7 @@
       const type = outPort.type || 'any';
 
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('class', 'scgraph-wire ' + kind + (type ? ' type-' + type : ''));
+      path.setAttribute('class', 'scgraph-wire ' + kind + (type ? ' type-' + type : '') + (idx === state.selectedWire ? ' selected' : ''));
       path.setAttribute('d', bezierPath(fromPos.x, fromPos.y, toPos.x, toPos.y));
       path.dataset.linkIdx = idx;
       path.addEventListener('click', e => onWireClick(state, e, idx));
@@ -782,16 +1371,17 @@
   }
 
   function createInlineInput(state, node, inputDef, value) {
+    if (!node.values) node.values = {};
     if (value === undefined) value = '';
 
     const type = inputDef.type;
 
-    if (inputDef.name === 'resource' || inputDef.name === 'sound') {
+    if ((inputDef.name === 'resource' && (node.type === 'AddResource' || node.type === 'PlayerResource')) || inputDef.name === 'sound') {
       const sel = document.createElement('select');
       sel.className = 'scgraph-inline-input';
       const opts = inputDef.name === 'resource'
         ? (node.type === 'AddResource' ? ['Gold', 'Food', 'Wood', 'Stone'] : ['Gold', 'Food', 'Wood', 'Stone', 'Population'])
-        : ['Chat', 'CantDo', 'Tribute', 'Attack', 'TownBell', 'TownRecall', 'Objective', 'Relic'];
+        : ['Chat', 'CantDo', 'Tribute', 'Attack', 'TownBell', 'TownRecall', 'Objective', 'Relic', 'Villager'];
       opts.forEach(o => {
         const opt = document.createElement('option');
         opt.value = o;
@@ -913,7 +1503,7 @@
       return sel;
     }
 
-    if (inputDef.name === 'unit' && state.catalog.units) {
+    if (inputDef.name === 'unit' && type === 'number' && state.catalog.units) {
       const sel = document.createElement('select');
       sel.className = 'scgraph-inline-input';
       state.catalog.units.slice(0, 50).forEach(u => {
@@ -966,6 +1556,32 @@
       node.values[inputDef.name] = type === 'number' ? parseFloat(input.value) || 0 : input.value;
       notifyChange(state);
     });
+
+    // Command button icon: a PNG name under icons/commands/ (or a frame number), or one from the icon library.
+    if (node.type === 'AddBuildingButton' && inputDef.name === 'icon' && window.ScIconLib) {
+      const wrap = document.createElement('span');
+      wrap.style.cssText = 'display:inline-flex;gap:3px;flex:1;min-width:0;';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scgraph-inline-input';
+      btn.style.cssText = 'flex:none;cursor:pointer;padding:2px 5px;';
+      btn.textContent = 'Library';
+      btn.title = 'Pick from library: copies the PNG to icons/commands/ in this mod and uses its name';
+      btn.addEventListener('click', () => {
+        window.ScIconLib.pick({
+          title: 'Pick a command button icon',
+          dest: entry => `icons/commands/${entry.id}.png`,
+          onPicked: entry => {
+            input.value = entry.id;
+            node.values[inputDef.name] = entry.id;
+            notifyChange(state);
+          }
+        });
+      });
+      wrap.appendChild(input);
+      wrap.appendChild(btn);
+      return wrap;
+    }
     return input;
   }
 
@@ -990,6 +1606,7 @@
       const rect = state.canvas.getBoundingClientRect();
       state.selectStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
       state.selectedNodes.clear();
+      state.selectedWire = null;
       render(state);
     }
   }
@@ -1141,9 +1758,13 @@
     if (e.button !== 0) return;
     e.stopPropagation();
 
+    const hadWire = state.selectedWire !== null;
+    state.selectedWire = null;
     if (!state.selectedNodes.has(node.id)) {
       if (!e.shiftKey) state.selectedNodes.clear();
       state.selectedNodes.add(node.id);
+      render(state);
+    } else if (hadWire) {
       render(state);
     }
 
@@ -1215,33 +1836,41 @@
 
   function onWireClick(state, e, linkIdx) {
     e.stopPropagation();
+    state.selectedNodes.clear();
     state.selectedWire = linkIdx;
+    render(state);
+  }
+
+  function deleteSelected(state) {
+    if (state.selectedWire !== null) {
+      state.graph.links.splice(state.selectedWire, 1);
+      state.selectedWire = null;
+      render(state);
+      notifyChange(state);
+    } else if (state.selectedNodes.size > 0) {
+      state.selectedNodes.forEach(id => {
+        const idx = state.graph.nodes.findIndex(n => n.id === id);
+        if (idx >= 0) state.graph.nodes.splice(idx, 1);
+        state.graph.links = state.graph.links.filter(l => l.from[0] !== id && l.to[0] !== id);
+      });
+      state.selectedNodes.clear();
+      render(state);
+      notifyChange(state);
+    }
   }
 
   function onKeyDown(state, e) {
-    // Space: open finder (if not typing)
-    if (e.code === 'Space' && !isTyping(e)) {
+    if (!state.container || !state.container.isConnected) return;
+
+    // Space: open finder (if not typing and not already open)
+    if (e.code === 'Space' && !isTyping(e) && !state.finder && state.container.offsetParent !== null) {
       e.preventDefault();
       openFinder(state, null);
     }
 
     // Delete: remove selected
-    if (e.code === 'Delete') {
-      if (state.selectedWire !== null) {
-        state.graph.links.splice(state.selectedWire, 1);
-        state.selectedWire = null;
-        render(state);
-        notifyChange(state);
-      } else if (state.selectedNodes.size > 0) {
-        state.selectedNodes.forEach(id => {
-          const idx = state.graph.nodes.findIndex(n => n.id === id);
-          if (idx >= 0) state.graph.nodes.splice(idx, 1);
-          state.graph.links = state.graph.links.filter(l => l.from[0] !== id && l.to[0] !== id);
-        });
-        state.selectedNodes.clear();
-        render(state);
-        notifyChange(state);
-      }
+    if (e.code === 'Delete' && !isTyping(e)) {
+      deleteSelected(state);
     }
 
     // Ctrl+C: copy
@@ -1371,6 +2000,50 @@
     notifyChange(state);
   }
 
+  function insertTemplate(state, templateId) {
+    const tpl = TEMPLATES.find(t => t.id === templateId);
+    if (!tpl) return;
+
+    let offsetY = 0;
+    if (state.graph.nodes.length > 0) {
+      const maxY = Math.max(...state.graph.nodes.map(n => n.y));
+      offsetY = maxY + 220;
+    }
+
+    const refToId = {};
+    state.selectedNodes.clear();
+    state.selectedWire = null;
+
+    tpl.nodes.forEach(spec => {
+      const def = NODES[spec.type];
+      if (!def) return;
+      const id = 'n' + (state.nextId++);
+      refToId[spec.ref] = id;
+      const values = def.values ? JSON.parse(JSON.stringify(def.values)) : {};
+      if (spec.values) Object.assign(values, JSON.parse(JSON.stringify(spec.values)));
+      state.graph.nodes.push({
+        id,
+        type: spec.type,
+        x: spec.x,
+        y: spec.y + offsetY,
+        values
+      });
+      state.selectedNodes.add(id);
+    });
+
+    (tpl.links || []).forEach(([fromRef, fromPort, toRef, toPort]) => {
+      const fromId = refToId[fromRef];
+      const toId = refToId[toRef];
+      if (fromId && toId) {
+        state.graph.links.push({ from: [fromId, fromPort], to: [toId, toPort] });
+      }
+    });
+
+    render(state);
+    notifyChange(state);
+    fitView(state);
+  }
+
   // ==========================================================================
   // Node Finder
   // ==========================================================================
@@ -1382,9 +2055,10 @@
     finder.className = 'scgraph-finder';
 
     // The finder is positioned inside the container: turn the click's client point into
-    // container coordinates and keep the whole box (420 x up to 480) inside it.
+    // container coordinates and keep the whole box (480 x up to 520) inside it.
     const rect = state.container.getBoundingClientRect();
-    const fw = 420, fh = Math.min(480, rect.height - 16);
+    const fw = Math.min(480, Math.max(280, rect.width - 16));
+    const fh = Math.min(520, Math.max(240, rect.height - 16));
     let fx, fy;
     if (pos) {
       fx = pos.x - rect.left;
@@ -1401,7 +2075,7 @@
 
     finder.innerHTML = `
       <div class="scgraph-finder-search">
-        <input type="text" placeholder="Search nodes..." autofocus>
+        <input type="text" placeholder="Search nodes by name or description..." autofocus>
       </div>
       <div class="scgraph-finder-results"></div>
     `;
@@ -1415,6 +2089,12 @@
 
     let selectedIdx = 0;
     let items = [];
+
+    const closeFinder = () => {
+      document.removeEventListener('mousedown', closeOnClickOutside);
+      if (state.finder === finder) state.finder = null;
+      finder.remove();
+    };
 
     const renderResults = (query) => {
       results.innerHTML = '';
@@ -1432,35 +2112,47 @@
         return true;
       };
 
+      const q = (query || '').trim().toLowerCase();
       const categories = { event: [], action: [], flow: [], data: [] };
 
       Object.keys(NODES).forEach(type => {
         const def = NODES[type];
-        if (!query || fuzzyMatch(def.title, query) || fuzzyMatch(def.category, query)) {
+        const catLabel = CATEGORY_LABELS[def.category] || def.category;
+        const hit = !q
+          || def.title.toLowerCase().includes(q)
+          || (def.tooltip || '').toLowerCase().includes(q)
+          || catLabel.toLowerCase().includes(q)
+          || type.toLowerCase().includes(q)
+          || fuzzyMatch(def.title, q);
+        if (hit && categories[def.category]) {
           categories[def.category].push({ type, def });
         }
       });
 
-      ['event', 'action', 'flow', 'data'].forEach(cat => {
+      CATEGORY_ORDER.forEach(cat => {
         if (categories[cat].length === 0) return;
 
         const catDiv = document.createElement('div');
         catDiv.className = 'scgraph-finder-category';
-        catDiv.textContent = cat.charAt(0).toUpperCase() + cat.slice(1);
+        catDiv.innerHTML = `<span class="scgraph-finder-dot category-${cat}"></span><span>${escHtml(CATEGORY_LABELS[cat])}</span>`;
         results.appendChild(catDiv);
 
         categories[cat].forEach(({ type, def }) => {
           const item = document.createElement('div');
           item.className = 'scgraph-finder-item';
           item.innerHTML = `
-            <div class="scgraph-finder-item-title">${def.title}</div>
-            <div class="scgraph-finder-item-desc">${def.tooltip || ''}</div>
+            <div class="scgraph-finder-item-title"><span class="scgraph-finder-dot category-${def.category}"></span><span>${escHtml(def.title)}</span></div>
+            <div class="scgraph-finder-item-desc">${escHtml(def.tooltip || '')}</div>
           `;
           item.addEventListener('click', () => selectNode(type));
           results.appendChild(item);
           items.push({ el: item, type });
         });
       });
+
+      if (items.length === 0) {
+        results.innerHTML = '<div class="scgraph-finder-empty">No matching nodes.</div>';
+      }
 
       selectedIdx = 0;
       updateSelection();
@@ -1476,15 +2168,17 @@
     };
 
     const selectNode = (type) => {
-      finder.remove();
-      state.finder = null;
+      closeFinder();
 
       if (callback) {
         callback(type);
+      } else if (pos) {
+        const pt = toGraph(state, pos.x, pos.y);
+        addNode(state, type, pt.x, pt.y);
       } else {
-        const rect = state.canvas.getBoundingClientRect();
-        const x = (rect.width / 2 - state.pan.x) / state.zoom;
-        const y = (rect.height / 2 - state.pan.y) / state.zoom;
+        const cRect = state.canvas.getBoundingClientRect();
+        const x = (cRect.width / 2 - state.pan.x) / state.zoom - 110;
+        const y = (cRect.height / 2 - state.pan.y) / state.zoom - 50;
         addNode(state, type, x, y);
       }
     };
@@ -1503,16 +2197,14 @@
         e.preventDefault();
         if (items[selectedIdx]) selectNode(items[selectedIdx].type);
       } else if (e.code === 'Escape') {
-        finder.remove();
-        state.finder = null;
+        e.preventDefault();
+        closeFinder();
       }
     });
 
     const closeOnClickOutside = (e) => {
       if (!finder.contains(e.target)) {
-        finder.remove();
-        state.finder = null;
-        document.removeEventListener('mousedown', closeOnClickOutside);
+        closeFinder();
       }
     };
     setTimeout(() => document.addEventListener('mousedown', closeOnClickOutside), 0);
@@ -1657,6 +2349,19 @@
     state.svg.style.transformOrigin = '0 0';
     state.nodesDiv.style.transformOrigin = '0 0';
     renderWires(state);
+    updateToolbarState(state);
+  }
+
+  function zoomBy(state, factor) {
+    const rect = state.canvas.getBoundingClientRect();
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const oldZoom = state.zoom;
+    state.zoom = Math.max(0.3, Math.min(2, state.zoom * factor));
+    const zoomChange = state.zoom / oldZoom;
+    state.pan.x = cx - (cx - state.pan.x) * zoomChange;
+    state.pan.y = cy - (cy - state.pan.y) * zoomChange;
+    updateTransform(state);
   }
 
   function fitView(state) {
@@ -1670,19 +2375,21 @@
     const xs = state.graph.nodes.map(n => n.x);
     const ys = state.graph.nodes.map(n => n.y);
     const minX = Math.min(...xs);
-    const maxX = Math.max(...xs) + 200;
+    const maxX = Math.max(...xs) + 250;
     const minY = Math.min(...ys);
-    const maxY = Math.max(...ys) + 100;
+    const maxY = Math.max(...ys) + 170;
 
     const rect = state.container.getBoundingClientRect();
-    const padding = 50;
+    const paddingX = 50;
+    const paddingTop = 80;
+    const paddingBottom = 40;
 
-    const zoomX = (rect.width - padding * 2) / (maxX - minX);
-    const zoomY = (rect.height - padding * 2) / (maxY - minY);
+    const zoomX = (rect.width - paddingX * 2) / Math.max(1, maxX - minX);
+    const zoomY = (rect.height - paddingTop - paddingBottom) / Math.max(1, maxY - minY);
     state.zoom = Math.max(0.3, Math.min(1, Math.min(zoomX, zoomY)));
 
     state.pan.x = rect.width / 2 - (minX + maxX) / 2 * state.zoom;
-    state.pan.y = rect.height / 2 - (minY + maxY) / 2 * state.zoom;
+    state.pan.y = paddingTop + (rect.height - paddingTop - paddingBottom) / 2 - (minY + maxY) / 2 * state.zoom;
 
     updateTransform(state);
   }
@@ -1741,6 +2448,12 @@
       lines.push('');
     }
 
+    // Named HUD counters table (only emitted if used)
+    if (graph.nodes.some(n => n.type === 'SetCounter' || n.type === 'HideCounter')) {
+      lines.push('local __wl_counters = {}');
+      lines.push('');
+    }
+
     // Event nodes
     const eventNodes = graph.nodes.filter(n => {
       const def = NODES[n.type];
@@ -1769,6 +2482,15 @@
 
       if (eventNode.type === 'OnGameStart') {
         eventCode.push('Game.OnStart(function()');
+      } else if (eventNode.type === 'OnGameModeStart') {
+        const mode = (eventNode.values && eventNode.values.mode) || '';
+        if (!mode) {
+          errors.push({ nodeId: eventNode.id, message: 'Game mode ID is required' });
+          return;
+        }
+        eventCode.push('Game.OnStart(function()');
+        eventCode.push(`${indent}if Game.Mode() == ${luaString(mode)} then`);
+        ctx.depth++;
       } else if (eventNode.type === 'EverySecond') {
         eventCode.push('Game.OnSecond(function()');
       } else if (eventNode.type === 'OnAgeUp') {
@@ -1810,6 +2532,11 @@
         eventCode.push(`Game.OnStart(function()`);
         eventCode.push(`${indent}Time.Every(${sec}, function()`);
         ctx.depth++;
+      } else if (eventNode.type === 'OnMapClick') {
+        const xLocal = makeLocal(ctx, eventNode.id, 'x');
+        const yLocal = makeLocal(ctx, eventNode.id, 'y');
+        const bLocal = makeLocal(ctx, eventNode.id, 'button');
+        eventCode.push(`Game.OnMapClick(function(${xLocal}, ${yLocal}, ${bLocal})`);
       }
 
       ctx.depth++;
@@ -1821,6 +2548,9 @@
 
       if (eventNode.type === 'EveryNSeconds') {
         eventCode.push(`${indent}end)`);
+        eventCode.push('end)');
+      } else if (eventNode.type === 'OnGameModeStart') {
+        eventCode.push(`${indent}end`);
         eventCode.push('end)');
       } else {
         eventCode.push('end)');
@@ -1891,6 +2621,12 @@
       const x = getInputExpr(ctx, node, 'x');
       const y = getInputExpr(ctx, node, 'y');
       if (!p || !u || !x || !y) return null;
+      const cap = getInputExpr(ctx, node, 'capturable');
+      if (cap === 'false') {
+        return [`${p}:CreateUnit(${u}, ${x}, ${y}, { Capturable = false })`];
+      } else if (cap && cap !== 'true') {
+        return [`${p}:CreateUnit(${u}, ${x}, ${y}, { Capturable = ${cap} })`];
+      }
       return [`${p}:CreateUnit(${u}, ${x}, ${y})`];
     }
 
@@ -1942,6 +2678,12 @@
       return [`Sound.Play(${s})`];
     }
 
+    if (node.type === 'PlaySoundFile') {
+      const p = getInputExpr(ctx, node, 'path');
+      if (!p) return null;
+      return [`Sound.PlayFile(${p})`];
+    }
+
     if (node.type === 'Wait') {
       const s = getInputExpr(ctx, node, 'seconds');
       if (!s) return null;
@@ -1964,6 +2706,126 @@
       const val = getInputExpr(ctx, node, 'value');
       if (!v || !val) return null;
       return [`${v.replace(/"/g, '')} = ${val}`];
+    }
+
+    if (node.type === 'AddBuildingButton') {
+      const bLink = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === 'building');
+      const pLink = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === 'page');
+      const btnLink = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === 'button');
+      const iconLink = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === 'icon');
+
+      const b = getInputExpr(ctx, node, 'building');
+      const btn = getInputExpr(ctx, node, 'button');
+      const name = getInputExpr(ctx, node, 'name');
+      if (!b || !btn || !name) return null;
+
+      if (!bLink) {
+        const bv = Number(node.values && node.values.building);
+        if (!Number.isFinite(bv) || bv < 0) {
+          ctx.errors.push({ nodeId: node.id, message: 'Building ID must be >= 0' });
+          return null;
+        }
+      }
+      if (!btnLink) {
+        const slot = Number(node.values && node.values.button);
+        if (!Number.isFinite(slot) || slot < 1 || slot > 15) {
+          ctx.errors.push({ nodeId: node.id, message: 'Button slot must be between 1 and 15' });
+          return null;
+        }
+      }
+
+      const page = getInputExpr(ctx, node, 'page');
+      if (page && !pLink) {
+        const pv = Number(node.values && node.values.page);
+        if (!Number.isFinite(pv) || pv < 1) {
+          ctx.errors.push({ nodeId: node.id, message: 'Page must be >= 1' });
+          return null;
+        }
+      }
+
+      const fields = [];
+      fields.push(`building = ${bLink ? `math.floor(${b})` : Math.floor(Number(node.values.building))}`);
+      if (page) {
+        fields.push(`page = ${pLink ? `math.floor(${page})` : Math.floor(Number(node.values.page))}`);
+      }
+      fields.push(`button = ${btnLink ? `math.floor(${btn})` : Math.floor(Number(node.values.button))}`);
+      fields.push(`name = ${name}`);
+
+      const text = getInputExpr(ctx, node, 'text');
+      if (text) fields.push(`text = ${text}`);
+
+      const help = getInputExpr(ctx, node, 'help');
+      if (help) fields.push(`help = ${help}`);
+
+      if (iconLink) {
+        const icon = generateDataExpr(ctx, iconLink.from[0], iconLink.from[1]);
+        if (icon) fields.push(`icon = (math.tointeger(${icon}) or ${icon})`);
+      } else {
+        const rawIcon = node.values ? node.values.icon : undefined;
+        if (rawIcon !== undefined && rawIcon !== null && String(rawIcon).trim() !== '') {
+          const trimmed = String(rawIcon).trim();
+          if (/^\d+$/.test(trimmed)) {
+            fields.push(`icon = ${parseInt(trimmed, 10)}`);
+          } else {
+            fields.push(`icon = ${luaString(trimmed)}`);
+          }
+        }
+      }
+
+      // "Allies can use it": shared = true (only emitted when set, so older graphs compile the same)
+      const shLink = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === 'shared');
+      if (shLink) {
+        const sh = getInputExpr(ctx, node, 'shared');
+        if (sh) fields.push(`shared = ${sh}`);
+      } else if (node.values && node.values.shared === true) {
+        fields.push('shared = true');
+      }
+
+      return [`Game.AddCommand({ ${fields.join(', ')} })`];
+    }
+
+    if (node.type === 'WinGame') {
+      const p = getInputExpr(ctx, node, 'player');
+      if (!p) return null;
+      const allies = getInputExpr(ctx, node, 'withAllies');
+      return [`if ${p} then ${p}:Win(${allies || 'false'}) end`];
+    }
+
+    if (node.type === 'DefeatPlayer') {
+      const p = getInputExpr(ctx, node, 'player');
+      if (!p) return null;
+      return [`if ${p} then ${p}:Defeat() end`];
+    }
+
+    if (node.type === 'MoveUnit') {
+      const u = getInputExpr(ctx, node, 'unit');
+      const x = getInputExpr(ctx, node, 'x');
+      const y = getInputExpr(ctx, node, 'y');
+      if (!u || !x || !y) return null;
+      return [`if ${u} then ${u}:MoveTo(${x}, ${y}) end`];
+    }
+
+    if (node.type === 'AttackUnit') {
+      const u = getInputExpr(ctx, node, 'unit');
+      const target = getInputExpr(ctx, node, 'target');
+      if (!u || !target) return null;
+      return [`if ${u} and ${target} then ${u}:Attack(${target}) end`];
+    }
+
+    if (node.type === 'AddCustomResource') {
+      const p = getInputExpr(ctx, node, 'player');
+      const res = getResourceExpr(ctx, node, 'resource');
+      const amt = getInputExpr(ctx, node, 'amount');
+      if (!p || !res || !amt) return null;
+      return [`if ${p} then ${p}:AddResource(${res}, ${amt}) end`];
+    }
+
+    if (node.type === 'SetResource') {
+      const p = getInputExpr(ctx, node, 'player');
+      const res = getResourceExpr(ctx, node, 'resource');
+      const amt = getInputExpr(ctx, node, 'amount');
+      if (!p || !res || !amt) return null;
+      return [`if ${p} then ${p}:SetResource(${res}, ${amt}) end`];
     }
 
     if (node.type === 'Branch') {
@@ -2011,6 +2873,95 @@
 
       const lines = [];
       lines.push(`for ${indexLocal} = ${from}, ${to} do`);
+
+      ctx.depth++;
+      const bodyChain = getFlowChain(ctx.graph, node.id, 'body');
+      bodyChain.forEach(nid => {
+        const code = generateNodeCode(ctx, nid);
+        if (code) lines.push(...code.map(l => ctx.indent + l));
+      });
+      ctx.depth--;
+
+      lines.push('end');
+
+      const doneChain = getFlowChain(ctx.graph, node.id, 'done');
+      doneChain.forEach(nid => {
+        const code = generateNodeCode(ctx, nid);
+        if (code) lines.push(...code);
+      });
+
+      return lines;
+    }
+
+    if (node.type === 'SpawnNearUnit') {
+      const player = getInputExpr(ctx, node, 'player');
+      const unit = getInputExpr(ctx, node, 'unit');
+      const near = getInputExpr(ctx, node, 'near');
+      const dx = getInputExpr(ctx, node, 'dx') || '0';
+      const dy = getInputExpr(ctx, node, 'dy') || '0';
+      const cap = getInputExpr(ctx, node, 'capturable');
+      if (!player || !unit || !near) return null;
+      const opt = (cap === 'true') ? ', { capturable = true }' : '';
+      return [`if ${player} and ${near} and ${unit} then ${player}:CreateUnit(${unit}, ${near}.X + (${dx}), ${near}.Y + (${dy})${opt}) end`];
+    }
+
+    if (node.type === 'SetCounter') {
+      const name = getInputExpr(ctx, node, 'name');
+      const text = getInputExpr(ctx, node, 'text');
+      if (!name || !text) return null;
+      return [
+        `if __wl_counters[${name}] then`,
+        `${ctx.indent}__wl_counters[${name}]:SetText(${text})`,
+        `${ctx.indent}__wl_counters[${name}]:Show()`,
+        `else`,
+        `${ctx.indent}__wl_counters[${name}] = UI:CreateCounter(${text})`,
+        `end`
+      ];
+    }
+
+    if (node.type === 'HideCounter') {
+      const name = getInputExpr(ctx, node, 'name');
+      if (!name) return null;
+      return [`if __wl_counters[${name}] then __wl_counters[${name}]:Hide() end`];
+    }
+
+    if (node.type === 'SetMapClickCapture') {
+      const on = getInputExpr(ctx, node, 'enabled');
+      if (!on) return null;
+      return [`Game.SetMapClickCapture(${on})`];
+    }
+
+    if (node.type === 'SetUnitControlDisabled') {
+      const off = getInputExpr(ctx, node, 'disabled');
+      if (!off) return null;
+      return [`Game.SetUnitControlDisabled(${off})`];
+    }
+
+    if (node.type === 'RestartMatch') {
+      return ['Game.Restart()'];
+    }
+
+    if (node.type === 'SetSession') {
+      const k = getInputExpr(ctx, node, 'key');
+      const vLink = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === 'value');
+      let v = getInputExpr(ctx, node, 'value');
+      if (!k || !v) return null;
+      if (!vLink && node.values && typeof node.values.value === 'string' && /^-?\d+(?:\.\d+)?$/.test(node.values.value.trim())) {
+        v = String(Number(node.values.value.trim()));
+      }
+      return [`Game.SetSession(${k}, ${v})`];
+    }
+
+    if (node.type === 'ClearSession') {
+      return ['Game.ClearSession()'];
+    }
+
+    if (node.type === 'ForEachPlayer') {
+      const playerLocal = makeLocal(ctx, node.id, 'player');
+      ctx.locals.set([node.id, 'player'].toString(), playerLocal);
+
+      const lines = [];
+      lines.push(`for _, ${playerLocal} in ipairs(Game.Players()) do`);
 
       ctx.depth++;
       const bodyChain = getFlowChain(ctx.graph, node.id, 'body');
@@ -2083,7 +3034,7 @@
       return generateDataExpr(ctx, link.from[0], link.from[1]);
     } else {
       // Use literal value
-      const val = node.values[portName];
+      const val = node.values ? node.values[portName] : undefined;
       if (val === undefined || val === '') {
         const def = NODES[node.type];
         const inputDef = (def.inputs || []).find(p => p.name === portName);
@@ -2098,6 +3049,23 @@
       if (typeof val === 'boolean') return val ? 'true' : 'false';
       return String(val);
     }
+  }
+
+  function getResourceExpr(ctx, node, portName) {
+    const link = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === portName);
+    if (link) {
+      const expr = generateDataExpr(ctx, link.from[0], link.from[1]);
+      if (!expr) return null;
+      return `(math.tointeger(${expr}) or ${expr})`;
+    }
+    const raw = node.values ? node.values[portName] : undefined;
+    if (raw === undefined || raw === null || String(raw).trim() === '') {
+      ctx.errors.push({ nodeId: node.id, message: `Input '${portName}' is required` });
+      return null;
+    }
+    const trimmed = String(raw).trim();
+    if (/^\d+$/.test(trimmed)) return String(parseInt(trimmed, 10));
+    return luaString(trimmed);
   }
 
   function generateDataExpr(ctx, nodeId, portName) {
@@ -2241,6 +3209,87 @@
       return v.replace(/"/g, '');
     }
 
+    if (node.type === 'GameMode') {
+      return 'Game.Mode()';
+    }
+
+    if (node.type === 'ModeEnemyPlayer') {
+      return 'Game.ModeEnemy()';
+    }
+
+    if (node.type === 'UnitsOfType') {
+      const p = getInputExpr(ctx, node, 'player');
+      const uLink = ctx.graph.links.find(l => l.to[0] === node.id && l.to[1] === 'unitType');
+      const u = getInputExpr(ctx, node, 'unitType');
+      if (!p || !u) return null;
+      if (!uLink) {
+        const uv = Number(node.values && node.values.unitType);
+        if (!Number.isFinite(uv) || uv < 0) {
+          ctx.errors.push({ nodeId: node.id, message: 'Unit type ID must be >= 0' });
+          return null;
+        }
+      }
+      const uExpr = uLink ? `math.floor(${u})` : String(Math.floor(Number(node.values.unitType)));
+      return `(${p} and ${p}:UnitsOfType(${uExpr}) or {})`;
+    }
+
+    if (node.type === 'ModSetting') {
+      const key = getInputExpr(ctx, node, 'setting');
+      if (!key) return null;
+      return `(MOD.settings and MOD.settings[${key}])`;
+    }
+
+    if (node.type === 'PlayerCiv') {
+      const p = getInputExpr(ctx, node, 'player');
+      if (!p) return null;
+      return `(${p} and ${p}.Civ)`;
+    }
+
+    if (node.type === 'GetResource') {
+      const p = getInputExpr(ctx, node, 'player');
+      const res = getResourceExpr(ctx, node, 'resource');
+      if (!p || !res) return null;
+      return `(${p} and ${p}:GetResource(${res}) or 0)`;
+    }
+
+    if (node.type === 'GaiaPlayer') {
+      return 'Game.Player(0)';
+    }
+
+    if (node.type === 'ResourceDeposit') {
+      const res = getInputExpr(ctx, node, 'resource');
+      if (!res) return null;
+      return `Game.ResourceDeposit(${res})`;
+    }
+
+    if (node.type === 'PlayerIsEnemy') {
+      const a = getInputExpr(ctx, node, 'a');
+      const b = getInputExpr(ctx, node, 'b');
+      if (!a || !b) return null;
+      return `(${a} and ${b} and ${a}:IsEnemy(${b}) or false)`;
+    }
+
+    if (node.type === 'SelectedUnits') {
+      return 'Game.Selected()';
+    }
+
+    if (node.type === 'UnitPosition') {
+      const u = getInputExpr(ctx, node, 'unit');
+      if (!u) return null;
+      const prop = (portName === 'y') ? 'Y' : 'X';
+      return `(${u} and ${u}.${prop} or 0)`;
+    }
+
+    if (node.type === 'MapSize') {
+      return 'Game.MapSize()';
+    }
+
+    if (node.type === 'GetSession') {
+      const k = getInputExpr(ctx, node, 'key');
+      if (!k) return null;
+      return `Game.GetSession(${k})`;
+    }
+
     return null;
   }
 
@@ -2310,6 +3359,7 @@
 
   const ScGraph = {
     NODES,
+    TEMPLATES,
     newGraph,
     mount,
     toLua,

@@ -633,6 +633,7 @@ window.onerror = function(message, source, lineno, colno, error) {
           <label class="btn btn-wood btn-sm btn-upload">Choose image...
             <input type="file" id="icon-picker-file" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp" style="display:none;">
           </label>
+          <button type="button" class="btn btn-wood btn-sm" id="icon-picker-lib" style="margin-top:6px;">Pick from library...</button>
           <p class="icon-picker-hint">PNG or JPG. The centre square is used and saved as a 256 x 256 PNG.</p>
           <p class="icon-picker-error" id="icon-picker-error"></p>
         </div>
@@ -643,6 +644,28 @@ window.onerror = function(message, source, lineno, colno, error) {
     const input = modal.querySelector('#icon-picker-file');
     if (!input) return;
     let previewUrl = null;
+    // Library icons are 64 x 64 PNGs: scaled up to the 256 x 256 icon like any chosen picture.
+    const libBtn = modal.querySelector('#icon-picker-lib');
+    if (libBtn) libBtn.addEventListener('click', () => {
+      if (!window.ScIconLib) return;
+      window.ScIconLib.pick({
+        title: 'Pick a mod icon',
+        onPicked: async (entry, info) => {
+          const errEl = modal.querySelector('#icon-picker-error');
+          try {
+            const blob = await imageFileToIconBlob(info.blob);
+            if (previewUrl) URL.revokeObjectURL(previewUrl);
+            previewUrl = URL.createObjectURL(blob);
+            modal.querySelector('#icon-picker-preview').innerHTML = `<img src="${previewUrl}" alt="">`;
+            if (errEl) errEl.textContent = '';
+            onPicked(blob);
+          } catch (err) {
+            if (errEl) errEl.textContent = err.message;
+            onPicked(null);
+          }
+        }
+      });
+    });
     input.addEventListener('change', async () => {
       const file = input.files[0];
       input.value = '';

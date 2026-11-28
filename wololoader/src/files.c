@@ -452,6 +452,83 @@ static HANDLE start_enum(const char *pattern, HANDLE real, WIN32_FIND_DATAA *fd)
     return (HANDLE)e;
 }
 
+// Write cache\random_map_x2.def and cache\random_map_x1.def appending
+// `#const WL_DEPOSIT_<KEY_UPPER> <deposit_id>` for every gatherable custom resource.
+// Called lazily from resources.c (never from DllMain). Verified in AoK HD.exe 5.8:
+// RGE_RMM_Script_Controller (0x5fe00e -> 0x5fea10 -> 0x5d6df0 -> 0x824b71 FindFirstFileA,
+// 0x5fe520 -> 0x826d10 -> 0x826e60 -> 0x827239 CreateFileA) loads random_map.def as a loose
+// file from resources\_common\drs\gamedata_x2\ (and gamedata_x1\), so our IAT redirect works.
+void wl_files_sync_rms_defs(const WlGatherDef *defs, int count) {
+    static const struct {
+        const char *ds_dir;
+        const char *tbl_key;
+        const char *cache_name;
+    } k_defs[2] = {
+        { "gamedata_x2", "_common\\drs\\gamedata_x2\\random_map.def", "random_map_x2.def" },
+        { "gamedata_x1", "_common\\drs\\gamedata_x1\\random_map.def", "random_map_x1.def" },
+    };
+
+    char cache_dir[MAX_PATH];
+    snprintf(cache_dir, sizeof cache_dir, "%s\\cache", g_wl.root);
+    if (count > 0) CreateDirectoryA(cache_dir, NULL);
+
+    for (int k = 0; k < 2; k++) {
+        char dst[MAX_PATH];
+        snprintf(dst, sizeof dst, "%s\\%s", cache_dir, k_defs[k].cache_name);
+        if (!defs || count <= 0) {
+            DeleteFileA(dst);
+            continue;
+        }
+        // Respect any mod override of random_map.def as the base, else use the vanilla game file.
+        char src[MAX_PATH];
+        src[0] = '\0';
+        files_cs_init();
+        EnterCriticalSection(&g_files_cs);
+        if (g_tbl.count) {
+            WlAsset *a = tbl_slot(&g_tbl, k_defs[k].tbl_key);
+            if (a && a->key && a->path) lstrcpynA(src, a->path, sizeof src);
+        }
+        LeaveCriticalSection(&g_files_cs);
+        if (!src[0]) {
+            snprintf(src, sizeof src, "%s\\resources\\_common\\drs\\%s\\random_map.def",
+                     g_wl.game_dir, k_defs[k].ds_dir);
+        }
+
+        FILE *in = fopen(src, "rb");
+        if (!in) continue;
+        FILE *out = fopen(dst, "wb");
+        if (!out) { fclose(in); continue; }
+
+        unsigned char buf[4096];
+        size_t n;
+        int last_byte = '\n';
+        while ((n = fread(buf, 1, sizeof buf, in)) > 0) {
+            fwrite(buf, 1, n, out);
+            last_byte = buf[n - 1];
+        }
+        fclose(in);
+
+        if (last_byte != '\n') fputs("\r\n", out);
+        fputs("\r\n/* Wololoader gatherable resource deposits */\r\n", out);
+        for (int i = 0; i < count; i++) {
+            char ukey[80];
+            size_t w = 0;
+            for (const char *p = defs[i].key; *p && w + 1 < sizeof ukey; p++) {
+                unsigned char c = (unsigned char)*p;
+                if (c >= 'a' && c <= 'z') ukey[w++] = (char)(c - 32);
+                else if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') ukey[w++] = (char)c;
+                else ukey[w++] = '_';
+            }
+            ukey[w] = '\0';
+            if (ukey[0]) {
+                fprintf(out, "#const WL_DEPOSIT_%s %d\r\n", ukey, defs[i].deposit_id);
+            }
+        }
+        fclose(out);
+        wl_log("rms: wrote cache\\%s (+%d WL_DEPOSIT_* const(s))", k_defs[k].cache_name, count);
+    }
+}
+
 // Returns TRUE and fills `out` when `path` should be redirected.
 static BOOL redirect_target(const char *path, char *out) {
     const char *slash = strrchr(path, '\\');
@@ -463,6 +540,21 @@ static BOOL redirect_target(const char *path, char *out) {
         wl_civs_ensure();  // first open of the dat: build the cache now (not in DllMain)
         snprintf(out, MAX_PATH, "%s\\cache\\%s", g_wl.root, k_redirect[i]);
         return GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES;
+    }
+    if (_stricmp(file, "random_map.def") == 0) {
+        char low[MAX_PATH];
+        lstrcpynA(low, path, MAX_PATH);
+        normalize(low);
+        if (!strstr(low, "\\wololoader\\")) {
+            const char *which = NULL;
+            if (strstr(low, "gamedata_x2\\random_map.def")) which = "random_map_x2.def";
+            else if (strstr(low, "gamedata_x1\\random_map.def")) which = "random_map_x1.def";
+            if (which) {
+                wl_resources_ensure();  // lazy: builds cache\random_map_x*.def when gather.txt has entries
+                snprintf(out, MAX_PATH, "%s\\cache\\%s", g_wl.root, which);
+                if (GetFileAttributesA(out) != INVALID_FILE_ATTRIBUTES) return TRUE;
+            }
+        }
     }
     BOOL hit = FALSE;
     EnterCriticalSection(&g_files_cs);

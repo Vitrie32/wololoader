@@ -1,4 +1,4 @@
--- Last Stand 2.0: co-op "zombies" survival lobby game mode ("last_stand").
+-- Last Stand: co-op survival lobby game mode ("last_stand").
 -- All players (humans and bots) are on one team (mod.json "teams": "all") and defend a shared Castle
 -- against the Horde: Gaia units spawned in rounds that cannot be captured ({ Capturable = false }).
 -- Rules run only when Game.Mode() == "last_stand".
@@ -37,6 +37,15 @@ local HORDE_TYPES = {
 local RES_WAVE = "wave"   -- top bar: "Round"
 local RES_NEXT = "next"   -- top bar: "Next round" (break countdown)
 local RES_POINTS = "glory" -- top bar: "Points" (the resource key stays "glory", the name is "Points")
+-- Saved games: Lua state is not in the savegame, resources are. "ls_state" (every player) is
+-- 0 before the mode set up the match, else 1 + the Horde player's id (1 = Gaia Horde);
+-- "ls_perks" holds each player's perk levels (PERK_SHIFT). Round and countdown are
+-- RES_WAVE / RES_NEXT already.
+local RES_STATE = "ls_state"
+local RES_PERKS = "ls_perks"
+local RES_VISION = "ls_vision"   -- map vision bought at the Castle: last round it lasts, -1 = whole game, 0 = none
+-- "ls_perks" = armour level + 4 * guild level + 16 * armoury level (each 0..3: the ages bought)
+local PERK_SHIFT = { LastStandJuggernaut = 1, LastStandSpeedCola = 4, LastStandPackAPunch = 16 }
 
 local POINTS_PER_KILL = 10
 local POINTS_PER_ROUND = 50
@@ -56,15 +65,23 @@ local TOWER_OFFSETS = {
 -- IDs table). All other ids are the standard Age of Empires II tech ids and are NOT verified against the dat:
 -- armour 74 76 77 (infantry), 81 82 80 (cavalry barding), 211 212 219 (archers), 213 Wheelbarrow, 249 Hand Cart,
 -- 315 Conscription, 202 203 221 wood, 55 182 gold, 39 Husbandry. A wrong id is skipped (pcall) with a log line.
-local TECHS_JUGGERNAUT = { 74, 76, 77, 81, 82, 80, 211, 212, 219 }
-local TECHS_SPEED_COLA = { 213, 249, 315, 202, 203, 221, 55, 182, 39 }
-local TECHS_PACK_A_PUNCH = {
-    207, 24, 25, 222,   -- Long Swordsman, Two-Handed, Champion, Man-at-Arms
-    197, 429,           -- Pikeman, Halberdier
-    98,                 -- Elite Skirmisher
-    100, 237,           -- Crossbowman, Arbalest
-    209, 265, 428,      -- Cavalier, Paladin, Hussar
-    67, 68, 75, 199, 200, 201, -- Forging, Iron Casting, Blast Furnace, Fletching, Bodkin Arrow, Bracer
+-- Perk techs by age (index 1 Feudal, 2 Castle, 3 Imperial): a perk is bought once per age and
+-- gives the techs of every age up to the buyer's own that were not bought yet, so it follows the
+-- buyer's age instead of handing out Imperial techs in the Feudal Age.
+local TECHS_ARMOUR = {
+    { 74, 81, 211 },    -- Scale Mail, Scale Barding, Padded Archer Armor
+    { 76, 82, 212 },    -- Chain Mail, Chain Barding, Leather Archer Armor
+    { 77, 80, 219 },    -- Plate Mail, Plate Barding, Ring Archer Armor
+}
+local TECHS_GUILD = {
+    { 213, 202, 55 },   -- Wheelbarrow, Double-Bit Axe, Gold Mining
+    { 249, 203, 182, 39 }, -- Hand Cart, Bow Saw, Gold Shaft Mining, Husbandry
+    { 315, 221 },       -- Conscription, Two-Man Saw
+}
+local TECHS_ARMOURY = {
+    { 222, 67, 199 },                  -- Man-at-Arms, Forging, Fletching
+    { 207, 197, 98, 100, 68, 200 },    -- Long Swordsman, Pikeman, Elite Skirmisher, Crossbowman, Iron Casting, Bodkin Arrow
+    { 24, 25, 429, 237, 209, 265, 428, 75, 201 }, -- Two-Handed, Champion, Halberdier, Arbalest, Cavalier, Paladin, Hussar, Blast Furnace, Bracer
 }
 -- Mystery Box "free Imperial-Age tech" prizes (ids from the verified MODDING.md table)
 local BOX_TECHS = {
@@ -115,6 +132,7 @@ local function clamp(val, lo, hi, fallback)
     return math.floor(n)
 end
 
+local AGE_INDEX = { Dark = 0, Feudal = 1, Castle = 2, Imperial = 3 }
 local function get_config()
     return {
         rounds = clamp(S.rounds, 0, 100, 0),                -- 0 = endless
@@ -122,6 +140,7 @@ local function get_config()
         grace_seconds = clamp(S.grace_seconds, 10, 300, 90),
         difficulty = S.difficulty or "Normal",
         start_bonus = clamp(S.start_bonus, 0, 5000, 1000),
+        start_age = AGE_INDEX[S.start_age or "Feudal"] or 1,
         mult = DIFF_MULT[S.difficulty] or 1.0,
     }
 end
@@ -231,14 +250,15 @@ local function relocate_players(cx, cy)
 end
 
 -- Start kit for everyone: extra resources, shared vision with the allies (Cartography) and a
--- finished Market next to the Town Center, on the side away from the Castle. The Market carries
--- the shop too, so every player can spend Points (the Castle's buttons only show for its owner).
-local function equip_players(cx, cy, bonus)
+-- finished Market next to the Town Center, on the side away from the Castle (for trading; the
+-- shop is on the Castle's page 2, shared with every ally).
+local function equip_players(cx, cy, bonus, start_age)
     for _, p in ipairs(players) do
         if bonus > 0 then
             p:AddFood(bonus); p:AddWood(bonus); p:AddGold(bonus); p:AddStone(bonus)
         end
         pcall(p.SetResource, p, RES_CARTOGRAPHY, 1)
+        if start_age > 0 then pcall(p.SetAge, p, start_age) end
         local tc = find_player_tcs(p)[1]
         if tc then
             local dx, dy = tc.X - cx, tc.Y - cy
@@ -253,9 +273,23 @@ end
 -- Castle shop (the Castle's page 2; its own page 1 buttons stay untouched)
 -- ---------------------------------------------------------------------------------------------
 
-local function has_perk(p, name)
-    return perks[p.Id] and perks[p.Id][name] or false
+-- player's age 1 Feudal .. 3 Imperial (0 Dark): resource 6, MODDING.md
+local function age_of(p)
+    return math.max(0, math.min(3, math.floor((p:GetResource(6) or 0) + 0.5)))
 end
+local function perk_level(p, name)
+    return perks[p.Id] and perks[p.Id][name] or 0
+end
+local function has_perk(p, name)   -- nothing left to buy for the player's current age
+    return perk_level(p, name) >= math.max(1, age_of(p))
+end
+
+local UNIT_LONGSWORD, UNIT_TWOHANDED = 77, 473
+local UNIT_CROSSBOW, UNIT_ARBALEST = 24, 492
+local UNIT_GUARD_TOWER, UNIT_KEEP = 234, 235
+local UNIT_CAVALIER = 283
+local function tier(p) return math.max(1, age_of(p)) end   -- Dark counts as Feudal
+local function by_age(p, t) return t[tier(p)] end
 
 local function research_all(p, list)
     for _, tech in ipairs(list) do
@@ -266,34 +300,34 @@ end
 
 -- Mystery Box prizes. Each one is a function(bx, by, buyer).
 local TEDDY_LINES = {
-    "The box giggles. You got a Teddy Bear. It does nothing. It is very cute.",
-    "A Teddy Bear! The Horde is not impressed.",
-    "Teddy Bear! Hug it and hope for the best.",
-    "The box spits out a Teddy Bear. Maybe next time.",
+    "The chest holds a wooden toy horse. The Horde is not impressed.",
+    "Only a jester's hat inside. Maybe next time.",
+    "The chest is full of turnips. The cooks are pleased, the soldiers are not.",
+    "A forged royal letter promising reinforcements. None will come.",
 }
 local BOX_PRIZES = {
     { w = 25, run = function(bx, by, buyer)
         for i = 1, 6 do
             local off = UNIT_OFFSETS[i]
-            safe_create(buyer, UNIT_KNIGHT, bx + off[1], by + off[2])
+            safe_create(buyer, age_of(buyer) >= 3 and UNIT_CAVALIER or UNIT_KNIGHT, bx + off[1], by + off[2])
         end
-        commander(player_label(buyer) .. " opened the Mystery Box: 6 Knights ride out!", buyer.Id)
+        commander(player_label(buyer) .. " opened the Merchant's Chest: 6 " .. (age_of(buyer) >= 3 and "Cavaliers" or "Knights") .. " ride out!", buyer.Id)
     end },
     { w = 15, run = function(bx, by, buyer)
         for i = 1, 2 do
             local off = UNIT_OFFSETS[i]
             safe_create(buyer, UNIT_TREBUCHET, bx + off[1], by + off[2])
         end
-        commander(player_label(buyer) .. " opened the Mystery Box: 2 Trebuchets!", buyer.Id)
+        commander(player_label(buyer) .. " opened the Merchant's Chest: 2 Trebuchets!", buyer.Id)
     end },
     { w = 20, run = function(_, _, buyer)
         local t = BOX_TECHS[rand(1, #BOX_TECHS)]
         pcall(buyer.Research, buyer, t[1])
-        commander(player_label(buyer) .. " opened the Mystery Box: free " .. t[2] .. "!", buyer.Id)
+        commander(player_label(buyer) .. " opened the Merchant's Chest: free " .. t[2] .. "!", buyer.Id)
     end },
     { w = 20, run = function(_, _, buyer)
         buyer:AddGold(1000)
-        commander(player_label(buyer) .. " opened the Mystery Box: +1000 Gold!", buyer.Id)
+        commander(player_label(buyer) .. " opened the Merchant's Chest: +1000 Gold!", buyer.Id)
     end },
     { w = 20, run = function(_, _, buyer)
         commander(TEDDY_LINES[rand(1, #TEDDY_LINES)], buyer.Id)
@@ -313,93 +347,159 @@ local function open_mystery_box(bx, by, buyer)
 end
 
 -- perk = true: bought once per player; the button is disabled afterwards
+-- Map vision: a grid of map revealers (837 REVEAL, line of sight 4) over the whole map, owned by
+-- the buyer; every player has Cartography (shared vision), so all allies see every enemy.
+local VISION_STEP = 7
+local vision_until = 0      -- 0 none, -1 whole game, else the last round it lasts
+local vision_owner = nil
+local vision_ending = false
+local function vision_grid(owner)
+    local mx, my = castle_target_x or 60, castle_target_y or 60
+    for x = 3, mx * 2 - 3, VISION_STEP do
+        for y = 3, my * 2 - 3, VISION_STEP do safe_create(owner, 837, x, y) end
+    end
+end
+-- The grid's owner is whoever has more than 20 revealers (the same on every machine; only the
+-- owner's machine sends the deletes).
+local function vision_remove()
+    for _, p in ipairs(players) do
+        local list = p:UnitsOfType(837)
+        if #list > 20 then for _, u in ipairs(list) do pcall(u.Delete, u) end end
+    end
+    vision_owner = nil
+end
+local function set_vision(until_round)
+    vision_until = until_round
+    for _, p in ipairs(players) do p:SetResource(RES_VISION, until_round) end
+end
+
+
 local SHOP_ITEMS = {
     {
-        name = "LastStandMercenaries", button = 1, icon = "hire_mercenaries", fallback_icon = 32, cost = 300,
-        text = "Hire Mercenaries (300 Points)",
-        help = "Cost: 300 Points. Summon 5 Men-at-Arms beside the Castle.",
+        name = "LastStandMercenaries", button = 1, icon = "hire_mercenaries", fallback_icon = 32,
+        costs = { 300, 450, 650 }, label = "Hire Mercenaries",
+        help_by_age = { "5 Men-at-Arms", "5 Long Swordsmen", "5 Two-Handed Swordsmen" },
         run = function(bx, by, buyer)
+            local id = by_age(buyer, { UNIT_MAA, UNIT_LONGSWORD, UNIT_TWOHANDED })
             for i = 1, 5 do
                 local off = UNIT_OFFSETS[i]
-                safe_create(buyer, UNIT_MAA, bx + off[1], by + off[2])
+                safe_create(buyer, id, bx + off[1], by + off[2])
             end
-            commander(player_label(buyer) .. " hired 5 Mercenaries!", buyer.Id)
+            commander(player_label(buyer) .. " hired " .. by_age(buyer, { "5 Men-at-Arms", "5 Long Swordsmen", "5 Two-Handed Swordsmen" }) .. "!", buyer.Id)
             Sound.Play("Objective")
         end,
     },
     {
-        name = "LastStandArchers", button = 2, icon = "archer_company", fallback_icon = 32, cost = 400,
-        text = "Archer Company (400 Points)",
-        help = "Cost: 400 Points. Summon 6 Archers beside the Castle.",
+        name = "LastStandArchers", button = 2, icon = "archer_company", fallback_icon = 32,
+        costs = { 400, 550, 750 }, label = "Archer Company",
+        help_by_age = { "6 Archers", "6 Crossbowmen", "6 Arbalests" },
         run = function(bx, by, buyer)
+            local id = by_age(buyer, { UNIT_ARCHER, UNIT_CROSSBOW, UNIT_ARBALEST })
             for i = 1, 6 do
                 local off = UNIT_OFFSETS[i]
-                safe_create(buyer, UNIT_ARCHER, bx + off[1], by + off[2])
+                safe_create(buyer, id, bx + off[1], by + off[2])
             end
             commander(player_label(buyer) .. " deployed an Archer Company!", buyer.Id)
             Sound.Play("Objective")
         end,
     },
     {
-        name = "LastStandTower", button = 3, icon = "watch_tower", fallback_icon = 32, cost = 500,
-        text = "Build Watch Tower (500 Points)",
-        help = "Cost: 500 Points. Construct a Watch Tower beside the Castle.",
+        name = "LastStandTower", button = 3, icon = "watch_tower", fallback_icon = 32,
+        costs = { 500, 700, 900 }, label = "Build a Tower",
+        help_by_age = { "a Watch Tower", "a Guard Tower", "a Keep" },
         run = function(bx, by, buyer)
-            tower_count = tower_count + 1
-            local off = TOWER_OFFSETS[((tower_count - 1) % #TOWER_OFFSETS) + 1]
-            safe_create(buyer, WATCH_TOWER_ID, bx + off[1], by + off[2])
-            commander(player_label(buyer) .. " raised a Watch Tower by the Castle!", buyer.Id)
+            -- the next free spot around the Castle (from the towers on the map: the same for every
+            -- buyer, not a count kept on one machine)
+            local off = TOWER_OFFSETS[1]
+            for _, o in ipairs(TOWER_OFFSETS) do
+                local free = true
+                for _, p in ipairs(players) do
+                    for _, tid in ipairs({ WATCH_TOWER_ID, UNIT_GUARD_TOWER, UNIT_KEEP }) do
+                        for _, t in ipairs(p:UnitsOfType(tid)) do
+                            if (t.X - (bx + o[1])) ^ 2 + (t.Y - (by + o[2])) ^ 2 < 2 then free = false end
+                        end
+                    end
+                end
+                if free then off = o break end
+            end
+            safe_create(buyer, by_age(buyer, { WATCH_TOWER_ID, UNIT_GUARD_TOWER, UNIT_KEEP }), bx + off[1], by + off[2])
+            commander(player_label(buyer) .. " raised " .. by_age(buyer, { "a Watch Tower", "a Guard Tower", "a Keep" }) .. " by the Castle!", buyer.Id)
             Sound.Play("Objective")
         end,
     },
     {
-        name = "LastStandSupplies", button = 4, icon = "supply_drop", fallback_icon = 49, cost = 200,
-        text = "Supply Drop (200 Points)",
-        help = "Cost: 200 Points. Gain +200 Food, +200 Wood, and +100 Gold.",
+        name = "LastStandSupplies", button = 4, icon = "supply_drop", fallback_icon = 49,
+        costs = { 150, 250, 350 }, label = "Supply Wagon",
+        help_by_age = { "+250 Food, +250 Wood, +150 Gold", "+450 Food, +450 Wood, +250 Gold", "+650 Food, +650 Wood, +350 Gold" },
         run = function(_, _, buyer)
-            buyer:AddFood(200)
-            buyer:AddWood(200)
-            buyer:AddGold(100)
-            commander(player_label(buyer) .. " called a Supply Drop! (+200 Food, +200 Wood, +100 Gold)", buyer.Id)
+            local f, g = by_age(buyer, { 250, 450, 650 }), by_age(buyer, { 150, 250, 350 })
+            buyer:AddFood(f)
+            buyer:AddWood(f)
+            buyer:AddGold(g)
+            commander(player_label(buyer) .. " bought a Supply Wagon! (+" .. f .. " Food, +" .. f .. " Wood, +" .. g .. " Gold)", buyer.Id)
             Sound.Play("Tribute")
         end,
     },
     {
-        name = "LastStandMysteryBox", button = 5, icon = "mystery_box", fallback_icon = 32, cost = 950,
-        text = "Mystery Box (950 Points)",
-        help = "Cost: 950 Points. A random prize: 6 Knights, 2 Trebuchets, a free Imperial tech, +1000 Gold... or a Teddy Bear.",
+        name = "LastStandMysteryBox", button = 5, icon = "mystery_box", fallback_icon = 32,
+        costs = { 950, 950, 950 }, label = "Merchant's Chest",
+        help_by_age = { "A random prize: 6 Knights, 2 Trebuchets, a free tech, +1000 Gold... or nothing useful." },
         run = function(bx, by, buyer)
             Sound.Play("Relic")
             open_mystery_box(bx, by, buyer)
         end,
     },
     {
-        name = "LastStandJuggernaut", button = 6, icon = "juggernaut", fallback_icon = 32, cost = 2500, perk = true,
-        text = "Juggernaut (2500 Points)",
-        help = "Perk, once per player. Cost: 2500 Points. Researches all infantry, cavalry and archer armour upgrades.",
+        name = "LastStandScouts", button = 9, icon = "watch_tower", fallback_icon = 32,
+        costs = { 1000, 1000, 1000 }, label = "Scout Network",
+        help_by_age = { "Your scouts watch the whole map: every enemy is visible to all allies for the next 3 rounds." },
         run = function(_, _, buyer)
-            research_all(buyer, TECHS_JUGGERNAUT)
-            commander(player_label(buyer) .. " drank Juggernaut! Armour up.", buyer.Id)
+            if vision_until ~= -1 then
+                -- vision_until is the synced resource (read every second): one grid for all buyers
+                if vision_until == 0 then vision_owner = buyer; vision_grid(buyer) end
+                set_vision(math.max(vision_until, current_round + 3))
+            end
+            commander(player_label(buyer) .. " set up a Scout Network: the whole map is watched until round " ..
+                (vision_until == -1 and "the end" or tostring(vision_until)) .. ".", buyer.Id)
+            Sound.Play("Objective")
+        end,
+    },
+    {
+        name = "LastStandCartographers", button = 10, icon = "watch_tower", fallback_icon = 32,
+        costs = { 5000, 5000, 5000 }, label = "Royal Cartographers",
+        help_by_age = { "The whole map stays visible to all allies for the rest of the game." },
+        condition = function() return vision_until ~= -1 end,
+        run = function(_, _, buyer)
+            if vision_until == 0 then vision_owner = buyer; vision_grid(buyer) end
+            set_vision(-1)
+            commander(player_label(buyer) .. " hired the Royal Cartographers: the whole map is visible for the rest of the game!", buyer.Id)
+            Sound.Play("Objective")
+        end,
+    },
+    {
+        name = "LastStandJuggernaut", button = 6, icon = "juggernaut", fallback_icon = 32, perk = true,
+        costs = { 700, 1100, 1600 }, label = "Iron Armour", techs = TECHS_ARMOUR,
+        help_by_age = { "Once per Age. The armour upgrades of your Age and the ones before it (infantry, cavalry, archers)." },
+        run = function(_, _, buyer)
+            commander(player_label(buyer) .. " equipped the army with Iron Armour!", buyer.Id)
             Sound.Play("TownRecall")
         end,
     },
     {
-        name = "LastStandSpeedCola", button = 7, icon = "speed_cola", fallback_icon = 32, cost = 3000, perk = true,
-        text = "Speed Cola (3000 Points)",
-        help = "Perk, once per player. Cost: 3000 Points. Researches Wheelbarrow, Hand Cart, Conscription, Husbandry and the gathering speed upgrades.",
+        name = "LastStandSpeedCola", button = 7, icon = "speed_cola", fallback_icon = 32, perk = true,
+        costs = { 500, 800, 1200 }, label = "Guild Charter", techs = TECHS_GUILD,
+        help_by_age = { "Once per Age. The economy upgrades of your Age and the ones before it (Wheelbarrow, Hand Cart, Conscription, gathering)." },
         run = function(_, _, buyer)
-            research_all(buyer, TECHS_SPEED_COLA)
-            commander(player_label(buyer) .. " drank Speed Cola! Faster work, faster training.", buyer.Id)
+            commander(player_label(buyer) .. " signed the Guild Charter! Faster work and training.", buyer.Id)
             Sound.Play("TownRecall")
         end,
     },
     {
-        name = "LastStandPackAPunch", button = 8, icon = "pack_a_punch", fallback_icon = 32, cost = 5000, perk = true,
-        text = "Pack-a-Punch (5000 Points)",
-        help = "Perk, once per player. Cost: 5000 Points. Upgrades every unit line (Champion, Halberdier, Elite Skirmisher, Arbalest, Paladin...) and the blacksmith attack techs.",
+        name = "LastStandPackAPunch", button = 8, icon = "pack_a_punch", fallback_icon = 32, perk = true,
+        costs = { 900, 1500, 2400 }, label = "Royal Armoury", techs = TECHS_ARMOURY,
+        help_by_age = { "Once per Age. The unit line and blacksmith attack upgrades of your Age and the ones before it." },
         run = function(_, _, buyer)
-            research_all(buyer, TECHS_PACK_A_PUNCH)
-            commander(player_label(buyer) .. " Pack-a-Punched the army!", buyer.Id)
+            commander(player_label(buyer) .. " opened the Royal Armoury! Every unit line upgraded.", buyer.Id)
             Sound.Play("TownRecall")
         end,
     },
@@ -414,23 +514,39 @@ local function add_command_safe(spec, fallback_icon)
     end
 end
 
--- the shop buttons: on the shared Castle (its owner) and on every player's own Market
-local SHOP_BUILDINGS = { { id = CASTLE_ID, suffix = "" }, { id = MARKET_ID, suffix = "@Market" } }
+-- The shop is on the Castle's page 2. Its commands are shared (Game.AddCommand shared = true), so
+-- every ally who selects the Castle gets the same page 2 and buys with their own Points.
+local SHOP_BUILDINGS = { { id = CASTLE_ID, suffix = "" } }
+
+local shop_tier = 0   -- the Age the shop buttons were registered for
+local function item_cost(item, p) return item.costs[p and tier(p) or 1] end
+-- Button text and tooltip for the local player's Age (the commands are registered again on an age up).
+local function item_texts(item)
+    local me = Game.LocalPlayer
+    local t = me and tier(me) or 1
+    local cost = item.costs[t]
+    local what = item.help_by_age[t] or item.help_by_age[1]
+    return item.label .. " (" .. cost .. " Points)", "Cost: " .. cost .. " Points. " .. what
+end
 
 local function register_shop()
     if not Game.AddCommand then return end
+    shop_tier = Game.LocalPlayer and tier(Game.LocalPlayer) or 1
     for _, item in ipairs(SHOP_ITEMS) do
       for _, sb in ipairs(SHOP_BUILDINGS) do
+        local page, button = 2, item.button
+        item.text, item.help = item_texts(item)
         add_command_safe({
             building = sb.id,
-            page = 2,
-            button = item.button,
+            page = page,
+            button = button,
             icon = item.icon,
             name = item.name .. sb.suffix,
             text = item.text,
             help = item.help,
             condition = item.name .. sb.suffix,
             condition_action = "disable",
+            shared = true,
         }, item.fallback_icon)
       end
     end
@@ -443,33 +559,100 @@ local function unregister_shop()
     end
 end
 
+-- Can this player buy the item now? (enough Points, perk not bought yet, item's own condition)
+local function can_buy(item, buyer)
+    if not active or ended or not buyer then return false end
+    if item.perk and has_perk(buyer, item.name) then return false end
+    if item.condition and not item.condition() then return false end
+    return (buyer:GetResource(RES_POINTS) or 0) >= item_cost(item, buyer)
+end
+
+-- A purchase, run on the buyer's machine only (a button click): every effect is a game command.
+local function buy_item(item, buyer)
+    if not can_buy(item, buyer) then return end
+    buyer:AddResource(RES_POINTS, -item_cost(item, buyer))
+    if item.perk then
+        -- the techs of every age from the last bought one up to the buyer's own
+        local from, to = perk_level(buyer, item.name) + 1, tier(buyer)
+        for t = from, to do research_all(buyer, item.techs[t]) end
+        perks[buyer.Id] = perks[buyer.Id] or {}
+        perks[buyer.Id][item.name] = to
+        buyer:AddResource(RES_PERKS, (to - from + 1) * PERK_SHIFT[item.name])
+    end
+    item.run(castle_x or castle_target_x or 20, castle_y or castle_target_y or 20, buyer)
+end
+
 for _, item in ipairs(SHOP_ITEMS) do
   for _, sb in ipairs(SHOP_BUILDINGS) do
     Game.CommandCondition(item.name .. sb.suffix, function(building)
-        if not active or ended then return false end
-        local buyer = Game.LocalPlayer or (building and building.Owner)
-        if not buyer then return false end
-        if item.perk and has_perk(buyer, item.name) then return false end
-        return (buyer:GetResource(RES_POINTS) or 0) >= item.cost
+        return can_buy(item, Game.LocalPlayer or (building and building.Owner))
     end)
 
     Game.OnCommand(item.name .. sb.suffix, function(building)
-        if not active or ended then return end
-        local buyer = Game.LocalPlayer or (building and building.Owner)
-        if not buyer then return end
-        if item.perk and has_perk(buyer, item.name) then return end
-        if (buyer:GetResource(RES_POINTS) or 0) < item.cost then return end
-        buyer:AddResource(RES_POINTS, -item.cost)
-        if item.perk then
-            perks[buyer.Id] = perks[buyer.Id] or {}
-            perks[buyer.Id][item.name] = true
-        end
-        local bx = (building and building.X) or castle_x or castle_target_x or 20
-        local by = (building and building.Y) or castle_y or castle_target_y or 20
-        item.run(bx, by, buyer)
+        buy_item(item, Game.LocalPlayer or (building and building.Owner))
     end)
   end
 end
+
+
+-- Trade goods for Points at your own Market (page 2, slots 1-4: the Market's own buttons and the
+-- Sell/Buy rows stay as they are). Points are worth a lot (25 = half a survived round), and the
+-- rates follow how easy a resource is to get: wood and food come without end (forests, farms), so
+-- they cost the most; stone and gold mines run out. Like the game's own Market, every trade of a
+-- resource makes the next one 15% dearer for that player (the clicker's machine runs it, so all
+-- machines see the same commands).
+local TRADE_STEP = 0.15
+local MARKET_TRADES = {
+    { name = "LastStandSellFood",  res = 0, base = 500, button = 1, label = "Food",  icon = "trade_food",  fallback = 30 },
+    { name = "LastStandSellWood",  res = 1, base = 700, button = 2, label = "Wood",  icon = "trade_wood",  fallback = 29 },
+    { name = "LastStandSellStone", res = 2, base = 300, button = 3, label = "Stone", icon = "trade_stone", fallback = 31 },
+    { name = "LastStandSellGold",  res = 3, base = 250, button = 4, label = "Gold",  icon = "trade_gold",  fallback = 28 },
+}
+local TRADE_POINTS = 25
+local trades_done = {}   -- [resource] = trades made by the local player
+local function trade_amount(t)
+    local n = trades_done[t.res] or 0
+    return math.floor(t.base * (1 + TRADE_STEP) ^ n / 10 + 0.5) * 10
+end
+local function register_trades()
+    if not Game.AddCommand then return end
+    for _, t in ipairs(MARKET_TRADES) do
+        local amount = trade_amount(t)
+        local spec = {
+            building = MARKET_ID, page = 2, button = t.button, icon = t.icon, name = t.name,
+            text = "Trade " .. amount .. " " .. t.label .. " for " .. TRADE_POINTS .. " Points",
+            help = "Give " .. amount .. " " .. t.label .. " for " .. TRADE_POINTS .. " Points to spend at the Castle. Each trade raises the price of the next one.",
+            condition = t.name, condition_action = "disable",
+        }
+        if not pcall(Game.AddCommand, spec) then spec.icon = t.fallback; pcall(Game.AddCommand, spec) end
+    end
+end
+local function unregister_trades()
+    if not Game.RemoveCommand then return end
+    for _, t in ipairs(MARKET_TRADES) do Game.RemoveCommand(t.name) end
+end
+for _, t in ipairs(MARKET_TRADES) do
+    Game.CommandCondition(t.name, function()
+        local me = Game.LocalPlayer
+        return active and not ended and me ~= nil and (me:GetResource(t.res) or 0) >= trade_amount(t)
+    end)
+    Game.OnCommand(t.name, function()
+        local me = Game.LocalPlayer
+        local amount = trade_amount(t)
+        if not (active and not ended and me) or (me:GetResource(t.res) or 0) < amount then return end
+        me:AddResource(t.res, -amount)
+        me:AddResource(RES_POINTS, TRADE_POINTS)
+        trades_done[t.res] = (trades_done[t.res] or 0) + 1
+        register_trades()        -- the new price on the button
+        Sound.Play("Tribute")
+    end)
+end
+
+-- The shop's names, costs and units follow the local player's Age: refresh the buttons on an age up.
+Game.OnAgeUp(function(p)
+    local me = Game.LocalPlayer
+    if active and not ended and me and p and p.Id == me.Id then register_shop() end
+end)
 
 -- ---------------------------------------------------------------------------------------------
 -- The Horde: what a round contains
@@ -477,10 +660,13 @@ end
 
 -- Normal mix: { unit, label, weight, first round, last round (nil = no end) }
 local MIX = {
-    { UNIT_MILITIA,   "Militia",   50, 1, 5 },
-    { UNIT_SPEARMAN,  "Spearmen",  30, 1, 8 },
+-- weakest first: rounds 1-2 are Militia only (round 1 is smaller, see build_round), Scouts join in
+-- round 3, Spearmen in round 4. No weaker unit works: villagers were put to work by the enemy AI
+-- and animals (Bear 486) cannot attack buildings, so they ignored the Castle (seen 2026-11-26).
+    { UNIT_MILITIA,   "Militia",   50, 1, 7 },
+    { UNIT_SPEARMAN,  "Spearmen",  25, 4, 9 },
     { UNIT_SCOUT,     "Scouts",    15, 3, nil },  -- the fast "runners"
-    { UNIT_ARCHER,    "Archers",   20, 4, nil },
+    { UNIT_ARCHER,    "Archers",   20, 5, nil },
     { UNIT_MAA,       "Men-at-Arms", 25, 6, nil },
     { UNIT_KNIGHT,    "Knights",   15, 9, nil },
     { UNIT_SKIRMISHER, "Skirmishers", 10, 12, nil },
@@ -495,6 +681,7 @@ local function build_round(r, mult)
     end
 
     local total = math.min(160, math.floor((6 + 3 * r) * mult + 0.5))
+    if r == 1 then total = math.max(3, math.floor(5 * mult + 0.5)) end -- an easy start
     local boss_msg = nil
     local share = 1.0
     if r % 5 == 0 then
@@ -569,22 +756,99 @@ local function base_bounds()
     return (minx + maxx) / 2, (miny + maxy) / 2, math.max(6, (maxx - minx) / 2), math.max(6, (maxy - miny) / 2)
 end
 
+-- Collect static obstacle positions (Gaia trees/rocks/mines/fish + player buildings) once per round
+-- so raiders never spawn trapped inside forests, cliffs, ponds, or buildings.
+local function collect_obstacles()
+    local obs = {}
+    local gaia = Game.Player(0)
+    if gaia then
+        for _, u in ipairs(gaia:Units()) do
+            obs[#obs + 1] = { u.X, u.Y }
+        end
+    end
+    for _, p in ipairs(players) do
+        for _, u in ipairs(p:Units()) do
+            if u.IsBuilding then
+                obs[#obs + 1] = { u.X, u.Y }
+            end
+        end
+    end
+    return obs
+end
+
+local function min_obstacle_dist2(x, y, obs)
+    local best = 1e18
+    for i = 1, #obs do
+        local dx = x - obs[i][1]
+        local dy = y - obs[i][2]
+        local d2 = dx * dx + dy * dy
+        if d2 < best then best = d2 end
+    end
+    return best
+end
+
+-- Map tiles the Horde must not spawn on: every Gaia object except animals (trees, mines, bushes,
+-- cliffs, relics...), one entry per map tile. Rebuilt at each round start (trees get cut). Units
+-- created on such a tile were stuck inside the forest (seen in a multiplayer game 2026-11-28).
+local GAIA_WALKABLE = { [58] = true, [9] = true }   -- classes: livestock (sheep), prey animals
+local blocked = {}
+local function rebuild_blocked()
+    blocked = {}
+    local ok, list = pcall(Game.Player(0).Units, Game.Player(0))
+    if not ok or not list then return end
+    for _, u in ipairs(list) do
+        if not GAIA_WALKABLE[u.Class or -1] then
+            blocked[(math.floor(u.X)) * 4096 + math.floor(u.Y)] = true
+        end
+    end
+end
+-- the free tile nearest to (x, y), searched in growing squares up to 10 tiles away
+local function free_spot(x, y, taken)
+    local tx, ty = math.floor(x), math.floor(y)
+    for r = 0, 10 do
+        for dx = -r, r do
+            for dy = -r, r do
+                if math.max(math.abs(dx), math.abs(dy)) == r then
+                    local k = (tx + dx) * 4096 + (ty + dy)
+                    if tx + dx >= 3 and ty + dy >= 3 and not blocked[k] and not taken[k] then
+                        taken[k] = true
+                        return tx + dx + 0.5, ty + dy + 0.5
+                    end
+                end
+            end
+        end
+    end
+    return x, y
+end
+
+-- The Horde comes from the edge of the map: points on a ring a few tiles inside the map border
+-- (the Castle stands at the map centre, so the map is about 2 * Castle tiles wide), spread around
+-- the map, each one the clearest of several tries (away from trees, mines and cliffs).
 local function spawn_points(r)
-    local cx, cy, hx, hy = base_bounds()
+    local mx, my = castle_target_x or 60, castle_target_y or 60
+    local radius = math.max(20, math.min(mx, my) - 9)
     local count = math.min(8, 4 + r // 4)
     local base = rnd() * 2 * math.pi
+    local obs = collect_obstacles()
+    local CLEAR_D2 = 4.5 * 4.5  -- chunk footprint is ~3 tiles wide; 4.5 tiles keeps every unit clear of trees
     local pts = {}
     for i = 1, count do
-        local a = base + (i - 1) * 2 * math.pi / count + (rnd() - 0.5) * 0.4
-        local d = 25 + rnd() * 15
-        -- the API has no map size, but the Castle stands at the map centre, so the map is about
-        -- 2 * castle tiles wide: points are kept 3 tiles inside both edges (off-map spawns failed)
-        local maxx = castle_target_x and (castle_target_x * 2 - 3) or 1e9
-        local maxy = castle_target_y and (castle_target_y * 2 - 3) or 1e9
-        pts[i] = {
-            math.min(maxx, math.max(3, cx + math.cos(a) * (hx + d))),
-            math.min(maxy, math.max(3, cy + math.sin(a) * (hy + d))),
-        }
+        local sector = base + (i - 1) * 2 * math.pi / count
+        local best_x, best_y, best_d2 = nil, nil, -1
+        for attempt = 1, 24 do
+            local spread = (attempt <= 8) and 0.35 or 0.9
+            local a = sector + (rnd() - 0.5) * spread
+            local d = radius - rnd() * 8
+            local px = math.max(6, math.min(mx * 2 - 6, mx + math.cos(a) * d))
+            local py = math.max(6, math.min(my * 2 - 6, my + math.sin(a) * d))
+            local d2 = min_obstacle_dist2(px, py, obs)
+            if d2 > best_d2 then
+                best_d2 = d2
+                best_x, best_y = px, py
+            end
+            if d2 >= CLEAR_D2 then break end
+        end
+        pts[i] = { best_x or 10, best_y or 10 }
     end
     return pts
 end
@@ -596,11 +860,14 @@ end
 local REVEAL_SECONDS = 8
 local REVEAL_OFFSETS = { { 0, 0 }, { 5, 0 }, { -5, 0 }, { 0, 5 }, { 0, -5 } }
 local reveal_until = nil
+local shown_points = {}     -- spawn points shown this round (their revealers are removed after REVEAL_SECONDS)
 local function reveal_spawn_points(pts, used, now)
     local owner = players[1]
     if not owner then return end
+    if vision_until ~= 0 then return end   -- the map is watched already; deleting these later would cut holes in the grid
     for i = 1, math.min(#pts, used) do
         local x, y = pts[i][1], pts[i][2]
+        shown_points[#shown_points + 1] = { x, y }
         safe_create(owner, 274, x, y)
         for _, off in ipairs(REVEAL_OFFSETS) do safe_create(owner, 837, x + off[1], y + off[2]) end
     end
@@ -612,8 +879,13 @@ local function hide_spawn_points(now)
     local owner = players[1]
     if not owner then return end
     for _, t in ipairs({ 837, 274 }) do
-        for _, u in ipairs(owner:UnitsOfType(t)) do pcall(u.Delete, u) end
+        for _, u in ipairs(owner:UnitsOfType(t)) do
+            for _, pt in ipairs(shown_points) do
+                if (u.X - pt[1]) ^ 2 + (u.Y - pt[2]) ^ 2 <= 49 then pcall(u.Delete, u) break end
+            end
+        end
     end
+    shown_points = {}
 end
 
 local function start_round(now)
@@ -623,7 +895,9 @@ local function start_round(now)
     rng_state = (r * 7919 + 31337) & 0x7fffffff
 
     local groups, boss_msg = build_round(r, cfg.mult)
+    rebuild_blocked()
     local pts = spawn_points(r)
+    for _, pt in ipairs(pts) do pt[1], pt[2] = free_spot(pt[1], pt[2], {}) end  -- flare/reveal on open ground
 
     -- chunks of up to 5 units (1-2 for siege), mixed and spread over 10..20 s
     local chunks = {}
@@ -677,13 +951,15 @@ local function run_spawn_queue(now)
     local owner = horde_player()
     local opts = (not horde_owner) and { Capturable = false } or nil
     local rest = {}
+    local taken = {}
     for _, c in ipairs(spawn_queue) do
         if c.at <= now then
             local cols = 3
             for i = 1, c.n do
                 local dx = ((i - 1) % cols - 1) * 1.3
                 local dy = ((i - 1) // cols) * 1.3
-                safe_create(owner, c.id, c.x + dx, c.y + dy, opts)
+                local sx, sy = free_spot(c.x + dx, c.y + dy, taken)
+                safe_create(owner, c.id, sx, sy, opts)
             end
         else
             rest[#rest + 1] = c
@@ -881,6 +1157,98 @@ local function set_bar(round, secs)
     end
 end
 
+-- Loaded savegame: nothing is created again; the Castle, the Horde player, the round, the
+-- countdown and the perks come back from the saved game state.
+local function resume_saved_game(saved)
+    local enemy_id = saved - 1
+    horde_owner = nil
+    if enemy_id > 0 then
+        horde_owner = (Game.SetModeEnemy and Game.SetModeEnemy(enemy_id)) or Game.Player(enemy_id)
+    end
+    for _, p in ipairs(Game.Players()) do
+        if not (horde_owner and p.Id == horde_owner.Id) then players[#players + 1] = p end
+    end
+    table.sort(players, function(a, b) return a.Id < b.Id end)
+    if #players == 0 then ended = true return end
+    local host = players[1]
+    -- the Castle: the host's Castle nearest to the middle of the players' Town Centers
+    local cx, cy = compute_castle_spot()
+    local best, bd = nil, 1e18
+    for _, u in ipairs(host:UnitsOfType(CASTLE_ID)) do
+        local d = (u.X - cx) ^ 2 + (u.Y - cy) ^ 2
+        if d < bd then best, bd = u, d end
+    end
+    castle_target_x, castle_target_y = cx, cy
+    if best then
+        castle_id, castle_x, castle_y, castle_seen = best.Id, best.X, best.Y, true
+    end
+    castle_retry_done = true
+    for _, p in ipairs(players) do
+        local bits = math.floor((p:GetResource(RES_PERKS) or 0) + 0.5)
+        for name, shift in pairs(PERK_SHIFT) do
+            local lv = (bits // shift) % 4
+            if lv > 0 then perks[p.Id] = perks[p.Id] or {}; perks[p.Id][name] = lv end
+        end
+    end
+    -- spawn point flares and revealers saved while showing (not the map vision grid: a saved
+    -- vision keeps its revealers)
+    local saved_vision = math.floor((host:GetResource(RES_VISION) or 0) + 0.5)
+    for _, u in ipairs(host:UnitsOfType(274)) do pcall(u.Delete, u) end
+    if saved_vision == 0 then
+        for _, u in ipairs(host:UnitsOfType(837)) do pcall(u.Delete, u) end
+    end
+    tower_count = #host:UnitsOfType(WATCH_TOWER_ID)
+    vision_until = math.floor((host:GetResource(RES_VISION) or 0) + 0.5)
+    if vision_until ~= 0 then
+        for _, p in ipairs(players) do                 -- whoever owns the saved revealer grid
+            if #p:UnitsOfType(837) > 20 then vision_owner = p break end
+        end
+    end
+    register_shop()
+    register_trades()
+    local now = math.max(0, Game.Time or 0)
+    start_time = now
+    current_round = math.floor((host:GetResource(RES_WAVE) or 0) + 0.5)
+    local secs = math.floor((host:GetResource(RES_NEXT) or 0) + 0.5)
+    if current_round > 0 and secs == 0 then
+        state = "fight"                         -- a round was running: it ends when its Horde is gone
+        spawn_done_at = now
+        rounds_survived = current_round - 1
+    else
+        state = "break"
+        next_round_at = now + (secs > 0 and secs or get_config().break_seconds)
+        rounds_survived = current_round
+    end
+    shown_wave, shown_next = current_round, secs
+    commander("Last Stand continues: round " .. current_round .. (state == "break" and (", next in " .. secs .. "s.") or " is on!"))
+end
+
+-- Enemies left (top right, this machine only): the Horde on the map plus the part of the round
+-- that has not come out yet.
+local counter_frame, counter_label, counter_text = nil, nil, nil
+local function update_counter(alive)
+    if not counter_label then
+        -- solid background: a translucent one kept the old text visible under a changed one
+        local ok, f = pcall(UI.CreateFrame, UI, { Anchor = "TopRight", Position = { 8, 40 }, Size = { 230, 30 },
+            Color = "#2b2116", Transparency = 0, BorderColor = "#c8a046" })
+        if not ok then return end
+        counter_frame = f
+        local ok2, l = pcall(UI.CreateLabel, UI, { Parent = f, Text = "", Position = { 0, 5 }, Size = { 230, 22 },
+            Align = "Center", Bold = true, TextColor = "#f2dc9b", Color = false })
+        if not ok2 then return end
+        counter_label = l
+    end
+    local queued = 0
+    for _, c in ipairs(spawn_queue) do queued = queued + c.n end
+    local text
+    if state == "fight" then
+        text = "Round " .. current_round .. "  -  Enemies left: " .. (alive + queued)
+    else
+        text = "Round " .. (current_round + 1) .. " in " .. math.max(0, math.ceil(next_round_at - math.max(0, Game.Time or 0))) .. "s"
+    end
+    if text ~= counter_text then counter_text = text; pcall(counter_label.SetText, counter_label, text) end
+end
+
 Game.OnStart(function()
     active = (Game.Mode() == "last_stand")
     ended = false
@@ -902,14 +1270,27 @@ Game.OnStart(function()
     last_ai_at = -100
     shown_wave, shown_next = -1, -1
     perks = {}
+    trades_done = {}
+    vision_until, vision_owner = 0, nil
 
     if not active then
         unregister_shop()
+        unregister_trades()
         return
     end
 
     if not Game.LocalPlayer then
         ended = true
+        return
+    end
+
+    -- a loaded savegame: continue where it was (see RES_STATE)
+    local saved = 0
+    for _, p in ipairs(Game.Players()) do
+        saved = math.max(saved, math.floor((p:GetResource(RES_STATE) or 0) + 0.5))
+    end
+    if saved > 0 then
+        resume_saved_game(saved)
         return
     end
 
@@ -936,9 +1317,12 @@ Game.OnStart(function()
     castle_x, castle_y = castle_target_x, castle_target_y
     safe_create(host, CASTLE_ID, castle_target_x, castle_target_y)
     relocate_players(castle_target_x, castle_target_y)
-    equip_players(castle_target_x, castle_target_y, get_config().start_bonus)
+    equip_players(castle_target_x, castle_target_y, get_config().start_bonus, get_config().start_age)
 
     register_shop()
+    register_trades()
+    local mark = 1 + (horde_owner and horde_owner.Id or 0)
+    for _, p in ipairs(Game.Players()) do p:SetResource(RES_STATE, mark) end
 
     local cfg = get_config()
     start_time = math.max(0, Game.Time or 0)
@@ -947,8 +1331,7 @@ Game.OnStart(function()
 
     commander("Last Stand (" .. cfg.difficulty .. "): defend the Castle together" ..
         (cfg.rounds > 0 and (" for " .. cfg.rounds .. " rounds") or " for as long as you can") ..
-        ". Round 1 in " .. cfg.grace_seconds .. "s. Spend Points at your Market or the Castle (page 2).")
-    Sound.Play("Objective")
+        ". Round 1 in " .. cfg.grace_seconds .. "s. Spend Points at the Castle (page 2).")
 end)
 
 Game.OnUnitDied(function(id)
@@ -977,7 +1360,7 @@ Game.OnSecond(function()
                     break
                 end
             end
-            if not castle_seen and not castle_retry_done and (now - start_time) >= 4 then
+            if not castle_seen and not castle_retry_done and (now - start_time) >= 12 then  -- multiplayer runs the first commands ~4 s late
                 castle_retry_done = true
                 local tc = find_player_tcs(host)[1]
                 local rx = tc and (tc.X + 6) or (castle_target_x + 4)
@@ -1009,6 +1392,7 @@ Game.OnSecond(function()
     for id in pairs(horde_prev) do
         if not cur[id] then kills = kills + 1 end
     end
+    if current_round == 0 then kills = 0 end   -- the enemy player's map start being removed is no kill
     horde_prev = {}
     for id in pairs(cur) do horde_prev[id] = true end
     if kills > 0 then
@@ -1047,7 +1431,7 @@ Game.OnSecond(function()
                     p:AddWood(200)
                     p:AddGold(100)
                 end
-                commander("Max Ammo! (+200 Food, +200 Wood, +100 Gold for everyone)")
+                commander("A supply caravan arrives! (+200 Food, +200 Wood, +100 Gold for everyone)")
                 Sound.Play("Tribute")
             end
         end
@@ -1055,7 +1439,23 @@ Game.OnSecond(function()
         start_round(now)
     end
 
-    -- 5. Top bar: Round and break countdown
+    -- shop prices follow the local player's Age (also an age set before the first age-up event)
+    local me = Game.LocalPlayer
+    if me and tier(me) ~= shop_tier then register_shop() end
+
+    -- 5. Map vision bought at the Castle ends after its last round (the value is a synced resource:
+    --    the purchase ran on the buyer's machine only)
+    if players[1] then vision_until = math.floor((players[1]:GetResource(RES_VISION) or 0) + 0.5) end
+    if vision_until > 0 and current_round >= vision_until and state == "break" and not vision_ending then
+        vision_ending = true        -- the resource change arrives a turn later: do this once
+        vision_remove()
+        set_vision(0)
+        commander("The Scout Network is called back: the map is in the fog again.")
+    end
+    if vision_until <= 0 then vision_ending = false end
+    update_counter(alive)
+
+    -- 6. Top bar: Round and break countdown
     local secs = (state == "break") and math.max(0, math.ceil(next_round_at - now)) or 0
     set_bar(current_round, secs)
 end)

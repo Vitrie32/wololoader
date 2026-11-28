@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36" width="36" height="36">
+  <defs>
+    <linearGradient id="bgU" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#6c2e22"/><stop offset="100%" stop-color="#250d09"/></linearGradient>
+    <clipPath id="clip"><rect x="2" y="2" width="32" height="32" rx="2"/></clipPath>
+    <radialGradient id="hl" cx="0.18" cy="0.12" r="0.85"><stop offset="0%" stop-color="#ffffff" stop-opacity="0.24"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
+    <linearGradient id="dwood" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9a6838"/><stop offset="50%" stop-color="#5e3816"/><stop offset="100%" stop-color="#3a200a"/></linearGradient>
+    <linearGradient id="leather" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c48a52"/><stop offset="50%" stop-color="#8a5428"/><stop offset="100%" stop-color="#4e2c12"/></linearGradient>
+    <linearGradient id="stone" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#eee8dc"/><stop offset="50%" stop-color="#b0a898"/><stop offset="100%" stop-color="#6a6256"/></linearGradient>
+    <linearGradient id="oak" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d39a52"/><stop offset="50%" stop-color="#8a5520"/><stop offset="100%" stop-color="#5a3410"/></linearGradient>
+    <linearGradient id="iron" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#9a9ea6"/><stop offset="50%" stop-color="#555a62"/><stop offset="100%" stop-color="#26282e"/></linearGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.45" r="0.75"><stop offset="0%" stop-color="#000000" stop-opacity="0"/><stop offset="50%" stop-color="#000000" stop-opacity="0"/><stop offset="100%" stop-color="#000000" stop-opacity="0.42"/></radialGradient>
+  </defs>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="url(#bgU)"/>
+<g clip-path="url(#clip)">
+<rect width="36" height="36" fill="url(#hl)"/>
+
+<ellipse cx="18" cy="33" rx="13" ry="2.4" fill="#000" fill-opacity=".35"/><path d="M13 26 L18 12 L23 26" fill="none" stroke="#1b1106" stroke-width="3.2"/><path d="M13 26 L18 12 L23 26" fill="none" stroke="#8a5520" stroke-width="1.6"/><g transform="translate(22 24) rotate(-55) scale(1)"><rect x="-1.4" y="-19" width="2.8" height="21" rx="1" fill="url(#dwood)" stroke="#1b1106" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/><path d="M-4.4 -19 C-4.4 -24 4.4 -24 4.4 -19 Z" fill="url(#leather)" stroke="#1b1106" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/><circle cx="0" cy="-21.4" r="2.8" fill="url(#stone)" stroke="#1b1106" stroke-width="0.9" stroke-linejoin="round" stroke-linecap="round"/></g><rect x="4" y="25" width="28" height="3.4" fill="url(#oak)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><rect x="16.6" y="11" width="2.8" height="3" fill="url(#iron)" stroke="#1b1106" stroke-width="0.7" stroke-linejoin="round" stroke-linecap="round"/><circle cx="9" cy="29.6" r="3.6" fill="url(#oak)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><circle cx="9" cy="29.6" r="2.2" fill="none" stroke="#3a200a" stroke-width=".7"/><path d="M6.4 29.6 H11.6 M9 27.0 V32.2" stroke="#3a200a" stroke-width=".7"/><circle cx="9" cy="29.6" r="1" fill="url(#iron)" stroke="#1b1106" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round"/><circle cx="27" cy="29.6" r="3.6" fill="url(#oak)" stroke="#1b1106" stroke-width="1.1" stroke-linejoin="round" stroke-linecap="round"/><circle cx="27" cy="29.6" r="2.2" fill="none" stroke="#3a200a" stroke-width=".7"/><path d="M24.4 29.6 H29.6 M27 27.0 V32.2" stroke="#3a200a" stroke-width=".7"/><circle cx="27" cy="29.6" r="1" fill="url(#iron)" stroke="#1b1106" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round"/>
+<rect width="36" height="36" fill="url(#vig)"/>
+</g>
+<rect x="1" y="1" width="34" height="34" rx="3" fill="none" stroke="#120b05" stroke-width="1.8"/>
+<rect x="2.5" y="2.5" width="31" height="31" rx="2" fill="none" stroke="#d4a64a" stroke-width="0.9" stroke-opacity="0.75"/>
+</svg>

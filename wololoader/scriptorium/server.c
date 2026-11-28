@@ -15,6 +15,7 @@
 #include "api.h"
 #include "launcher.h"
 #include "ui_files.h"
+#include "icons_files.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -233,6 +234,24 @@ static int server_serve_static(const char *path, HttpResponse *res) {
         }
     }
     return 0; // Not found
+}
+
+// ==========================================================================
+// Icon library (GET /api/icon-library, GET /api/icon-library/<category>/<id>.png)
+// Embedded from scriptorium/icon_library (build/icons_files.h); the token was already checked.
+// ==========================================================================
+
+static int server_serve_icon_library(const char *path, HttpResponse *res) {
+    const char *rest = path + strlen("/api/icon-library");
+    if (*rest == '\0' || strcmp(rest, "/") == 0) rest = "/catalog.json";
+    // Only plain "/<category>/<file>" names from the embedded table can match; anything else is 404.
+    for (size_t i = 0; i < g_icons_file_count; i++) {
+        if (strcmp(g_icons_files[i].path, rest) == 0) {
+            http_response_set_binary(res, 200, g_icons_files[i].content_type, g_icons_files[i].data, g_icons_files[i].len);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // ==========================================================================
@@ -495,7 +514,12 @@ static void server_handle_client(ServerState *s, SOCKET client_fd) {
         }
 
         // Dispatch to API implementation
-        api_handle_request(s, &req, &res);
+        if (strcmp(req.method, "GET") == 0 &&
+            (strcmp(req.path, "/api/icon-library") == 0 || strncmp(req.path, "/api/icon-library/", 18) == 0)) {
+            if (!server_serve_icon_library(req.path, &res)) http_response_error(&res, 404, "Icon not found");
+        } else {
+            api_handle_request(s, &req, &res);
+        }
     } else if (strncmp(req.path, "/asset/", 7) == 0) {
         // Asset delivery from game resources (no token required; Host check already verified)
         server_serve_asset(s, &req, &res);

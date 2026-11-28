@@ -55,7 +55,11 @@ static AddAttrBase_t o_add_attr;
 static WlResourceDef *g_res;
 static int g_res_count;
 static int g_res_cap;
+static WlGatherDef *g_gather;
+static int g_gather_count;
+static int g_gather_cap;
 static int g_res_loaded;
+static int g_res_loading;
 static char g_res_stamp[64];
 
 static int ci_eq(const char *a, const char *b) {
@@ -89,6 +93,60 @@ static void read_stamp(char out[64]) {
     out[strcspn(out, "\r\n")] = '\0';
 }
 
+static void load_gather_txt(void) {
+    g_gather_count = 0;
+    char path[MAX_PATH];
+    snprintf(path, sizeof path, "%s\\cache\\gather.txt", g_wl.root);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        wl_files_sync_rms_defs(NULL, 0);
+        return;
+    }
+    char line[1024];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (!line[0]) continue;
+        // Columns: key \t resource_id \t deposit_id \t male_id \t female_id
+        char *cols[5] = { NULL };
+        int ncol = 0;
+        char *p = line;
+        while (ncol < 5) {
+            cols[ncol++] = p;
+            char *tab = strchr(p, '\t');
+            if (!tab) break;
+            *tab = '\0';
+            p = tab + 1;
+        }
+        if (ncol < 5 || !cols[0][0]) continue;
+        int rid = atoi(cols[1]);
+        int dep = atoi(cols[2]);
+        int mal = atoi(cols[3]);
+        int fem = atoi(cols[4]);
+        if (rid < WL_CUSTOM_RES_FIRST || rid > WL_CUSTOM_RES_MAX) continue;
+        if (dep <= 0 || mal <= 0 || fem <= 0) continue;
+
+        if (g_gather_count >= g_gather_cap) {
+            int ncap = g_gather_cap ? g_gather_cap * 2 : 16;
+            WlGatherDef *ng = (WlGatherDef *)realloc(g_gather, (size_t)ncap * sizeof(*ng));
+            if (!ng) break;
+            g_gather = ng;
+            g_gather_cap = ncap;
+        }
+        WlGatherDef *g = &g_gather[g_gather_count++];
+        memset(g, 0, sizeof(*g));
+        lstrcpynA(g->key, cols[0], sizeof g->key);
+        g->resource_id = rid;
+        g->deposit_id  = dep;
+        g->male_id     = mal;
+        g->female_id   = fem;
+    }
+    fclose(f);
+    if (g_gather_count > 0) {
+        wl_log("resources: loaded %d gatherable resource(s) from cache\\gather.txt", g_gather_count);
+    }
+    wl_files_sync_rms_defs(g_gather, g_gather_count);
+}
+
 static void load_resources_txt(void) {
     g_res_count = 0;
     read_stamp(g_res_stamp);
@@ -96,6 +154,7 @@ static void load_resources_txt(void) {
     snprintf(path, sizeof path, "%s\\cache\\resources.txt", g_wl.root);
     FILE *f = fopen(path, "rb");
     if (!f) {
+        load_gather_txt();
         g_res_loaded = 1;
         return;
     }
@@ -103,11 +162,11 @@ static void load_resources_txt(void) {
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\r\n")] = '\0';
         if (!line[0]) continue;
-        // Columns: id \t mod \t key \t name \t icon [\t start \t max \t show \t desc]
-        char *cols[9] = { NULL };
+        // Columns: id \t mod \t key \t name \t icon [\t start \t max \t show \t desc \t hidden \t game_mode]
+        char *cols[11] = { NULL };
         int ncol = 0;
         char *p = line;
-        while (ncol < 9) {
+        while (ncol < 11) {
             cols[ncol++] = p;
             char *tab = strchr(p, '\t');
             if (!tab) break;
@@ -140,28 +199,39 @@ static void load_resources_txt(void) {
         r->max   = (ncol >= 7 && cols[6][0]) ? (float)atof(cols[6]) : 0.0f;
         r->show  = (ncol >= 8 && cols[7][0]) ? (atoi(cols[7]) != 0) : 1;
         if (ncol >= 9 && cols[8][0]) unescape_desc(cols[8], r->description, sizeof r->description);
+        r->hidden = (ncol >= 10 && cols[9][0]) ? (atoi(cols[9]) != 0) : 0;
+        if (ncol >= 11 && cols[10][0]) lstrcpynA(r->game_mode, cols[10], sizeof r->game_mode);
     }
     fclose(f);
-    g_res_loaded = 1;
     wl_log("resources: loaded %d custom resource(s) from cache\\resources.txt", g_res_count);
+    load_gather_txt();
+    g_res_loaded = 1;
 }
 
 void wl_resources_reload(void) {
+    if (g_res_loading) return;
+    g_res_loading = 1;
     load_resources_txt();
+    g_res_loading = 0;
     wl_resbar_reset();
 }
 
 void wl_resources_ensure(void) {
+    if (g_res_loading) return;
     wl_civs_ensure();
     if (!g_res_loaded) {
+        g_res_loading = 1;
         load_resources_txt();
+        g_res_loading = 0;
         return;
     }
     // Detect cache rebuilds (e.g. after main-menu hot reload) via build.stamp.
     char cur_stamp[64];
     read_stamp(cur_stamp);
     if (strcmp(cur_stamp, g_res_stamp) != 0) {
+        g_res_loading = 1;
         load_resources_txt();
+        g_res_loading = 0;
         wl_resbar_reset();
     }
 }
@@ -222,6 +292,49 @@ int wl_resource_resolve(const char *key, const char *prefer_mod) {
         if (ci_eq(g_res[i].key, key) || ci_eq(g_res[i].name, key)) return g_res[i].id;
     }
     return -1;
+}
+
+const WlGatherDef *wl_gather_list(int *out_count) {
+    wl_resources_ensure();
+    if (out_count) *out_count = g_gather_count;
+    return g_gather;
+}
+
+const WlGatherDef *wl_gather_by_resource(int resource_id) {
+    if (resource_id < WL_CUSTOM_RES_FIRST) return NULL;
+    if (!g_res_loaded) wl_resources_ensure();
+    for (int i = 0; i < g_gather_count; i++) {
+        if (g_gather[i].resource_id == resource_id) return &g_gather[i];
+    }
+    return NULL;
+}
+
+const WlGatherDef *wl_gather_by_deposit(int deposit_id) {
+    if (deposit_id <= 0) return NULL;
+    if (!g_res_loaded) wl_resources_ensure();
+    for (int i = 0; i < g_gather_count; i++) {
+        if (g_gather[i].deposit_id == deposit_id) return &g_gather[i];
+    }
+    return NULL;
+}
+
+const WlGatherDef *wl_gather_by_key(const char *key, const char *prefer_mod) {
+    if (!key || !key[0]) return NULL;
+    wl_resources_ensure();
+    // Resolve through resources.txt first so "mod:key", prefer_mod, and display-name aliases work.
+    int rid = wl_resource_resolve(key, prefer_mod);
+    if (rid >= WL_CUSTOM_RES_FIRST) {
+        const WlGatherDef *g = wl_gather_by_resource(rid);
+        if (g) return g;
+    }
+    // Direct fallback on gather.txt key (exact, then case-insensitive).
+    for (int i = 0; i < g_gather_count; i++) {
+        if (strcmp(g_gather[i].key, key) == 0) return &g_gather[i];
+    }
+    for (int i = 0; i < g_gather_count; i++) {
+        if (ci_eq(g_gather[i].key, key)) return &g_gather[i];
+    }
+    return NULL;
 }
 
 // ---- Hook 1: Game::get_string (0x62f430) ---------------------------------------------

@@ -116,6 +116,7 @@ static int api_raw_count(lua_State *L);
 static int api_raw_resource(lua_State *L);
 static int api_raw_resolve_resource(lua_State *L);
 static int api_raw_resources(lua_State *L);
+static int api_raw_gather_info(lua_State *L);
 static int api_raw_is_enemy(lua_State *L);
 static int api_raw_units(lua_State *L);
 static int api_raw_cmd(lua_State *L);
@@ -124,6 +125,15 @@ static int api_raw_researched(lua_State *L);
 static int api_raw_time(lua_State *L);
 static int api_raw_mode(lua_State *L);
 static int api_raw_mode_enemy(lua_State *L);
+static int api_raw_map_size(lua_State *L);
+static int api_raw_map_capture(lua_State *L);
+static int api_raw_unit_control_disabled(lua_State *L);
+static int api_raw_last_map_click(lua_State *L);
+static int api_raw_restart(lua_State *L);
+static int api_raw_session_get(lua_State *L);
+static int api_raw_session_set(lua_State *L);
+static int api_raw_session_clear(lua_State *L);
+static int api_sound_file(lua_State *L);
 static int api_raw_ui_create(lua_State *L);
 static int api_raw_ui_set(lua_State *L);
 static int api_raw_ui_destroy(lua_State *L);
@@ -836,6 +846,42 @@ static int is_base_mod_id(const char *id) {
     return id && strlen(id) == 14 && _strnicmp(id, "WololoaderBase", 14) == 0;
 }
 
+// Fills the table at index t with the mod's effective settings (modsettings.c).
+static void fill_settings_table(lua_State *L, int t, const WlMod *m) {
+    static WlSetting set[WL_MAX_SETTINGS];
+    int n = wl_settings_load(m, set, WL_MAX_SETTINGS);
+    for (int i = 0; i < n; i++) {
+        if (set[i].type == WL_SET_BOOL) lua_pushboolean(L, set[i].on);
+        else if (set[i].type == WL_SET_NUMBER) {
+            double v = set[i].num;   // whole numbers as Lua integers (50, not 50.0)
+            if (v == (double)(lua_Integer)v) lua_pushinteger(L, (lua_Integer)v);
+            else lua_pushnumber(L, v);
+        }
+        else lua_pushstring(L, set[i].choices[set[i].choice]);
+        lua_setfield(L, t, set[i].id);
+    }
+}
+
+// Multiplayer lobby (mpcheck.c): refill every loaded mod's MOD.settings in place.
+void wl_script_refresh_settings(void) {
+    lua_State *L = g_L;
+    if (!L) return;
+    int top = lua_gettop(L);
+    if (lua_getfield(L, LUA_REGISTRYINDEX, "wl_mod_settings") == LUA_TTABLE) {
+        int reg = lua_gettop(L);
+        for (int i = 0; i < g_wl.listed_count; i++) {
+            const WlMod *m = &g_wl.mods[i];
+            if (lua_getfield(L, reg, m->id) != LUA_TTABLE) { lua_pop(L, 1); continue; }
+            int t = lua_gettop(L);
+            lua_pushnil(L);                       // clear: collect keys first, then remove
+            while (lua_next(L, t)) { lua_pop(L, 1); lua_pushvalue(L, -1); lua_pushnil(L); lua_settable(L, t); }
+            fill_settings_table(L, t, m);
+            lua_pop(L, 1);
+        }
+    }
+    lua_settop(L, top);
+}
+
 // Pushes a fresh _ENV for one mod. Real globals of the state are only read here.
 static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     int is_console = (index < 0);
@@ -872,20 +918,18 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushstring(L, m->dir);     lua_setfield(L, -2, "dir");
     // MOD.settings = { <id> = value }: mod.json "settings" with the player's
     // values from the Mods screen (modsettings.c). Changing one restarts the
-    // scripts through the hot reload, so a plain table is enough.
+    // scripts through the hot reload. The table is also kept in the registry
+    // (wl_mod_settings[mod id]) so a multiplayer lobby can refill it in place with
+    // the host's values (wl_script_refresh_settings); scripts that saved a
+    // reference to it (local S = MOD.settings) see the new values.
     {
-        static WlSetting set[WL_MAX_SETTINGS];
-        int n = is_console ? 0 : wl_settings_load(m, set, WL_MAX_SETTINGS);
-        lua_createtable(L, 0, n);
-        for (int i = 0; i < n; i++) {
-            if (set[i].type == WL_SET_BOOL) lua_pushboolean(L, set[i].on);
-            else if (set[i].type == WL_SET_NUMBER) {
-                double v = set[i].num;   // whole numbers as Lua integers (50, not 50.0)
-                if (v == (double)(lua_Integer)v) lua_pushinteger(L, (lua_Integer)v);
-                else lua_pushnumber(L, v);
-            }
-            else lua_pushstring(L, set[i].choices[set[i].choice]);
-            lua_setfield(L, -2, set[i].id);
+        lua_newtable(L);
+        if (!is_console) {
+            fill_settings_table(L, lua_gettop(L), m);
+            luaL_getsubtable(L, LUA_REGISTRYINDEX, "wl_mod_settings");
+            lua_pushvalue(L, -2);
+            lua_setfield(L, -2, m->id);
+            lua_pop(L, 1);
         }
         lua_setfield(L, -2, "settings");
     }
@@ -933,6 +977,7 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_resource); lua_setfield(L, -2, "raw_resource");
     PUSH_MOD_CFUNC(L, api_raw_resolve_resource, m->id); lua_setfield(L, -2, "raw_resolve_resource");
     lua_pushcfunction(L, api_raw_resources); lua_setfield(L, -2, "raw_resources");
+    PUSH_MOD_CFUNC(L, api_raw_gather_info, m->id); lua_setfield(L, -2, "raw_gather_info");
     lua_pushcfunction(L, api_raw_is_enemy); lua_setfield(L, -2, "raw_is_enemy");
     lua_pushcfunction(L, api_raw_units);    lua_setfield(L, -2, "raw_units");
     lua_pushboolean(L, is_dev);
@@ -942,6 +987,15 @@ static void push_mod_env(lua_State *L, const WlMod *m, int index) {
     lua_pushcfunction(L, api_raw_time);     lua_setfield(L, -2, "raw_time");
     lua_pushcfunction(L, api_raw_mode);     lua_setfield(L, -2, "raw_mode");
     lua_pushcfunction(L, api_raw_mode_enemy); lua_setfield(L, -2, "raw_mode_enemy");
+    lua_pushcfunction(L, api_raw_map_size); lua_setfield(L, -2, "raw_map_size");
+    lua_pushcfunction(L, api_raw_map_capture); lua_setfield(L, -2, "raw_map_capture");
+    lua_pushcfunction(L, api_raw_unit_control_disabled); lua_setfield(L, -2, "raw_unit_control_disabled");
+    lua_pushcfunction(L, api_raw_last_map_click); lua_setfield(L, -2, "raw_last_map_click");
+    lua_pushcfunction(L, api_raw_restart); lua_setfield(L, -2, "raw_restart");
+    lua_pushcfunction(L, api_raw_session_get); lua_setfield(L, -2, "raw_session_get");
+    lua_pushcfunction(L, api_raw_session_set); lua_setfield(L, -2, "raw_session_set");
+    lua_pushcfunction(L, api_raw_session_clear); lua_setfield(L, -2, "raw_session_clear");
+    lua_pushcfunction(L, api_sound_file); lua_setfield(L, -2, "sound_file");
     lua_pushcfunction(L, api_raw_is_multiplayer); lua_setfield(L, -2, "raw_is_multiplayer");
     lua_pushcfunction(L, api_raw_cheats_enabled); lua_setfield(L, -2, "raw_cheats_enabled");
     lua_pushstring(L, m->id);
@@ -1012,6 +1066,18 @@ static int api_raw_resources(lua_State *L) {
         lua_pushstring(L, list[i].description);  lua_setfield(L, -2, "description");
         lua_rawseti(L, -2, i + 1);
     }
+    return 1;
+}
+static int api_raw_gather_info(lua_State *L) {
+    const char *mod = lua_tostring(L, lua_upvalueindex(1));
+    const char *key = luaL_checkstring(L, 1);
+    const WlGatherDef *g = (g_game && g_game->gather_by_key) ? g_game->gather_by_key(key, mod) : NULL;
+    if (!g) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 4);
+    lua_pushinteger(L, g->resource_id); lua_setfield(L, -2, "resource");
+    lua_pushinteger(L, g->deposit_id);  lua_setfield(L, -2, "deposit");
+    lua_pushinteger(L, g->male_id);     lua_setfield(L, -2, "male");
+    lua_pushinteger(L, g->female_id);   lua_setfield(L, -2, "female");
     return 1;
 }
 static int api_raw_is_enemy(lua_State *L) {
@@ -1288,6 +1354,9 @@ static int api_raw_add_command(lua_State *L) {
     rc->icon = icon;
     rc->help_sid = WL_RT_CMD_SID_BASE + slot;
     rc->gen = ++g_rt_cmd_gen;
+    lua_getfield(L, 1, "shared");
+    rc->shared = lua_toboolean(L, -1);
+    lua_pop(L, 1);
     snprintf(rc->name, sizeof rc->name, "%s", name);
     snprintf(rc->cond_action, sizeof rc->cond_action, "%s", cond_action);
     snprintf(rc->cond_name, sizeof rc->cond_name, "%s", cond_name);
@@ -1325,7 +1394,68 @@ static int api_raw_mode(lua_State *L) {
     if (m && m[0]) lua_pushstring(L, m); else lua_pushnil(L);
     return 1;
 }
+static int api_raw_map_size(lua_State *L) {
+    int n = wl_gamemode_map_tiles();
+    if (n > 0) lua_pushinteger(L, n); else lua_pushnil(L);
+    return 1;
+}
+
+// Session key-value store: survives Game.Restart(), cleared on a new lobby match (hook_setup_start).
+#define WL_SESSION_MAX 32
+static struct { char key[64]; char val[128]; int is_num; double num; int used; } g_session[WL_SESSION_MAX];
+void wl_script_clear_session(void) { memset(g_session, 0, sizeof g_session); }
+
+static int api_raw_session_get(lua_State *L) {
+    const char *k = luaL_checkstring(L, 1);
+    for (int i = 0; i < WL_SESSION_MAX; i++) {
+        if (g_session[i].used && strcmp(g_session[i].key, k) == 0) {
+            if (g_session[i].is_num) lua_pushnumber(L, g_session[i].num);
+            else lua_pushstring(L, g_session[i].val);
+            return 1;
+        }
+    }
+    lua_pushnil(L);
+    return 1;
+}
+static int api_raw_session_set(lua_State *L) {
+    const char *k = luaL_checkstring(L, 1);
+    int slot = -1, free_slot = -1;
+    for (int i = 0; i < WL_SESSION_MAX; i++) {
+        if (g_session[i].used && strcmp(g_session[i].key, k) == 0) { slot = i; break; }
+        if (!g_session[i].used && free_slot < 0) free_slot = i;
+    }
+    if (lua_isnoneornil(L, 2)) {
+        if (slot >= 0) g_session[slot].used = 0;
+        return 0;
+    }
+    if (slot < 0) slot = free_slot;
+    if (slot < 0) return luaL_error(L, "session store full (max %d keys)", WL_SESSION_MAX);
+    g_session[slot].used = 1;
+    snprintf(g_session[slot].key, sizeof g_session[slot].key, "%s", k);
+    if (lua_type(L, 2) == LUA_TNUMBER) {
+        g_session[slot].is_num = 1;
+        g_session[slot].num = (double)lua_tonumber(L, 2);
+        g_session[slot].val[0] = 0;
+    } else {
+        g_session[slot].is_num = 0;
+        snprintf(g_session[slot].val, sizeof g_session[slot].val, "%s", luaL_tolstring(L, 2, NULL));
+        lua_pop(L, 1);
+    }
+    return 0;
+}
+static int api_raw_session_clear(lua_State *L) { (void)L; wl_script_clear_session(); return 0; }
+static float g_last_mc_x, g_last_mc_y; static int g_last_mc_btn;
+static int api_raw_map_capture(lua_State *L) { wl_ui_set_map_capture(lua_toboolean(L, 1)); return 0; }
+static int api_raw_unit_control_disabled(lua_State *L) { wl_ui_set_unit_control_disabled(lua_toboolean(L, 1)); return 0; }
+static int api_raw_last_map_click(lua_State *L) { lua_pushnumber(L, g_last_mc_x); lua_pushnumber(L, g_last_mc_y); lua_pushinteger(L, g_last_mc_btn); return 3; }
+static int api_raw_restart(lua_State *L) { lua_pushboolean(L, wl_ui_request_restart()); return 1; }
+static int api_sound_file(lua_State *L) {
+    const char *path = luaL_checkstring(L, 1);
+    lua_pushboolean(L, wl_play_sfx_file(path));
+    return 1;
+}
 static int api_raw_mode_enemy(lua_State *L) {
+    if (lua_isinteger(L, 1)) wl_gamemode_set_enemy_player((int)lua_tointeger(L, 1));
     lua_pushinteger(L, wl_gamemode_enemy_player());
     return 1;
 }
@@ -1636,9 +1766,28 @@ static const char k_prelude[] =
 "function Game.Players() local t = {}\n"
 "  for i = 1, wl.raw_player_count() - 1 do t[#t + 1] = player(i) end; return t end\n"
 "function Game.Resources() return wl.raw_resources() end\n"
+"function Game.GatherInfo(key)\n"
+"  if type(key) ~= 'string' then return nil end\n"
+"  return wl.raw_gather_info(key)\n"
+"end\n"
+"function Game.ResourceDeposit(key)\n"
+"  local info = Game.GatherInfo(key)\n"
+"  return info and info.deposit or nil\n"
+"end\n"
 "function Game.Mode() return wl.raw_mode() end\n"
+"-- Game.MapSize(): side of the (square) map in tiles from the lobby map size, nil if unknown\n"
+"function Game.MapSize() return wl.raw_map_size() end\n"
+"function Game.SetMapClickCapture(on) wl.raw_map_capture(not not on) end\n"
+"function Game.SetUnitControlDisabled(off) wl.raw_unit_control_disabled(not not off) end\n"
+"function Game.OnMapClick(fn) return on('map_click', function() local x, y, b = wl.raw_last_map_click() fn(x, y, b == 2 and 'right' or 'left') end) end\n"
+"function Game.Restart() return wl.raw_restart() end\n"
+"function Game.GetSession(k) return wl.raw_session_get(tostring(k)) end\n"
+"function Game.SetSession(k, v) wl.raw_session_set(tostring(k), v) end\n"
+"function Game.ClearSession() wl.raw_session_clear() end\n"
 "-- the game mode's enemy player (mod.json \"enemy_player\": true), nil without one\n"
 "function Game.ModeEnemy() local id = wl.raw_mode_enemy() if id and id > 0 then return player(id) end end\n"
+"-- after loading a savegame: tell Wololoader again which player is the mode's enemy\n"
+"function Game.SetModeEnemy(p) local id = wl.raw_mode_enemy(type(p) == 'table' and p.Id or p) if id and id > 0 then return player(id) end end\n"
 "function Game.OnStart(fn) return on('game_start', fn) end\n"
 "-- Game.OnCommand(name, fn(building)): a Lua button of a mod building (unique_building commands)\n"
 "function Game.OnCommand(name, fn)\n"
@@ -1723,7 +1872,7 @@ static const char k_prelude[] =
 "function Game.CheatsEnabled() return wl.raw_cheats_enabled() end\n"
 "local SOUNDS = { Chat = 'chat', CantDo = 'cantdo', Tribute = 'tribute', Attack = 'attack',\n"
 "  TownBell = 'townbell', TownRecall = 'townrecall', Objective = 'objective', Relic = 'relic' }\n"
-"Sound = { Play = function(name) wl.sound(SOUNDS[name] or name) end }\n"
+"Sound = { Play = function(name) if name == 'Villager' or name == 'villager' then wl.sound_file('resources/_common/drs/sounds/5353.wav') else wl.sound(SOUNDS[name] or name) end end, PlayFile = function(p) return wl.sound_file(tostring(p)) end }\n"
 "UI = {}\n"
 "function UI.Message(text, opts) wl.message(tostring(text), opts and opts.Color) end\n"
 "function UI.Chat(text, opts) opts = opts or {}; wl.chat(tostring(text), opts.From, opts.Color) end\n"
@@ -2963,6 +3112,12 @@ void wl_script_event(const char *name) {
     dispatch_filtered(name, NULL, 0, 0);
 }
 void wl_script_event_int(const char *name, int arg) { dispatch_filtered(name, NULL, 1, arg); }
+
+void wl_script_event_map_click(float tx, float ty, int button) {
+    g_last_mc_x = tx; g_last_mc_y = ty; g_last_mc_btn = button;
+    dispatch_filtered("map_click", NULL, 0, 0);
+}
+
 // Building Lua button pressed (buildpage.c): handlers of Game.OnCommand(name, fn).
 void wl_script_command(const char *name, int unit_id) {
     char ev[96];

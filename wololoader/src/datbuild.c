@@ -794,6 +794,15 @@ typedef struct {
 #define WL_CMD_ICON_BASE 70    // AoE2 HD 5.8 interface/50721.slp frame count (0..69); matches iconmerge.c
 #define WL_CUSTOM_RES_FIRST 211   // AoE2 HD 5.8 vanilla resource_count = 211 (indices 0..210)
 #define WL_CUSTOM_RES_MAX 32766   // engine reads resource_count as signed int16 (max 32767)
+#define WL_GATHER_MALE_TEMPLATE 579    // VMGLD: male Gold Miner (villager_mode=1)
+#define WL_GATHER_FEMALE_TEMPLATE 581  // VFGLD: female Gold Miner (villager_mode=2)
+
+typedef struct {
+    uint8_t exists;
+    uint16_t cmd_count;
+    const uint8_t *orig_cmds;  // points into orig when owned_cmds == NULL
+    uint8_t *owned_cmds;       // malloc'd buffer when modified
+} WlUnitHeader;
 
 typedef struct {
     char mod[256];
@@ -810,7 +819,33 @@ typedef struct {
     float start;
     float max;
     int show;
+    int hidden;
+    char game_mode[65];
     char *description;
+    int has_gather;
+    char gather_deposit_name[144];
+    char gather_miner_name[144];
+    char gather_where[540];
+    int has_gather_amount;
+    float gather_amount;
+    int gather_copy_from;
+    int has_gather_work_rate;
+    float gather_work_rate;
+    int has_gather_carry;
+    int gather_carry;
+    int has_gather_drop_sites;
+    int gather_drop_sites[2];
+    int has_gather_minimap_color;
+    int gather_minimap_color;
+    int has_gather_deposit_slp;
+    int32_t gather_deposit_slp;
+    int has_gather_carry_male_slp;
+    int32_t gather_carry_male_slp;
+    int has_gather_carry_female_slp;
+    int32_t gather_carry_female_slp;
+    int gather_dep_id;
+    int gather_male_id;
+    int gather_female_id;
 } WlCustomRes;
 
 // Builder extension state: tracks slots/strings/lua/icons/custom resources across all civs (mirroring ext dict in build.py)
@@ -839,6 +874,7 @@ typedef struct {
     size_t max_res;
     size_t cu_k;
     size_t cu_total;
+    size_t gather_slots;
 } WlBuildExt;
 
 static void wl_ext_init(WlBuildExt *ext) {
@@ -1237,6 +1273,64 @@ static int wl_replace_civ_units(WlDatCiv *civ, int u1, const uint8_t *data1, siz
             new_offsets[u] = (uint32_t)cur_pos;
             memcpy(new_data + cur_pos, data2, len2);
             cur_pos += len2;
+        } else if (civ->unit_offsets[u] != 0) {
+            new_offsets[u] = (uint32_t)cur_pos;
+            size_t u_len = wl_calc_unit_len(civ->data, civ->unit_offsets[u]);
+            memcpy(new_data + cur_pos, civ->data + civ->unit_offsets[u], u_len);
+            cur_pos += u_len;
+        } else {
+            new_offsets[u] = 0;
+        }
+    }
+
+    free(civ->data);
+    free(civ->unit_offsets);
+    civ->data = new_data;
+    civ->unit_offsets = new_offsets;
+    civ->size = new_total_size;
+    return 0;
+}
+
+// Replaces a single unit slot in `civ` with `data` (ptr=1), or removes it when `data == NULL` (ptr=0).
+static int wl_set_civ_unit_or_clear(WlDatCiv *civ, int slot, const uint8_t *data, size_t len,
+                                    char *err, size_t errcap) {
+    size_t hdr_len = 30 + (size_t)civ->resource_count * 4 + (size_t)civ->unit_count * 4;
+    size_t new_total_size = hdr_len;
+    for (size_t u = 0; u < civ->unit_count; u++) {
+        if (u == (size_t)slot) {
+            if (data) new_total_size += len;
+        } else if (civ->unit_offsets[u] != 0) {
+            new_total_size += wl_calc_unit_len(civ->data, civ->unit_offsets[u]);
+        }
+    }
+
+    uint8_t *new_data = malloc(new_total_size);
+    if (!new_data) {
+        snprintf(err, errcap, "out of memory allocating new civ units data");
+        return -1;
+    }
+    uint32_t *new_offsets = malloc(civ->unit_count * sizeof(uint32_t));
+    if (!new_offsets) {
+        free(new_data);
+        snprintf(err, errcap, "out of memory allocating new civ unit offsets");
+        return -1;
+    }
+
+    memcpy(new_data, civ->data, hdr_len);
+    size_t uptrs_off = 30 + (size_t)civ->resource_count * 4;
+    int32_t ptr_val = data ? 1 : 0;
+    memcpy(new_data + uptrs_off + (size_t)slot * 4, &ptr_val, 4);
+
+    size_t cur_pos = hdr_len;
+    for (size_t u = 0; u < civ->unit_count; u++) {
+        if (u == (size_t)slot) {
+            if (data) {
+                new_offsets[u] = (uint32_t)cur_pos;
+                memcpy(new_data + cur_pos, data, len);
+                cur_pos += len;
+            } else {
+                new_offsets[u] = 0;
+            }
         } else if (civ->unit_offsets[u] != 0) {
             new_offsets[u] = (uint32_t)cur_pos;
             size_t u_len = wl_calc_unit_len(civ->data, civ->unit_offsets[u]);
@@ -1741,7 +1835,12 @@ static int wl_find_custom_resources(const char *mods_dir, WlBuildExt *ext, char 
         return -1;
     }
     static const char *const vanilla_names[4] = { "food", "wood", "stone", "gold" };
-    static const char *const known_keys[7] = { "id", "name", "icon", "start", "max", "show", "description" };
+    static const char *const known_keys[10] = { "id", "name", "icon", "start", "max", "show", "hidden", "game_mode", "description", "gather" };
+    static const char *const known_gather_keys[11] = {
+        "deposit_name", "amount", "copy_from", "miner_name",
+        "work_rate", "carry", "drop_sites", "minimap_color",
+        "deposit_slp", "carry_male_slp", "carry_female_slp"
+    };
 
     for (size_t m = 0; m < mod_count; m++) {
         const char *mod = mod_names[m];
@@ -1806,7 +1905,7 @@ static int wl_find_custom_resources(const char *mods_dir, WlBuildExt *ext, char 
                 const char *mk = r->u.obj.members[mi].key;
                 if (mk[0] == '_') continue;
                 int ok = 0;
-                for (int ki = 0; ki < 7; ki++) {
+                for (int ki = 0; ki < 10; ki++) {
                     if (strcmp(mk, known_keys[ki]) == 0) { ok = 1; break; }
                 }
                 if (!ok) {
@@ -1909,6 +2008,31 @@ static int wl_find_custom_resources(const char *mods_dir, WlBuildExt *ext, char 
                 rshow = sh_v->u.bool_val ? 1 : 0;
             }
 
+            int rhidden = 0;
+            const WlJsonVal *hd_v = wl_json_get(r, "hidden");
+            if (hd_v && hd_v->type != WL_JSON_NULL) {
+                if (hd_v->type != WL_JSON_BOOL) {
+                    snprintf(err, errcap, "%s: hidden must be a boolean", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                rhidden = hd_v->u.bool_val ? 1 : 0;
+            }
+
+            const char *rgmode = "";
+            const WlJsonVal *gm_v = wl_json_get(r, "game_mode");
+            if (gm_v && gm_v->type != WL_JSON_NULL) {
+                if (gm_v->type != WL_JSON_STRING || strlen(gm_v->u.str) > 64 ||
+                    strchr(gm_v->u.str, '\t') || strchr(gm_v->u.str, '\n') || strchr(gm_v->u.str, '\r')) {
+                    snprintf(err, errcap, "%s: game_mode must be a string (max 64 chars, no tab/newline)", w);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                rgmode = gm_v->u.str;
+            }
+
             const char *rdesc = "";
             const WlJsonVal *ds_v = wl_json_get(r, "description");
             if (ds_v && ds_v->type != WL_JSON_NULL) {
@@ -1919,6 +2043,190 @@ static int wl_find_custom_resources(const char *mods_dir, WlBuildExt *ext, char 
                     return -1;
                 }
                 rdesc = ds_v->u.str;
+            }
+
+            int has_gather = 0;
+            char g_dep_name[144] = "";
+            char g_miner_name[144] = "";
+            char gw[540] = "";
+            int g_has_amount = 0;
+            float g_amount = 0.0f;
+            int g_copy_from = 66;
+            int g_has_wr = 0;
+            float g_wr = 0.0f;
+            int g_has_carry = 0;
+            int g_carry = 0;
+            int g_has_ds = 0;
+            int g_ds[2] = { -1, -1 };
+            int g_has_mc = 0;
+            int g_mc = 0;
+            int g_has_dep_slp = 0;
+            int32_t g_dep_slp = 0;
+            int g_has_cm_slp = 0;
+            int32_t g_cm_slp = 0;
+            int g_has_cf_slp = 0;
+            int32_t g_cf_slp = 0;
+
+            const WlJsonVal *gv = wl_json_get(r, "gather");
+            if (gv && gv->type != WL_JSON_NULL) {
+                snprintf(gw, sizeof(gw), "%.500s gather", w);
+                if (gv->type != WL_JSON_OBJECT) {
+                    snprintf(err, errcap, "%s: must be an object", gw);
+                    wl_json_free(meta);
+                    wl_free_dir_list(mod_names, mod_count);
+                    return -1;
+                }
+                for (size_t mi = 0; mi < gv->u.obj.count; mi++) {
+                    const char *gk = gv->u.obj.members[mi].key;
+                    if (gk[0] == '_') continue;
+                    int ok = 0;
+                    for (int ki = 0; ki < 11; ki++) {
+                        if (strcmp(gk, known_gather_keys[ki]) == 0) { ok = 1; break; }
+                    }
+                    if (!ok) {
+                        snprintf(err, errcap, "%s: unknown key '%s'", gw, gk);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                }
+
+                const WlJsonVal *dn_v = wl_json_get(gv, "deposit_name");
+                if (!dn_v || dn_v->type == WL_JSON_NULL) {
+                    snprintf(g_dep_name, sizeof(g_dep_name), "%s Deposit", rname);
+                } else {
+                    if (dn_v->type != WL_JSON_STRING || !dn_v->u.str || !dn_v->u.str[0] ||
+                        strlen(dn_v->u.str) > 128 || strchr(dn_v->u.str, '\t') ||
+                        strchr(dn_v->u.str, '\n') || strchr(dn_v->u.str, '\r')) {
+                        snprintf(err, errcap, "%s: deposit_name must be a non-empty string (max 128 chars, no tab/newline)", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    snprintf(g_dep_name, sizeof(g_dep_name), "%s", dn_v->u.str);
+                }
+
+                const WlJsonVal *mn_v = wl_json_get(gv, "miner_name");
+                if (!mn_v || mn_v->type == WL_JSON_NULL) {
+                    snprintf(g_miner_name, sizeof(g_miner_name), "%s Miner", rname);
+                } else {
+                    if (mn_v->type != WL_JSON_STRING || !mn_v->u.str || !mn_v->u.str[0] ||
+                        strlen(mn_v->u.str) > 128 || strchr(mn_v->u.str, '\t') ||
+                        strchr(mn_v->u.str, '\n') || strchr(mn_v->u.str, '\r')) {
+                        snprintf(err, errcap, "%s: miner_name must be a non-empty string (max 128 chars, no tab/newline)", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    snprintf(g_miner_name, sizeof(g_miner_name), "%s", mn_v->u.str);
+                }
+
+                const WlJsonVal *am_v = wl_json_get(gv, "amount");
+                if (am_v && am_v->type != WL_JSON_NULL) {
+                    if (am_v->type != WL_JSON_NUMBER ||
+                        !(am_v->u.num.dval >= 1.0 && am_v->u.num.dval <= 65535.0)) {
+                        snprintf(err, errcap, "%s: amount must be a number 1..65535", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    g_has_amount = 1;
+                    g_amount = (float)am_v->u.num.dval;
+                }
+
+                const WlJsonVal *cf_v = wl_json_get(gv, "copy_from");
+                if (cf_v && cf_v->type != WL_JSON_NULL) {
+                    if (cf_v->type != WL_JSON_NUMBER || cf_v->u.num.is_float || cf_v->u.num.ival < 0 || cf_v->u.num.ival > 65535) {
+                        snprintf(err, errcap, "%s: copy_from must be a non-negative integer", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    g_copy_from = (int)cf_v->u.num.ival;
+                }
+
+                const WlJsonVal *wr_v = wl_json_get(gv, "work_rate");
+                if (wr_v && wr_v->type != WL_JSON_NULL) {
+                    if (wr_v->type != WL_JSON_NUMBER ||
+                        !(wr_v->u.num.dval > 0.0 && wr_v->u.num.dval <= 1000.0)) {
+                        snprintf(err, errcap, "%s: work_rate must be a number > 0 and <= 1000", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    g_has_wr = 1;
+                    g_wr = (float)wr_v->u.num.dval;
+                }
+
+                const WlJsonVal *ca_v = wl_json_get(gv, "carry");
+                if (ca_v && ca_v->type != WL_JSON_NULL) {
+                    if (ca_v->type != WL_JSON_NUMBER || ca_v->u.num.is_float ||
+                        ca_v->u.num.ival < 1 || ca_v->u.num.ival > 32767) {
+                        snprintf(err, errcap, "%s: carry must be an integer 1..32767", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    g_has_carry = 1;
+                    g_carry = (int)ca_v->u.num.ival;
+                }
+
+                const WlJsonVal *dsv = wl_json_get(gv, "drop_sites");
+                if (dsv && dsv->type != WL_JSON_NULL) {
+                    if (dsv->type != WL_JSON_ARRAY || dsv->u.arr.count < 1 || dsv->u.arr.count > 2) {
+                        snprintf(err, errcap, "%s: drop_sites must be a list of 1 or 2 unit ids", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    for (size_t di = 0; di < dsv->u.arr.count; di++) {
+                        const WlJsonVal *dv = dsv->u.arr.items[di];
+                        if (!dv || dv->type != WL_JSON_NUMBER || dv->u.num.is_float || dv->u.num.ival < 0 || dv->u.num.ival > 32767) {
+                            snprintf(err, errcap, "%s: drop_sites[%zu] must be a non-negative integer", gw, di);
+                            wl_json_free(meta);
+                            wl_free_dir_list(mod_names, mod_count);
+                            return -1;
+                        }
+                        g_ds[di] = (int)dv->u.num.ival;
+                    }
+                    if (dsv->u.arr.count == 1) g_ds[1] = -1;
+                    g_has_ds = 1;
+                }
+
+                const WlJsonVal *mc_v = wl_json_get(gv, "minimap_color");
+                if (mc_v && mc_v->type != WL_JSON_NULL) {
+                    if (mc_v->type != WL_JSON_NUMBER || mc_v->u.num.is_float ||
+                        mc_v->u.num.ival < 0 || mc_v->u.num.ival > 255) {
+                        snprintf(err, errcap, "%s: minimap_color must be an integer 0..255", gw);
+                        wl_json_free(meta);
+                        wl_free_dir_list(mod_names, mod_count);
+                        return -1;
+                    }
+                    g_has_mc = 1;
+                    g_mc = (int)mc_v->u.num.ival;
+                }
+
+                const struct { const char *k; int *has; int32_t *out; } slp_fields[3] = {
+                    { "deposit_slp", &g_has_dep_slp, &g_dep_slp },
+                    { "carry_male_slp", &g_has_cm_slp, &g_cm_slp },
+                    { "carry_female_slp", &g_has_cf_slp, &g_cf_slp },
+                };
+                for (int si = 0; si < 3; si++) {
+                    const WlJsonVal *sv = wl_json_get(gv, slp_fields[si].k);
+                    if (sv && sv->type != WL_JSON_NULL) {
+                        if (sv->type != WL_JSON_NUMBER || sv->u.num.is_float ||
+                            sv->u.num.ival <= 0 || sv->u.num.ival >= 2147483647LL) {
+                            snprintf(err, errcap, "%s: %s must be a positive integer", gw, slp_fields[si].k);
+                            wl_json_free(meta);
+                            wl_free_dir_list(mod_names, mod_count);
+                            return -1;
+                        }
+                        *slp_fields[si].has = 1;
+                        *slp_fields[si].out = (int32_t)sv->u.num.ival;
+                    }
+                }
+
+                has_gather = 1;
             }
 
             int rid = WL_CUSTOM_RES_FIRST + (int)ext->custom_res_count;
@@ -1951,6 +2259,33 @@ static int wl_find_custom_resources(const char *mods_dir, WlBuildExt *ext, char 
             cr->start = rstart;
             cr->max = rmax;
             cr->show = rshow;
+            cr->hidden = rhidden;
+            snprintf(cr->game_mode, sizeof(cr->game_mode), "%s", rgmode);
+            cr->has_gather = has_gather;
+            if (has_gather) {
+                snprintf(cr->gather_deposit_name, sizeof(cr->gather_deposit_name), "%s", g_dep_name);
+                snprintf(cr->gather_miner_name, sizeof(cr->gather_miner_name), "%s", g_miner_name);
+                snprintf(cr->gather_where, sizeof(cr->gather_where), "%s", gw);
+                cr->has_gather_amount = g_has_amount;
+                cr->gather_amount = g_amount;
+                cr->gather_copy_from = g_copy_from;
+                cr->has_gather_work_rate = g_has_wr;
+                cr->gather_work_rate = g_wr;
+                cr->has_gather_carry = g_has_carry;
+                cr->gather_carry = g_carry;
+                cr->has_gather_drop_sites = g_has_ds;
+                cr->gather_drop_sites[0] = g_ds[0];
+                cr->gather_drop_sites[1] = g_ds[1];
+                cr->has_gather_minimap_color = g_has_mc;
+                cr->gather_minimap_color = g_mc;
+                cr->has_gather_deposit_slp = g_has_dep_slp;
+                cr->gather_deposit_slp = g_dep_slp;
+                cr->has_gather_carry_male_slp = g_has_cm_slp;
+                cr->gather_carry_male_slp = g_cm_slp;
+                cr->has_gather_carry_female_slp = g_has_cf_slp;
+                cr->gather_carry_female_slp = g_cf_slp;
+                ext->gather_slots += 3;
+            }
             cr->description = malloc(strlen(rdesc) + 1);
             if (!cr->description) {
                 ext->custom_res_count--;
@@ -3028,7 +3363,7 @@ static int wl_cmd_train(const WlGfxCtx *gctx, WlDatCiv *civ, const WlDatCiv *civ
     }
     int slot = 1400 - (int)ext->slots;
     ext->slots++;
-    if (slot < 1300 || slot <= 1225 + 2 * (int)uu_total + (int)ext->cu_total) {
+    if (slot < 1300 || slot <= 1225 + 2 * (int)uu_total + (int)ext->cu_total + (int)ext->gather_slots) {
         snprintf(err, errcap, "%s: no free unit slot left (1300..1400)", w);
         return -1;
     }
@@ -3512,7 +3847,7 @@ static int wl_add_unique_building(
     int sid_base = game_civ ? (ext_sid - 10) : (28500 + (cid - 35) * 20);
 
     int B = 1400 - (int)ub_k;
-    if (B < 1300 || B <= 1225 + 2 * (int)uu_total + (int)ext->cu_total) {   // buildpage.c treats 1300..1400 as mod buildings
+    if (B < 1300 || B <= 1225 + 2 * (int)uu_total + (int)ext->cu_total + (int)ext->gather_slots) {   // buildpage.c treats 1300..1400 as mod buildings
         snprintf(err, errcap, "%s: unique building slot %d collides with unique unit slots", where, B);
         return -1;
     }
@@ -5727,6 +6062,327 @@ static int wl_apply_civ_json(WlDatCiv *civs, size_t *civs_count, size_t civs_cap
 }
 
 // ==========================================================================
+// Gatherable Custom Resources (mirrors apply_gather_resources in build.py)
+// ==========================================================================
+
+static void wl_free_uheaders(WlUnitHeader *uheaders, size_t uh_cnt) {
+    if (!uheaders) return;
+    for (size_t u = 0; u < uh_cnt; u++) {
+        free(uheaders[u].owned_cmds);
+    }
+    free(uheaders);
+}
+
+static int wl_clone_unit_renamed(const WlDatCiv *civ, int src_id, int dst_id,
+                                 const char *un, size_t un_len,
+                                 uint8_t **out_u, size_t *out_len, size_t *out_s2,
+                                 char *err, size_t errcap) {
+    size_t len = wl_calc_unit_len(civ->data, civ->unit_offsets[src_id]);
+    const uint8_t *s = civ->data + civ->unit_offsets[src_id];
+    size_t name_off = 150 + (size_t)s[149] * 5 + 6;
+    size_t old_nl = (size_t)(uint16_t)(s[1] | (s[2] << 8));
+    size_t nlen = len - old_nl + un_len;
+    uint8_t *u = malloc(nlen);
+    if (!u) {
+        snprintf(err, errcap, "out of memory");
+        return -1;
+    }
+    memcpy(u, s, name_off);
+    memcpy(u + name_off, un, un_len);
+    memcpy(u + name_off + un_len, s + name_off + old_nl, len - name_off - old_nl);
+    wl_put16(u + 1, (int)un_len);
+    wl_put16(u + 3, dst_id);
+    wl_put16(u + name_off + un_len, dst_id);
+    wl_put16(u + name_off + un_len + 2, dst_id);
+    *out_u = u;
+    *out_len = nlen;
+    if (out_s2) *out_s2 = name_off + un_len;
+    return 0;
+}
+
+static int wl_uheader_copy(WlUnitHeader *dst, const WlUnitHeader *src, char *err, size_t errcap) {
+    free(dst->owned_cmds);
+    dst->owned_cmds = NULL;
+    dst->orig_cmds = NULL;
+    dst->exists = src->exists;
+    dst->cmd_count = src->cmd_count;
+    if (src->exists && src->cmd_count > 0) {
+        const uint8_t *sc = src->owned_cmds ? src->owned_cmds : src->orig_cmds;
+        size_t bytes = (size_t)src->cmd_count * 59;
+        dst->owned_cmds = malloc(bytes);
+        if (!dst->owned_cmds) {
+            snprintf(err, errcap, "out of memory");
+            return -1;
+        }
+        memcpy(dst->owned_cmds, sc, bytes);
+    }
+    return 0;
+}
+
+static int wl_uheader_clone_miner(WlUnitHeader *dst, const WlUnitHeader *src,
+                                  const WlGfxCtx *gctx, int has_carry_slp, int32_t carry_slp,
+                                  int dep_id, int rid, int tmpl_id,
+                                  const char *gw, char *err, size_t errcap) {
+    if (!src->exists || src->cmd_count == 0) {
+        snprintf(err, errcap, "%s: template miner unit header %d has no commands", gw, tmpl_id);
+        return -1;
+    }
+    const uint8_t *sc = src->owned_cmds ? src->owned_cmds : src->orig_cmds;
+    uint8_t *new_cmds = malloc((size_t)src->cmd_count * 59);
+    if (!new_cmds) {
+        snprintf(err, errcap, "out of memory");
+        return -1;
+    }
+    uint16_t kept = 0;
+    int found_gather = 0;
+    for (uint16_t i = 0; i < src->cmd_count; i++) {
+        const uint8_t *c = sc + (size_t)i * 59;
+        int16_t ctype = (int16_t)(c[5] | (c[6] << 8));
+        if (ctype == 110) continue;  // drop ROCKGX (841) task
+        uint8_t *d = new_cmds + (size_t)kept * 59;
+        memcpy(d, c, 59);
+        wl_put16(d + 2, (int)kept);  // id
+        if (ctype == 5) {
+            wl_put16(d + 7, -1);      // class_id
+            wl_put16(d + 9, dep_id);  // unit_id
+            wl_put16(d + 11, -1);     // terrain_id
+            wl_put16(d + 13, rid);    // resource_in
+            wl_put16(d + 15, -1);     // resource_productivity_multiplier (-1 = 1.0f)
+            wl_put16(d + 17, rid);    // resource_out
+            if (has_carry_slp) {
+                int16_t src_cgid = (int16_t)(d[53] | (d[54] << 8));  // graphics[3] = carrying_graphic
+                if (src_cgid >= 0) {
+                    int new_cgid = -1;
+                    int32_t mapped = wl_slp_map(carry_slp);
+                    if (wl_gfx_add(gctx, src_cgid, mapped, -1, -1, &new_cgid, gw, err, errcap) != 0) {
+                        free(new_cmds);
+                        return -1;
+                    }
+                    wl_put16(d + 53, new_cgid);
+                }
+            }
+            found_gather = 1;
+        }
+        kept++;
+    }
+    if (!found_gather) {
+        free(new_cmds);
+        snprintf(err, errcap, "%s: template miner unit header %d has no Gather (type 5) task", gw, tmpl_id);
+        return -1;
+    }
+    free(dst->owned_cmds);
+    dst->exists = 1;
+    dst->cmd_count = kept;
+    dst->orig_cmds = NULL;
+    dst->owned_cmds = new_cmds;
+    return 0;
+}
+
+static int wl_apply_gather_resources(WlDatCiv *civs, size_t cur_civ_count,
+                                     const WlGfxCtx *gctx,
+                                     WlUnitHeader *uheaders, size_t uh_cnt,
+                                     size_t uu_total, WlBuildExt *ext,
+                                     char *err, size_t errcap) {
+    size_t g_k = 0;
+    for (size_t i = 0; i < ext->custom_res_count; i++) {
+        WlCustomRes *cr = &ext->custom_res[i];
+        if (!cr->has_gather) continue;
+        const char *gw = cr->gather_where;
+        int dep_id = 1224 + 2 * (int)uu_total + (int)ext->cu_total + 3 * (int)g_k;
+        int male_id = dep_id + 1;
+        int female_id = dep_id + 2;
+        g_k++;
+
+        if (female_id > 1400) {
+            snprintf(err, errcap, "%s: gather unit slot %d exceeds 1400", gw, female_id);
+            return -1;
+        }
+        if (female_id > 1400 - (int)ext->slots) {
+            snprintf(err, errcap, "%s: gather unit slot %d collides with unique building slots", gw, female_id);
+            return -1;
+        }
+        if ((size_t)female_id >= uh_cnt) {
+            snprintf(err, errcap, "%s: gather unit slot %d exceeds unit header count", gw, female_id);
+            return -1;
+        }
+        if (wl_check_reserved(civs, dep_id, gw, err, errcap) != 0 ||
+            wl_check_reserved(civs, male_id, gw, err, errcap) != 0 ||
+            wl_check_reserved(civs, female_id, gw, err, errcap) != 0) {
+            return -1;
+        }
+
+        int copy_from = cr->gather_copy_from;
+        if (copy_from < 0 || (size_t)copy_from >= civs[0].unit_count || civs[0].unit_offsets[copy_from] == 0) {
+            snprintf(err, errcap, "%s: copy_from unit %d does not exist in Gaia", gw, copy_from);
+            return -1;
+        }
+        if ((size_t)copy_from >= uh_cnt) {
+            snprintf(err, errcap, "%s: copy_from unit %d exceeds unit header count", gw, copy_from);
+            return -1;
+        }
+        if (cr->has_gather_drop_sites) {
+            for (int di = 0; di < 2; di++) {
+                int ds = cr->gather_drop_sites[di];
+                if (ds >= 0 && (size_t)ds >= civs[1].unit_count) {
+                    snprintf(err, errcap, "%s: drop_sites unit %d out of range", gw, ds);
+                    return -1;
+                }
+            }
+        }
+
+        char dep_uname[32], miner_uname[32];
+        size_t dep_ulen = 0, miner_ulen = 0;
+        if (wl_make_unit_name(cr->gather_deposit_name, gw, dep_uname, &dep_ulen, err, errcap) != 0 ||
+            wl_make_unit_name(cr->gather_miner_name, gw, miner_uname, &miner_ulen, err, errcap) != 0) {
+            return -1;
+        }
+
+        int sid_dep = wl_new_sids(ext, err, errcap);
+        if (sid_dep < 0) return -1;
+        if (wl_ext_add_string(ext, sid_dep, cr->gather_deposit_name, err, errcap) != 0 ||
+            wl_ext_add_string(ext, sid_dep + 1, cr->gather_deposit_name, err, errcap) != 0 ||
+            wl_ext_add_string(ext, sid_dep + 2, cr->gather_deposit_name, err, errcap) != 0) {
+            return -1;
+        }
+        int sid_miner = wl_new_sids(ext, err, errcap);
+        if (sid_miner < 0) return -1;
+        if (wl_ext_add_string(ext, sid_miner, cr->gather_miner_name, err, errcap) != 0 ||
+            wl_ext_add_string(ext, sid_miner + 1, cr->gather_miner_name, err, errcap) != 0 ||
+            wl_ext_add_string(ext, sid_miner + 2, cr->gather_miner_name, err, errcap) != 0) {
+            return -1;
+        }
+
+        // Section 9: UnitHeaders for deposit (mirrors copy_from) and male/female miners (from 579/581).
+        if (wl_uheader_copy(&uheaders[dep_id], &uheaders[copy_from], err, errcap) != 0) return -1;
+        if (WL_GATHER_MALE_TEMPLATE >= uh_cnt || WL_GATHER_FEMALE_TEMPLATE >= uh_cnt) {
+            snprintf(err, errcap, "%s: template miner unit header out of range", gw);
+            return -1;
+        }
+        if (wl_uheader_clone_miner(&uheaders[male_id], &uheaders[WL_GATHER_MALE_TEMPLATE],
+                                   gctx, cr->has_gather_carry_male_slp, cr->gather_carry_male_slp,
+                                   dep_id, cr->id, WL_GATHER_MALE_TEMPLATE, gw, err, errcap) != 0 ||
+            wl_uheader_clone_miner(&uheaders[female_id], &uheaders[WL_GATHER_FEMALE_TEMPLATE],
+                                   gctx, cr->has_gather_carry_female_slp, cr->gather_carry_female_slp,
+                                   dep_id, cr->id, WL_GATHER_FEMALE_TEMPLATE, gw, err, errcap) != 0) {
+            return -1;
+        }
+
+        int dep_gid = -1;
+        if (cr->has_gather_deposit_slp) {
+            const uint8_t *src_u0 = civs[0].data + civs[0].unit_offsets[copy_from];
+            int16_t src_dep_gid = (int16_t)(src_u0[11] | (src_u0[12] << 8));
+            if (src_dep_gid < 0) {
+                snprintf(err, errcap, "%s: copy_from unit %d has no standing graphic", gw, copy_from);
+                return -1;
+            }
+            int32_t mapped = wl_slp_map(cr->gather_deposit_slp);
+            if (wl_gfx_add(gctx, src_dep_gid, mapped, -1, -1, &dep_gid, gw, err, errcap) != 0) {
+                return -1;
+            }
+        }
+
+        // Section 10: Deposit and male/female miners across all civs.
+        for (size_t c = 0; c < cur_civ_count; c++) {
+            WlDatCiv *civ = &civs[c];
+            if ((size_t)copy_from < civ->unit_count && civ->unit_offsets[copy_from] != 0) {
+                uint8_t *du = NULL;
+                size_t du_len = 0;
+                if (wl_clone_unit_renamed(civ, copy_from, dep_id, dep_uname, dep_ulen,
+                                          &du, &du_len, NULL, err, errcap) != 0) {
+                    return -1;
+                }
+                wl_put16(du + 5, sid_dep);
+                wl_put16(du + 7, sid_dep + 1);
+                if (dep_gid >= 0) {
+                    wl_put16(du + 11, dep_gid);  // standing_graphic[0]
+                }
+                wl_put16(du + 52, 1);  // enabled = 1
+                wl_put32(du + 91, 79000 + sid_dep + 2);
+                wl_put32(du + 95, 150000 + sid_dep);
+                wl_put16(du + 128, cr->id);  // resource_storages[0].type
+                if (cr->has_gather_amount) {
+                    uint32_t af = 0;
+                    memcpy(&af, &cr->gather_amount, sizeof(float));
+                    du[130] = (uint8_t)(af & 0xFF);
+                    du[131] = (uint8_t)((af >> 8) & 0xFF);
+                    du[132] = (uint8_t)((af >> 16) & 0xFF);
+                    du[133] = (uint8_t)((af >> 24) & 0xFF);
+                }
+                // resource_storages[1..2] = (-1, 0.0, 0)
+                wl_put16(du + 135, -1);
+                memset(du + 137, 0, 5);
+                wl_put16(du + 142, -1);
+                memset(du + 144, 0, 5);
+                if (cr->has_gather_minimap_color) {
+                    du[90] = (uint8_t)cr->gather_minimap_color;
+                }
+                int rc = wl_set_civ_unit_or_clear(civ, dep_id, du, du_len, err, errcap);
+                free(du);
+                if (rc != 0) return -1;
+            } else {
+                if (wl_set_civ_unit_or_clear(civ, dep_id, NULL, 0, err, errcap) != 0) return -1;
+            }
+
+            int has_miners = (WL_GATHER_MALE_TEMPLATE < civ->unit_count &&
+                              civ->unit_offsets[WL_GATHER_MALE_TEMPLATE] != 0 &&
+                              WL_GATHER_FEMALE_TEMPLATE < civ->unit_count &&
+                              civ->unit_offsets[WL_GATHER_FEMALE_TEMPLATE] != 0);
+            if (has_miners) {
+                uint8_t *mu = NULL, *fu = NULL;
+                size_t mu_len = 0, fu_len = 0, mu_s2 = 0, fu_s2 = 0;
+                if (wl_clone_unit_renamed(civ, WL_GATHER_MALE_TEMPLATE, male_id, miner_uname, miner_ulen,
+                                          &mu, &mu_len, &mu_s2, err, errcap) != 0 ||
+                    wl_clone_unit_renamed(civ, WL_GATHER_FEMALE_TEMPLATE, female_id, miner_uname, miner_ulen,
+                                          &fu, &fu_len, &fu_s2, err, errcap) != 0) {
+                    free(mu);
+                    free(fu);
+                    return -1;
+                }
+                uint8_t *pair[2] = { mu, fu };
+                size_t pair_s2[2] = { mu_s2, fu_s2 };
+                for (int pi = 0; pi < 2; pi++) {
+                    uint8_t *u = pair[pi];
+                    size_t s2 = pair_s2[pi];
+                    wl_put16(u + 5, sid_miner);
+                    wl_put16(u + 7, sid_miner + 1);
+                    wl_put32(u + 91, 79000 + sid_miner + 2);
+                    wl_put32(u + 95, 150000 + sid_miner);
+                    if (cr->has_gather_work_rate) {
+                        uint32_t wf = 0;
+                        memcpy(&wf, &cr->gather_work_rate, sizeof(float));
+                        u[s2 + 51] = (uint8_t)(wf & 0xFF);
+                        u[s2 + 52] = (uint8_t)((wf >> 8) & 0xFF);
+                        u[s2 + 53] = (uint8_t)((wf >> 16) & 0xFF);
+                        u[s2 + 54] = (uint8_t)((wf >> 24) & 0xFF);
+                    }
+                    if (cr->has_gather_carry) {
+                        wl_put16(u + 75, cr->gather_carry);  // resource_capacity
+                    }
+                    if (cr->has_gather_drop_sites) {
+                        wl_put16(u + s2 + 55, cr->gather_drop_sites[0]);
+                        wl_put16(u + s2 + 57, cr->gather_drop_sites[1]);
+                    }
+                }
+                int rc = wl_replace_civ_units(civ, male_id, mu, mu_len, female_id, fu, fu_len, err, errcap);
+                free(mu);
+                free(fu);
+                if (rc != 0) return -1;
+            } else {
+                if (wl_set_civ_unit_or_clear(civ, male_id, NULL, 0, err, errcap) != 0 ||
+                    wl_set_civ_unit_or_clear(civ, female_id, NULL, 0, err, errcap) != 0) {
+                    return -1;
+                }
+            }
+        }
+
+        cr->gather_dep_id = dep_id;
+        cr->gather_male_id = male_id;
+        cr->gather_female_id = female_id;
+    }
+    return 0;
+}
+
+// ==========================================================================
 // Main API Entry Point: wl_dat_build
 // ==========================================================================
 
@@ -5954,22 +6610,30 @@ int wl_dat_build(const WlZlib *z,
     }
     size_t orig_effects_end = pos;
 
-    // Section 9: Unit Headers.
+    // Section 9: Unit Headers (MODIFIED when gatherable custom resources exist).
     // Layout:
     //   - header_count (uint32_t, 4 bytes)
     //   - for each header: exists flag (1 byte). If non-zero, command_count (uint16_t) + command_count * 59 bytes.
     if (pos + 4 > orig_len) { free(orig_effects); free(sounds); free(orig); snprintf(err, errcap, "dat truncated"); return -1; }
     uint32_t uh_cnt = (uint32_t)(orig[pos] | (orig[pos + 1] << 8) | (orig[pos + 2] << 16) | (orig[pos + 3] << 24));
     pos += 4;
+    WlUnitHeader *uheaders = calloc(uh_cnt ? uh_cnt : 1, sizeof(WlUnitHeader));
+    if (!uheaders) { free(orig_effects); free(sounds); free(orig); snprintf(err, errcap, "out of memory"); return -1; }
     for (size_t u = 0; u < uh_cnt; u++) {
+        if (pos + 1 > orig_len) { free(uheaders); free(orig_effects); free(sounds); free(orig); snprintf(err, errcap, "dat truncated"); return -1; }
         uint8_t ex = orig[pos++];
+        uheaders[u].exists = ex;
         if (ex) {
+            if (pos + 2 > orig_len) { free(uheaders); free(orig_effects); free(sounds); free(orig); snprintf(err, errcap, "dat truncated"); return -1; }
             uint16_t cc = (uint16_t)(orig[pos] | (orig[pos + 1] << 8));
-            pos += 2 + (size_t)cc * 59;
+            pos += 2;
+            size_t cbytes = (size_t)cc * 59;
+            if (pos + cbytes > orig_len) { free(uheaders); free(orig_effects); free(sounds); free(orig); snprintf(err, errcap, "dat truncated"); return -1; }
+            uheaders[u].cmd_count = cc;
+            uheaders[u].orig_cmds = orig + pos;
+            pos += cbytes;
         }
     }
-
-    size_t civs_start = pos;
 
     // Section 10: Civilizations (MODIFIED SECTION).
     // Layout:
@@ -6117,6 +6781,7 @@ int wl_dat_build(const WlZlib *z,
         wl_ext_free(&ext);
         free(civ_files);
         free(orig_researches);
+        wl_free_uheaders(uheaders, uh_cnt);
         for (size_t i = 0; i < cur_civ_count; i++) wl_free_civ(&civs[i]);
         free(civs);
         for (size_t s = 0; s < snd_cnt; s++) free(sounds[s].items);
@@ -6146,6 +6811,7 @@ int wl_dat_build(const WlZlib *z,
     }
     civs_txt[0] = '\0';
 
+    size_t uu_total = 0;
     if (num_civ_files > 0) {
         // Base dat must have exactly 32 civilizations (0 = Gaia, 1..31 = playable base civs)
         if (base_civ_count != FIRST_RESERVED_ID) {
@@ -6174,7 +6840,6 @@ int wl_dat_build(const WlZlib *z,
         }
 
         // Count uu_total and cu_total first (needed for unique_building slot allocation)
-        size_t uu_total = 0;
         for (size_t f = 0; f < num_civ_files; f++) {
             size_t jlen = 0;
             char *jbytes = wl_read_file(civ_files[f].path, &jlen);
@@ -6278,6 +6943,18 @@ int wl_dat_build(const WlZlib *z,
         }
     }
 
+    // Apply gatherable custom resources (allocates deposit + male/female miner slots after custom units)
+    if (ext.gather_slots > 0) {
+        WlGfxCtx gather_gctx = {
+            orig, graphics_section_offset, g_cnt,
+            &custom_graphics, &custom_graphics_cnt, &custom_graphics_cap
+        };
+        if (wl_apply_gather_resources(civs, cur_civ_count, &gather_gctx, uheaders, uh_cnt, uu_total, &ext, err, errcap) != 0) {
+            free(civs_txt);
+            goto cleanup_err;
+        }
+    }
+
     // Tech tree bytes for the output: re-serialized only when it was parsed
     // (a custom castle unique unit was added); otherwise the original bytes.
     const uint8_t *tt_bytes = orig + tt_start;
@@ -6300,7 +6977,11 @@ int wl_dat_build(const WlZlib *z,
     }
     size_t custom_gfx_len = 0;   // pointer + 78-byte record + deltas/sounds each
     for (size_t i = 0; i < custom_graphics_cnt; i++) custom_gfx_len += 4 + 78 + custom_graphics[i].extra_len;
-    size_t s9_len = civs_start - orig_effects_end;
+    size_t s9_len = 4;
+    for (size_t u = 0; u < uh_cnt; u++) {
+        s9_len += 1;
+        if (uheaders[u].exists) s9_len += 2 + (size_t)uheaders[u].cmd_count * 59;
+    }
     // Section 11: Researches = original count+bodies, then the unique unit
     // researches appended by wl_apply_civ_json (62-byte header + name each).
     // Everything after the researches is the tech tree (tt_bytes: original, or re-serialized).
@@ -6415,8 +7096,24 @@ int wl_dat_build(const WlZlib *z,
     }
 
     // 5. Section 9: Unit Headers
-    memcpy(new_decomp + dpos, orig + orig_effects_end, s9_len);
-    dpos += s9_len;
+    new_decomp[dpos++] = (uint8_t)(uh_cnt & 0xFF);
+    new_decomp[dpos++] = (uint8_t)((uh_cnt >> 8) & 0xFF);
+    new_decomp[dpos++] = (uint8_t)((uh_cnt >> 16) & 0xFF);
+    new_decomp[dpos++] = (uint8_t)((uh_cnt >> 24) & 0xFF);
+    for (size_t u = 0; u < uh_cnt; u++) {
+        new_decomp[dpos++] = uheaders[u].exists;
+        if (uheaders[u].exists) {
+            uint16_t cc = uheaders[u].cmd_count;
+            new_decomp[dpos++] = (uint8_t)(cc & 0xFF);
+            new_decomp[dpos++] = (uint8_t)((cc >> 8) & 0xFF);
+            if (cc > 0) {
+                const uint8_t *src_cmds = uheaders[u].owned_cmds ? uheaders[u].owned_cmds : uheaders[u].orig_cmds;
+                size_t cbytes = (size_t)cc * 59;
+                memcpy(new_decomp + dpos, src_cmds, cbytes);
+                dpos += cbytes;
+            }
+        }
+    }
 
     // 6. Civilizations (Section 10: Base civs + Placeholders 32..34 + Custom Civs)
     new_decomp[dpos++] = (uint8_t)(cur_civ_count & 0xFF);
@@ -6565,8 +7262,9 @@ int wl_dat_build(const WlZlib *z,
             wl_fmt_res_float(cr->start, s_start, sizeof(s_start));
             wl_fmt_res_float(cr->max, s_max, sizeof(s_max));
             const char *desc = cr->description ? cr->description : "";
-            size_t need = rlen + 64 + strlen(cr->mod) + strlen(cr->key) + strlen(cr->name) +
-                          strlen(cr->icon) + strlen(s_start) + strlen(s_max) + 2 * strlen(desc);
+            size_t need = rlen + 96 + strlen(cr->mod) + strlen(cr->key) + strlen(cr->name) +
+                          strlen(cr->icon) + strlen(s_start) + strlen(s_max) + 2 * strlen(desc) +
+                          strlen(cr->game_mode);
             if (need > rcap) {
                 char *nb = realloc(rbuf, need * 2);
                 if (!nb) {
@@ -6586,7 +7284,7 @@ int wl_dat_build(const WlZlib *z,
                 else if (*p == '\t') rbuf[rlen++] = ' ';
                 else rbuf[rlen++] = *p;
             }
-            rbuf[rlen++] = '\n';
+            rlen += (size_t)sprintf(rbuf + rlen, "\t%d\t%s\n", cr->hidden, cr->game_mode);
         }
         if (wl_atomic_write_file(out_resources_txt, rbuf, rlen, err, errcap) != 0) {
             free(rbuf);
@@ -6595,11 +7293,54 @@ int wl_dat_build(const WlZlib *z,
         free(rbuf);
     }
 
+    // Write gather.txt next to civs.txt (key<TAB>resource_id<TAB>deposit_id<TAB>male_id<TAB>female_id)
+    {
+        char out_gather_txt[2048];
+        size_t clen = strlen(out_civs_txt);
+        if (clen >= 8 && strcmp(out_civs_txt + clen - 8, "civs.txt") == 0 && clen + 8 < sizeof(out_gather_txt)) {
+            memcpy(out_gather_txt, out_civs_txt, clen - 8);
+            strcpy(out_gather_txt + clen - 8, "gather.txt");
+        } else {
+            snprintf(out_gather_txt, sizeof(out_gather_txt), "%.1900s.gather.txt", out_dat);
+        }
+        size_t gcap = 1024, glen = 0;
+        char *gbuf = malloc(gcap);
+        if (!gbuf) {
+            snprintf(err, errcap, "out of memory");
+            goto cleanup_err;
+        }
+        gbuf[0] = '\0';
+        for (size_t i = 0; i < ext.custom_res_count; i++) {
+            const WlCustomRes *cr = &ext.custom_res[i];
+            if (!cr->has_gather) continue;
+            size_t need = glen + 64 + strlen(cr->key);
+            if (need > gcap) {
+                char *nb = realloc(gbuf, need * 2);
+                if (!nb) {
+                    free(gbuf);
+                    snprintf(err, errcap, "out of memory");
+                    goto cleanup_err;
+                }
+                gbuf = nb;
+                gcap = need * 2;
+            }
+            glen += (size_t)sprintf(gbuf + glen, "%s\t%d\t%d\t%d\t%d\n",
+                                    cr->key, cr->id, cr->gather_dep_id,
+                                    cr->gather_male_id, cr->gather_female_id);
+        }
+        if (wl_atomic_write_file(out_gather_txt, gbuf, glen, err, errcap) != 0) {
+            free(gbuf);
+            goto cleanup_err;
+        }
+        free(gbuf);
+    }
+
     // Cleanup resources
     wl_ext_free(&ext);
     for (size_t i = 0; i < custom_researches_cnt; i++) free(custom_researches[i].name);
     free(custom_researches);
     free(orig_researches);
+    wl_free_uheaders(uheaders, uh_cnt);
     for (size_t i = 0; i < custom_effects_cnt; i++) free(custom_effects[i].commands);
     free(custom_effects);
     free(orig_effects);
@@ -6620,6 +7361,7 @@ cleanup_err:
     for (size_t i = 0; i < custom_researches_cnt; i++) free(custom_researches[i].name);
     free(custom_researches);
     free(orig_researches);
+    wl_free_uheaders(uheaders, uh_cnt);
     for (size_t i = 0; i < custom_effects_cnt; i++) free(custom_effects[i].commands);
     free(custom_effects);
     free(orig_effects);

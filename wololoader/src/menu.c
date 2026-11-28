@@ -2,6 +2,7 @@
 // Detours MainMenuScreen::MainMenuScreen (0x6e0c30) and, after the original
 // constructor ran, adds a TextPanel through the screen's own text factory.
 // Addresses verified against AoK HD.exe 5.8 (see re/FINDINGS.md).
+#include "modsettings.h"
 #include "wololoader.h"
 #include <stdio.h>
 
@@ -65,6 +66,14 @@ static void add_label(void *screen) {
 static void *__fastcall hook_mainmenu_ctor(void *self, void *edx, void *a, void *b) {
     (void)edx;
     void *r = g_orig_ctor(self, a, b);
+    // Back at the main menu: a multiplayer lobby's host settings (mpcheck.c) end here and the
+    // player's own mod settings return.
+    if (wl_settings_session_clear()) {
+        wl_script_refresh_settings();
+        wl_basemod_reload();
+        wl_content_checksum_invalidate();
+        wl_log("mpcheck: back to the player's own mod settings");
+    }
     // The dat (and so the mod build) is loaded before the main menu exists,
     // so a failed build is known here: say so instead of "N mods loaded".
     if (!g_wl_vanilla && g_wl_build_error[0])
@@ -78,8 +87,9 @@ void wl_install_menu_hooks(void) {
     if (g_wl_vanilla)
         snprintf(g_label, sizeof g_label, "Wololoader v%s - Vanilla Mode (mods off)", WOLOLOADER_VERSION);
     else
-        snprintf(g_label, sizeof g_label, "Wololoader v%s - %d mod%s loaded",
-                 WOLOLOADER_VERSION, g_wl.mod_count, g_wl.mod_count == 1 ? "" : "s");
+        snprintf(g_label, sizeof g_label, "Wololoader v%s - %d mod%s loaded%s",
+                 WOLOLOADER_VERSION, g_wl.mod_count, g_wl.mod_count == 1 ? "" : "s",
+                 wl_mp_rehearsal() ? " - MP rehearsal" : "");
     // 55 8b ec 6a ff = push ebp; mov ebp,esp; push -1  (5 bytes, no relocs)
     g_orig_ctor = (MainMenuCtor_t)wl_hook(ADDR_MAINMENU_CTOR, hook_mainmenu_ctor, 5);
     if (!g_orig_ctor) wl_log("Main menu hook FAILED");

@@ -6,6 +6,18 @@
 // Verified addresses / offsets (AoK HD.exe 5.8, re-verified via objdump):
 // - [screen + 0xb0c] = TRIBE_Panel_Inven* (panel rect: +0xb8 x, +0xbc y, +0xc0 w, +0xc4 h;
 //   font wrapper ptr at +0x15c, HFONT at [wrapper + 8], verified 0x712ee4).
+// - [screen + 0xb10] = TRIBE_Panel_Object* (verified in GameScreen::ctor at 0x6b4651:
+//   89 87 10 0b 00 00, right after pushing "Panel_Object" 0x9d54f0):
+//   +0x1c visible, +0xb8/+0xbc/+0xc0/+0xc4 rect, +0xbd4 drawn item count (reset to 0 at
+//   0x713f90, incremented per draw_item at 0x716bf1), +0xbf0 WorldPlayer* ([plr+0x254]
+//   selection count, skip if >1 at 0x713fe4), +0xbf4 selected RGE_Static_Object* (0x713fd0),
+//   +0xc04 mode byte (skip if ==2 at 0x713fbb).
+//   Object: +0x0c master*, +0x10 owner*, +0x24 removed, +0x4c state (<7 alive), +0x48 float
+//   attribute_amount_held (0x715154 / 0x715a2b, rounded via +0.5f from 0x9afd68), +0x50 int16
+//   attribute_type_held (0x7150bc / 0x71592e). Master: +0x10 id, +0x16 class_, +0x97
+//   command_attribute (1=deposit, 3/4/5/6/7/9/12=unit), +0xa4 garrison flags.
+//   draw_item (0x7167c0): row r (0..3) icon at (x+15, y+72+r*20), text at (x+57, y+74+r*20),
+//   font = (*(void***)0xada2a8)[6]->+8 (0x716b03..0x716b4b, 0x472020), black text (0xada500).
 // - [screen + 0xc6c] = center Age badge panel* (+0xb8 x).
 // - [screen + 0xd58] = GameScreen full-redraw flag (checked at 0x6c2ee9: cmp [edi+0xd58], 0;
 //   setting to 1 forces GameScreen::draw on the next paint to clear closed panels/tooltips).
@@ -52,6 +64,17 @@ static HDC g_strip_dc;
 static HBITMAP g_strip_bmp;
 static RECT g_strip_rect;
 static void *g_strip_screen;
+
+// Clean-background backing store for the bottom-left TRIBE_Panel_Object custom gather row
+// so changing amounts or villager drop-offs never ghost on frames where the panel is not redrawn.
+static HDC g_up_bg_dc;
+static HBITMAP g_up_bg_bmp;
+static int g_up_bg_w, g_up_bg_h;
+static RECT g_up_rect;
+static void *g_up_screen;
+static void *g_up_obj;
+static int g_up_row;
+static int g_up_drawn;
 
 static void *g_last_screen;
 static int g_panel_open;
@@ -297,6 +320,9 @@ void wl_resbar_reset(void) {
     g_hover_btn = 0;
     g_hover_close = 0;
     g_strip_screen = NULL;
+    g_up_drawn = 0;
+    g_up_screen = NULL;
+    g_up_obj = NULL;
     for (int i = 0; i < g_nicons; i++) {
         if (g_icons[i].bmp) DeleteObject(g_icons[i].bmp);
     }
@@ -304,9 +330,175 @@ void wl_resbar_reset(void) {
 }
 
 int wl_resbar_active(void) {
-    int n = 0;
+    int n = 0, gn = 0;
     wl_resources_list(&n);
-    return n > 0;
+    wl_gather_list(&gn);
+    return n > 0 || gn > 0;
+}
+
+// Bottom-left unit panel (TRIBE_Panel_Object at [screen+0xb10]): vanilla TRIBE_Panel_Object::draw
+// (0x713f00) bails out on attribute_type_held (+0x50) > 0x38 (deposit, 0x7150c5) or > 0x39
+// (villager, 0x715932). We draw the missing resource icon and amount at the exact row
+// r = [panel+0xbd4] (0..3) and coordinates of draw_item (0x7167c0): icon (x+15, y+72+r*20),
+// text (x+57, y+74+r*20) in font 6 ([*(void***)0xada2a8][6]->+8), black on parchment.
+static void paint_unit_panel(void *screen, HDC dc, const RECT *scr) {
+    int gcount = 0;
+    wl_gather_list(&gcount);
+    if (gcount <= 0) return;
+
+    void *panel = RDP(screen, 0xb10);
+    if (!panel || RD32(panel, 0x1c) == 0) {
+        g_up_drawn = 0;
+        g_up_obj = NULL;
+        return;
+    }
+
+    unsigned char mode = *(unsigned char *)((char *)panel + 0xc04);
+    void *obj = RDP(panel, 0xbf4);
+    void *plr = RDP(panel, 0xbf0);
+    int sel_cnt = plr ? (int)RD32(plr, 0x254) : 0;
+    if (mode == 2 || !obj || !plr || sel_cnt > 1) {
+        g_up_drawn = 0;
+        g_up_obj = NULL;
+        return;
+    }
+
+    // Alive/valid check matching gameapi.c: state < 7 and removed flag == 0.
+    if (*(unsigned char *)((char *)obj + 0x4c) >= 7 || RD32(obj, 0x24) != 0) {
+        g_up_drawn = 0;
+        g_up_obj = NULL;
+        return;
+    }
+    void *master = RDP(obj, 0x0c);
+    if (!master) {
+        g_up_drawn = 0;
+        g_up_obj = NULL;
+        return;
+    }
+
+    unsigned char cmd_attr = *(unsigned char *)((char *)master + 0x97);
+    short cls = *(short *)((char *)master + 0x16);
+    short master_id = *(short *)((char *)master + 0x10);
+    short rid = *(short *)((char *)obj + 0x50);
+    float amt = *(float *)((char *)obj + 0x48);
+    int shown = (int)(amt + 0.5f);  // matches 0x71515b / 0x715909 / 0x715a32 (+0.5f @ 0x9afd68)
+
+    const WlGatherDef *gd = NULL;
+    int should_draw = 0;
+    if (cmd_attr == 1 && cls != 0x28) {
+        // Gaia resource deposit (0x714ca0..0x7150bc)
+        if (rid >= WL_CUSTOM_RES_FIRST) gd = wl_gather_by_resource(rid);
+        if (!gd) gd = wl_gather_by_deposit(master_id);
+        if (gd) {
+            if (shown < 0) shown = 0;
+            should_draw = 1;
+        }
+    } else if (cmd_attr == 3 || cmd_attr == 4 || cmd_attr == 5 || cmd_attr == 6 ||
+               cmd_attr == 7 || cmd_attr == 9 || cmd_attr == 12) {
+        // Owned unit/villager carrying a custom gather resource (0x714c61..0x715935).
+        // Vanilla only shows carried amount for local player's units without garrison display
+        // ([obj+0x10] == [panel+0xbf0] @ 0x715786, ([master+0xa4] & 1) == 0 @ 0x715795, shown > 0 @ 0x715911).
+        if (RDP(obj, 0x10) == plr && ((*(unsigned char *)((char *)master + 0xa4)) & 1) == 0 &&
+            rid >= WL_CUSTOM_RES_FIRST && shown > 0) {
+            gd = wl_gather_by_resource(rid);
+            if (gd) should_draw = 1;
+        }
+    }
+
+    int r = (int)RD32(panel, 0xbd4);
+    if (r < 0 || r > 3) should_draw = 0;
+
+    if (!should_draw) {
+        // If the same object was showing our row last frame (e.g. villager just deposited its
+        // load so shown dropped to 0), restore the clean parchment behind our row so nothing ghosts.
+        if (g_up_drawn && g_up_screen == screen && g_up_obj == obj && g_up_bg_dc && g_up_bg_bmp) {
+            int rw = g_up_rect.right - g_up_rect.left;
+            int rh = g_up_rect.bottom - g_up_rect.top;
+            if (rw > 0 && rh > 0) {
+                BitBlt(dc, g_up_rect.left, g_up_rect.top, rw, rh, g_up_bg_dc, 0, 0, SRCCOPY);
+            }
+        }
+        g_up_drawn = 0;
+        g_up_obj = NULL;
+        return;
+    }
+
+    const WlResourceDef *res = wl_resource_by_id(gd->resource_id);
+    if (!res) {
+        g_up_drawn = 0;
+        g_up_obj = NULL;
+        return;
+    }
+
+    int px = (int)RD32(panel, 0xb8);
+    int py = (int)RD32(panel, 0xbc);
+    int pw = (int)RD32(panel, 0xc0);
+    int icon_x = px + 15;             // verified 0x716848: lea eax, [esi+0xf]
+    int icon_y = py + 72 + r * 20;    // verified 0x71683b..0x716844: y + (r*5 + 18)*4
+    int text_x = px + 57;             // verified 0x716b89: add ecx, 0x39
+    int text_y = py + 74 + r * 20;    // verified 0x716b92..0x716b9c: y + r*20 + 0x4a
+
+    int row_right = px + (pw > 160 ? 160 : (pw > 70 ? pw - 2 : 160));
+    RECT row_r = { px + 14, icon_y - 1, row_right, icon_y + 20 };
+    if (row_r.left < scr->left) row_r.left = scr->left;
+    if (row_r.top < scr->top) row_r.top = scr->top;
+    if (row_r.right > scr->right) row_r.right = scr->right;
+    if (row_r.bottom > scr->bottom) row_r.bottom = scr->bottom;
+    int rw = row_r.right - row_r.left;
+    int rh = row_r.bottom - row_r.top;
+    if (rw <= 0 || rh <= 0 || rw > 512 || rh > 64) return;
+
+    if (g_up_drawn && g_up_screen == screen && g_up_obj == obj && g_up_row == r &&
+        EqualRect(&g_up_rect, &row_r) && g_up_bg_dc && g_up_bg_bmp) {
+        BitBlt(dc, row_r.left, row_r.top, rw, rh, g_up_bg_dc, 0, 0, SRCCOPY);
+    } else {
+        if (!g_up_bg_dc || !g_up_bg_bmp || rw > g_up_bg_w || rh > g_up_bg_h) {
+            if (g_up_bg_dc)  { DeleteDC(g_up_bg_dc); g_up_bg_dc = NULL; }
+            if (g_up_bg_bmp) { DeleteObject(g_up_bg_bmp); g_up_bg_bmp = NULL; }
+            g_up_bg_dc = CreateCompatibleDC(dc);
+            g_up_bg_bmp = g_up_bg_dc ? CreateCompatibleBitmap(dc, rw, rh) : NULL;
+            if (g_up_bg_bmp) {
+                SelectObject(g_up_bg_dc, g_up_bg_bmp);
+                g_up_bg_w = rw;
+                g_up_bg_h = rh;
+            } else {
+                if (g_up_bg_dc) { DeleteDC(g_up_bg_dc); g_up_bg_dc = NULL; }
+                g_up_bg_w = g_up_bg_h = 0;
+            }
+        }
+        if (g_up_bg_dc && g_up_bg_bmp) {
+            GdiFlush();
+            BitBlt(g_up_bg_dc, 0, 0, rw, rh, dc, row_r.left, row_r.top, SRCCOPY);
+        }
+        g_up_screen = screen;
+        g_up_obj = obj;
+        g_up_row = r;
+        g_up_rect = row_r;
+        g_up_drawn = 1;
+    }
+
+    draw_icon(dc, res->icon, icon_x, icon_y, 20);
+
+    // Borrow TRIBE_Panel_Object::draw_item's exact font 6: (*(void***)0xada2a8)[6]->+8
+    // (verified 0x716b03..0x716b4b, 0x472020) and black ink (0xada500, 0x716b20..0x716b42).
+    HFONT panel_font = NULL;
+    void **fm = *(void ***)0xada2a8;
+    if (fm && fm[6]) panel_font = (HFONT)RDP(fm[6], 8);
+    if (!panel_font) panel_font = fallback_font(13, 0);
+
+    HGDIOBJ old_font = SelectObject(dc, panel_font);
+    int old_bk = SetBkMode(dc, TRANSPARENT);
+    COLORREF old_col = GetTextColor(dc);
+    SetTextColor(dc, RGB(0, 0, 0));
+
+    char num[32];
+    snprintf(num, sizeof num, "%d", shown);
+    RECT tr = { text_x, text_y, row_r.right, row_r.bottom };
+    DrawTextA(dc, num, -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+
+    SetTextColor(dc, old_col);
+    SetBkMode(dc, old_bk);
+    SelectObject(dc, old_font);
 }
 
 void wl_resbar_paint(void *screen, HDC dc, const RECT *scr);
@@ -321,12 +513,49 @@ void wl_resbar_paint_passive(void *screen, HDC dc, const RECT *scr) {
     wl_resbar_paint(screen, dc, scr);
 }
 
+static int res_visible_in_hud(const WlResourceDef *r, const char *cur_mode) {
+    if (!r || r->hidden) return 0;
+    if (r->game_mode[0]) {
+        if (!cur_mode || !cur_mode[0] || strcmp(cur_mode, r->game_mode) != 0) return 0;
+    }
+    return 1;
+}
+
 void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
-    int total = 0;
+    if (!dc || !screen || !scr) return;
+    int total = 0, gtotal = 0;
     const WlResourceDef *defs = wl_resources_list(&total);
-    if (!defs || total <= 0 || !dc || !screen || !scr) return;
+    wl_gather_list(&gtotal);
+    if (total <= 0 && gtotal <= 0) return;
 
     g_last_screen = screen;
+    if (!defs || total <= 0) {
+        paint_unit_panel(screen, dc, scr);
+        return;
+    }
+
+    const char *cur_mode = wl_gamemode_current_key();
+
+    // Collect resources eligible for HUD display (not hidden, matching active game_mode if set)
+    int panel_idx[256];
+    int panel_n = 0;
+    int vis_idx[64];
+    int vis_n = 0;
+    for (int i = 0; i < total; i++) {
+        if (!res_visible_in_hud(&defs[i], cur_mode)) continue;
+        if (panel_n < 256) panel_idx[panel_n++] = i;
+        if (defs[i].show && vis_n < 64) vis_idx[vis_n++] = i;
+    }
+
+    if (panel_n <= 0) {
+        g_nslots = 0;
+        g_has_btn = 0;
+        g_panel_open = 0;
+        g_total_rows = 0;
+        g_vis_rows = 0;
+        if (gtotal > 0) paint_unit_panel(screen, dc, scr);
+        return;
+    }
 
     // Live vanilla top-bar geometry: TRIBE_Panel_Inven at [screen+0xb0c],
     // center Age badge at [screen+0xc6c].
@@ -342,14 +571,7 @@ void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
     if (x1 < x0) x1 = x0;
     int avail_w = x1 - x0;
 
-    // Collect top-bar visible resources (show != 0)
-    int vis_idx[64];
-    int vis_n = 0;
-    for (int i = 0; i < total && vis_n < 64; i++) {
-        if (defs[i].show) vis_idx[vis_n++] = i;
-    }
-
-    int need_btn = (vis_n * SLOT_W > avail_w) || (vis_n < total);
+    int need_btn = (vis_n * SLOT_W > avail_w) || (vis_n < panel_n);
     int max_inline = need_btn ? ((avail_w > BTN_W) ? (avail_w - BTN_W) / SLOT_W : 0) : vis_n;
     if (max_inline > vis_n) max_inline = vis_n;
     if (max_inline > 64) max_inline = 64;
@@ -431,7 +653,7 @@ void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
         FrameRect(dc, &g_btn_rect, bd);
         DeleteObject(bd);
 
-        int hidden = total - max_inline;
+        int hidden = panel_n - max_inline;
         char lbl[24];
         if (hidden > 0) snprintf(lbl, sizeof lbl, "+%d", hidden);
         else snprintf(lbl, sizeof lbl, "All");
@@ -483,11 +705,11 @@ void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
     }
     g_prev_hover_slot = g_hover_slot;
 
-    // "Show all" panel listing every custom resource (icon, name, integer amount)
-    g_total_rows = total;
-    g_vis_rows = total < PANEL_MAX_ROWS ? total : PANEL_MAX_ROWS;
+    // "Show all" panel listing every visible custom resource (icon, name, integer amount)
+    g_total_rows = panel_n;
+    g_vis_rows = panel_n < PANEL_MAX_ROWS ? panel_n : PANEL_MAX_ROWS;
     if (g_panel_open) {
-        int max_scroll = total - g_vis_rows;
+        int max_scroll = panel_n - g_vis_rows;
         if (max_scroll < 0) max_scroll = 0;
         if (g_scroll < 0) g_scroll = 0;
         if (g_scroll > max_scroll) g_scroll = max_scroll;
@@ -519,7 +741,7 @@ void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
 
         SelectObject(dc, fallback_font(14, 1));
         char title[64];
-        snprintf(title, sizeof title, "Resources (%d)", total);
+        snprintf(title, sizeof title, "Resources (%d)", panel_n);
         RECT tr = { px + 10, py + 2, px + PANEL_W - 30, py + PANEL_HDR_H };
         draw_shadow_text(dc, title, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX, RGB(240, 210, 128));
 
@@ -536,12 +758,12 @@ void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
 
         // Rows
         SelectObject(dc, vanilla_font);
-        int need_sb = total > g_vis_rows;
+        int need_sb = panel_n > g_vis_rows;
         int content_r = px + PANEL_W - (need_sb ? 14 : 8);
         for (int row = 0; row < g_vis_rows; row++) {
             int idx = g_scroll + row;
-            if (idx >= total) break;
-            const WlResourceDef *r = &defs[idx];
+            if (idx >= panel_n) break;
+            const WlResourceDef *r = &defs[panel_idx[idx]];
             int ry = py + PANEL_HDR_H + 5 + row * PANEL_ROW_H;
             if (row & 1) {
                 RECT alt = { px + 4, ry, content_r, ry + PANEL_ROW_H };
@@ -572,7 +794,7 @@ void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
             HBRUSH tbr = CreateSolidBrush(RGB(20, 16, 12));
             FillRect(dc, &track, tbr);
             DeleteObject(tbr);
-            int thumb_h = (track_h * g_vis_rows) / total;
+            int thumb_h = (track_h * g_vis_rows) / panel_n;
             if (thumb_h < 16) thumb_h = 16;
             int thumb_y = track_top + (max_scroll > 0 ? ((track_h - thumb_h) * g_scroll) / max_scroll : 0);
             RECT thumb = { track.left + 1, thumb_y, track.right - 1, thumb_y + thumb_h };
@@ -584,6 +806,8 @@ void wl_resbar_paint(void *screen, HDC dc, const RECT *scr) {
     SetTextColor(dc, old_col);
     SetBkMode(dc, old_bk);
     SelectObject(dc, old_font);
+
+    if (gtotal > 0) paint_unit_panel(screen, dc, scr);
 }
 
 static void map_to_screen(HWND h, int mx, int my, int scr_w, int scr_h, int *ox, int *oy) {

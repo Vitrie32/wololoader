@@ -41,6 +41,8 @@
 //     +0x20: uint64_t player UID (verified 0x58370b..0x583720)
 //     +0x54: int status (2 or 3 = human player per 0x598910; 6 = spectator per 0x597bb5)
 #include "wololoader.h"
+#include "modsettings.h"
+#include <stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
@@ -145,7 +147,90 @@ static void report_slot_match(int slot) {
     post_local_chat(msg);
 }
 
+// ---- Mod settings sync ---------------------------------------------------------------------
+// Different mod settings make different simulations, so the lobby needs the same values on every
+// machine. The host (0x656fa0 GameSetupScreen::is_mp_host, see gamemodes.c) sends each enabled
+// mod's effective settings as hidden chat lines "[WLS] <mod id> <part>/<parts> <json chunk>";
+// the others use them for this session (modsettings.c wl_settings_session_set: their own files
+// are not changed), refill MOD.settings, reapply the Base features and send their [WL] tag again,
+// so the checksum (which uses the effective values, autobuild.c) matches. Back at the main menu
+// (menu.c) the player's own values return.
+#define WLS_CHUNK 96
+static void schedule_send(DWORD now, DWORD delay_ms);
+static int is_lobby_host(void) {
+    return g_lobby_screen && ((BYTE (__thiscall *)(void *))0x656fa0)(g_lobby_screen) != 0;
+}
+
+static void send_settings(void *comm) {
+    char json[2048], line[256];
+    for (int i = 0; i < g_wl.listed_count; i++) {
+        const WlMod *m = &g_wl.mods[i];
+        if (!m->enabled) continue;
+        int len = wl_settings_compact(m, json, sizeof json);
+        if (len <= 0) continue;
+        int parts = (len + WLS_CHUNK - 1) / WLS_CHUNK;
+        for (int p = 0; p < parts; p++) {
+            // "|" before the chunk: the chunk may start with a space (a string value)
+            snprintf(line, sizeof line, "[WLS] %s %d/%d|%.*s", m->id, p + 1, parts, WLS_CHUNK, json + p * WLS_CHUNK);
+            ((SendLobbyChat_t)0x588030)(comm, line);
+        }
+        wl_log("mpcheck: sent settings of %s (%d part(s))", m->id, parts);
+    }
+}
+
+// Receiving: chunks are collected per mod; a complete set is applied.
+static struct { char id[64]; int parts; int got; char json[2048]; } g_rx[16];
+static int g_settings_applied;
+static int g_resends;          // host: settings sent again for a different checksum (at most 3 per lobby)
+
+static void apply_host_settings(const char *id, const char *json) {
+    const WlMod *mod = NULL;
+    for (int i = 0; i < g_wl.listed_count; i++)
+        if (strcmp(g_wl.mods[i].id, id) == 0) mod = &g_wl.mods[i];
+    if (!mod) return;
+    char mine[2048];
+    wl_settings_compact(mod, mine, sizeof mine);
+    if (strcmp(mine, json) == 0) return;           // already the same
+    wl_settings_session_set(id, json);
+    wl_script_refresh_settings();
+    if (_stricmp(id, "WololoaderBase") == 0) wl_basemod_reload();
+    wl_content_checksum_invalidate();
+    wl_content_checksum(g_our_hex);
+    g_settings_applied = 1;
+    char msg[200];
+    snprintf(msg, sizeof msg, "Wololoader: using the host's settings for %s", mod->name);
+    post_local_chat(msg);
+    wl_log("mpcheck: host settings for %s: %s (checksum now %s)", id, json, g_our_hex);
+    schedule_send(GetTickCount(), 300);              // tell the others our new checksum
+}
+
+static int handle_settings_line(const char *text) {
+    if (!text || strncmp(text, "[WLS] ", 6) != 0) return 0;
+    if (is_lobby_host()) return 1;                    // the host keeps its own values
+    char id[64]; int part = 0, parts = 0;
+    const char *bar = strchr(text + 6, '|');
+    if (!bar || sscanf(text + 6, "%63s %d/%d", id, &part, &parts) < 3) return 1;
+    if (parts < 1 || parts > 2048 / WLS_CHUNK + 1 || part < 1 || part > parts) return 1;
+    int pos = (int)(bar + 1 - (text + 6));
+    int k, freek = -1;
+    for (k = 0; k < 16; k++) {
+        if (g_rx[k].id[0] && strcmp(g_rx[k].id, id) == 0) break;
+        if (!g_rx[k].id[0] && freek < 0) freek = k;
+    }
+    if (k == 16) { if (freek < 0) return 1; k = freek; memset(&g_rx[k], 0, sizeof g_rx[k]); lstrcpynA(g_rx[k].id, id, sizeof g_rx[k].id); }
+    if (part == 1 || g_rx[k].parts != parts) { g_rx[k].parts = parts; g_rx[k].got = 0; g_rx[k].json[0] = 0; }
+    if (part != g_rx[k].got + 1) return 1;            // out of order: wait for the next round
+    const char *chunk = text + 6 + pos;
+    size_t cur = strlen(g_rx[k].json), add = strlen(chunk);
+    if (cur + add + 1 > sizeof g_rx[k].json) return 1;
+    memcpy(g_rx[k].json + cur, chunk, add + 1);
+    g_rx[k].got = part;
+    if (part == parts) { apply_host_settings(id, g_rx[k].json); g_rx[k].id[0] = 0; }
+    return 1;
+}
+
 static void send_wl_tag(void *comm, DWORD now) {
+    if (is_lobby_host()) send_settings(comm);
     char tag[64];
     snprintf(tag, sizeof tag, "[WL] %s %s", WOLOLOADER_VERSION, g_our_hex);
     ((SendLobbyChat_t)0x588030)(comm, tag);
@@ -184,6 +269,14 @@ void wl_mpcheck_on_lobby_enter(void *screen) {
     if (!g_installed) return;
     reset_lobby_state(screen);
     if (!screen) return;
+    // A previous lobby's host settings end here; this lobby's host sends its own on join.
+    memset(g_rx, 0, sizeof g_rx);
+    g_resends = 0;
+    if (wl_settings_session_clear()) {
+        wl_script_refresh_settings();
+        wl_basemod_reload();
+        wl_content_checksum_invalidate();
+    }
     wl_content_checksum(g_our_hex);
     wl_log("mpcheck: entered MP lobby (checksum %s)", g_our_hex);
 }
@@ -255,8 +348,26 @@ static void __fastcall hook_lobby_action(void *self, void *edx) {
     }
 }
 
+// The tags are for Wololoader, not for people: ChatHistory::add_message 0x8037b0
+// (__thiscall(hist, sender, text, player, type, a5, a6), ret 0x18, prologue 55 8b ec 6a ff)
+// drops lines that start with "[WL] " or "[WLS] " (other players' tags, and our own if the
+// game echoes what we send).
+static ChatAdd_t o_chat_add;
+static int __fastcall hook_chat_add(void *hist, void *edx, const char *sender, const char *text,
+                                    int player, int type, int a5, int a6) {
+    (void)edx;
+    if (text && !IsBadReadPtr(text, 6) && (strncmp(text, "[WL] ", 5) == 0 || strncmp(text, "[WLS] ", 6) == 0))
+        return 0;
+    return o_chat_add(hist, sender, text, player, type, a5, a6);
+}
+
 static void __fastcall hook_chat_recv(void *comm, void *edx, void *peer_wrapper, void *pkt) {
     (void)edx;
+    const char *t0 = pkt ? *(const char **)((char *)pkt + 0x18) : NULL;
+    if (t0 && !IsBadReadPtr(t0, 6) && strncmp(t0, "[WLS] ", 6) == 0) {   // settings sync: not shown in chat
+        if (g_lobby_screen && comm && get_mp_comm(g_lobby_screen, NULL) == comm) handle_settings_line(t0);
+        return;
+    }
     o_chat_recv(comm, peer_wrapper, pkt);
     if (!g_lobby_screen || !comm || !pkt) return;
 
@@ -295,6 +406,9 @@ static void __fastcall hook_chat_recv(void *comm, void *edx, void *peer_wrapper,
     s->reported = new_kind;
     lstrcpynA(s->theirs_hex, theirs_hex, sizeof s->theirs_hex);
     lstrcpynA(s->theirs_ver, theirs_ver, sizeof s->theirs_ver);
+    // The host answers a different checksum by sending its settings again (the joiner's lobby
+    // may not have been ready for the first ones).
+    if (!same && is_lobby_host() && g_resends < 3) { g_resends++; schedule_send(GetTickCount(), 500); }
     if (changed) {
         report_slot_match(slot);
         wl_log("mpcheck: slot %d (%s) %s (theirs %s %s, ours %s %s)",
@@ -356,6 +470,9 @@ void wl_install_mp_check(void) {
     o_lobby_action = (LobbyAction_t)wl_hook(0x656c60, hook_lobby_action, sizeof b_action);
     o_lobby_dtor  = (LobbyDtor_t)wl_hook(0x64a540, hook_lobby_dtor, sizeof b_dtor);
     o_chat_submit = (ChatSubmit_t)wl_hook(0x657da0, hook_chat_submit, sizeof b_submit);
+    static const BYTE b_add[] = { 0x55, 0x8b, 0xec, 0x6a, 0xff };
+    if (memcmp((const void *)0x8037b0, b_add, sizeof b_add) == 0)
+        o_chat_add = (ChatAdd_t)wl_hook(0x8037b0, hook_chat_add, sizeof b_add);
 
     if (!o_chat_recv || !o_lobby_action || !o_lobby_dtor || !o_chat_submit) {
         wl_log("mpcheck: one or more hooks failed");

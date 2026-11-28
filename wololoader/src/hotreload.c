@@ -373,6 +373,7 @@ int wl_hotreload_run(int force, char *out_msg, size_t out_cap) {
     int old_ids[WL_HR_MAX_CIVS], new_ids[WL_HR_MAX_CIVS];
     int old_n = 0, new_n = 0;
     int civ_count = wl_civs_reload_tables(old_ids, &old_n, new_ids, &new_n);
+    wl_resources_reload();
 
     WlCivDiff cdiff;
     wl_hotreload_diff_civs(old_ids, old_n, new_ids, new_n, &cdiff);

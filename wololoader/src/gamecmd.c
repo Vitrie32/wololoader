@@ -137,12 +137,28 @@ static int rate_ok(void) {
     if (sec != g_second) { g_second = sec; g_sent_this_second = 0; }
     return g_sent_this_second < CMD_RATE;
 }
+// Multiplayer: commands sent in the first moments of a match never execute (seen 2026-11-28 as
+// MP host: 25 packets sent at game start were all lost, the same kinds sent 2.7 s later ran one
+// turn later; the network turns have not started yet). So in multiplayer packets wait in the queue
+// until the game clock [world+0x178] (ms, gameapi.c ga_time) has passed MP_HOLD_MS, and then
+// leave at most one every MP_GAP_MS for the next 10 s, so a start-up burst is spread over the turns.
+#define MP_HOLD_MS 3000
+#define MP_GAP_MS 30
+static DWORD g_mp_last_send;
+static int mp_wait(void *w) {
+    if (!wl_is_multiplayer()) return 0;
+    int t = (int)RD32(w, 0x178);
+    if (t < MP_HOLD_MS) return 1;
+    if (t > MP_HOLD_MS + 10000) return 0;            // the start-up burst is out: normal rate (100/s)
+    return GetTickCount() - g_mp_last_send < MP_GAP_MS;
+}
 static int send_cmd_as(void *w, BYTE *pkt, int size, int sender);
 static int send_cmd(void *w, BYTE *pkt, int size) { return send_cmd_as(w, pkt, size, -1); }
 static int send_cmd_as(void *w, BYTE *pkt, int size, int sender) {
     if (g_qworld != w) { g_qhead = g_qlen = 0; g_qworld = w; }
-    if (g_qlen == 0 && rate_ok()) {
+    if (g_qlen == 0 && rate_ok() && !mp_wait(w)) {
         g_sent_this_second++;
+        g_mp_last_send = GetTickCount();
         send_now_as(w, pkt, size, sender);
         return 1;
     }
@@ -161,8 +177,9 @@ void wl_gamecmd_frame(void) {
     if (!g_qlen) return;
     void *w = world();
     if (!w || w != g_qworld || !RDP(w, 0xc0)) { g_qhead = g_qlen = 0; g_qworld = NULL; return; }
-    while (g_qlen && rate_ok()) {
+    while (g_qlen && rate_ok() && !mp_wait(w)) {
         g_sent_this_second++;
+        g_mp_last_send = GetTickCount();
         send_now_as(w, g_q[g_qhead].pkt, g_q[g_qhead].size, g_q[g_qhead].sender);
         g_qhead = (g_qhead + 1) % CMD_QUEUE;
         g_qlen--;
@@ -467,7 +484,12 @@ static int exec_wl(BYTE *pkt) {
     } else if (pkt[3] == WL_MARK_AGE) {
         exec_set_age(p, pkt[2]);
     } else if (pkt[3] == WL_MARK_DEFEAT) {
-        if (g_win_defeat_ok && pkt[1] > 0) ((VoidPlayer_t)0x750580)(p);
+        if (g_win_defeat_ok && pkt[1] > 0) {
+            extern int g_wl_in_defeat_flag;
+            g_wl_in_defeat_flag = 1;
+            ((VoidPlayer_t)0x750580)(p);
+            g_wl_in_defeat_flag = 0;
+        }
     } else if (pkt[3] == WL_MARK_WIN) {
         if (g_win_defeat_ok && pkt[1] > 0) {
             if (pkt[2]) ((VoidPlayer_t)0x7558b0)(p);
@@ -504,3 +526,7 @@ void wl_install_gamecmd(void) {
     wl_log("gamecmd: command executor hook %s (win/defeat %s)",
            o_exec ? "installed" : "FAILED", g_win_defeat_ok ? "ok" : "off");
 }
+
+int g_wl_in_defeat_flag;
+int wl_gamecmd_in_defeat(void) { return g_wl_in_defeat_flag; }
+

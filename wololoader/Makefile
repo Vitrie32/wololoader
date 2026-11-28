@@ -56,13 +56,19 @@ build/ui_files.h: $(wildcard scriptorium/ui/*) tools/gen_ui_files.py
 	mkdir -p build
 	python3 tools/gen_ui_files.py scriptorium/ui build/ui_files.h
 
+# The icon library (scriptorium/icon_library/<category>/<id>.png + catalog.json) is embedded the
+# same way, as g_icons_files in build/icons_files.h (SVGs and _src are left out: the UI only shows PNGs).
+build/icons_files.h: $(wildcard scriptorium/icon_library/*/*.png) scriptorium/icon_library/catalog.json tools/gen_ui_files.py
+	mkdir -p build
+	python3 tools/gen_ui_files.py scriptorium/icon_library build/icons_files.h --lib icons .png,.json
+
 scriptorium: build/Scriptorium.exe
 
 build/sc_icon.o: scriptorium/scriptorium.rc art/wololoader.ico
 	mkdir -p build
 	i686-w64-mingw32-windres scriptorium/scriptorium.rc -O coff -o $@
 
-build/Scriptorium.exe: build/sc_icon.o build/ui_files.h $(SC_SRC) scriptorium/server.h scriptorium/api.h scriptorium/launcher.h scriptorium/catalog.h scriptorium/sc_zlib.h scriptorium/modio.h scriptorium/hub.h src/json.h src/datbuild.h src/hubcore.h
+build/Scriptorium.exe: build/sc_icon.o build/ui_files.h build/icons_files.h $(SC_SRC) scriptorium/server.h scriptorium/api.h scriptorium/launcher.h scriptorium/catalog.h scriptorium/sc_zlib.h scriptorium/modio.h scriptorium/hub.h src/json.h src/datbuild.h src/hubcore.h
 	mkdir -p build
 	$(CC) $(SC_CFLAGS) -o $@ $(SC_SRC) build/sc_icon.o $(SC_LDFLAGS)
 

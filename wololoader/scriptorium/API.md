@@ -49,6 +49,7 @@ using the browser already installed, so the exe stays small and fast).
 | `POST /api/mods` | `{ "name": "My Mod" }` | `{ "folder" }` — creates `mods/<Folder>/mod.json` (`name`, `version` "0.1", `author` "", `description` "") and `civs/`. Folder = name with unsafe chars removed; 409 if exists. |
 | `POST /api/validate` | same as PUT body + `"folder"` | `{ "ok": bool, "error": "...", "civs_built": n }` — writes the given state to a temp mods dir containing only this mod, runs `wl_dat_build` to a temp out dir, cleans up. Never touches the real mod. |
 | `GET /api/icon/<folder>` | | the mod's `icon.png` (image/png) or 404. Needs the token header, so the UI fetches it and shows a blob URL (an `<img src>` cannot send the header) |
+| `GET /api/icon-library`, `GET /api/icon-library/<category>/<id>.png` | | the built-in icon library (embedded in the exe from `scriptorium/icon_library`): catalog `[{id,name,category,tags,svg,png}]` (`png` = `<category>/<id>.png`, 64x64) and the PNGs (image/png). Needs the token header. The UI (`iconlib.js`) copies a chosen PNG into the mod with `PUT /api/file`. |
 | `POST /api/upload?folder=F&name=N` | raw bytes | `{ "file": "N" }` — copies a sound / slp / icon into the mod folder (N: safe file name, max 20 MB) |
 | `POST /api/open-folder` | `{ "folder"?: "F" }` | opens the mods dir or that mod's dir (shell.c logic: winebrowser under Wine) |
 | `GET /api/game-file?path=P` | | the game's file `resources/P` (`.slp .bina .mp3 .wav .png` only; P relative, forward slashes, no `..`, no drive letters; 404 if missing) |

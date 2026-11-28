@@ -174,10 +174,12 @@ void wl_content_checksum(char out[9]) {
         qsort(enabled, (size_t)n, sizeof *enabled, cmp_mod_id);
         for (int i = 0; i < n; i++) {
             h = hash_mod_files(h, enabled[i], 1);
-            // The player's mod settings change what the scripts do, so they must match too.
-            char sp[MAX_PATH];
-            wl_settings_path(enabled[i], sp, sizeof sp);
-            h = fnv_file(h, sp);
+            // The mod settings change what the scripts do, so they must match too. The effective
+            // values count (the lobby host's in a synced multiplayer lobby, see mpcheck.c), not
+            // the player's file, so players who took the host's values match.
+            char sj[2048];
+            wl_settings_compact(enabled[i], sj, sizeof sj);
+            h = fnv_str(h, sj);
         }
         unsigned sum = (unsigned)((h ^ (h >> 32)) & 0xffffffffu);
         snprintf(g_checksum_cached, sizeof g_checksum_cached, "%08x", sum);
@@ -221,6 +223,11 @@ int wl_autobuild_run(void) {
         DeleteFileA(out_civs);
         DeleteFileA(out_strings);
         DeleteFileA(out_commands);
+        char out_extra[MAX_PATH];
+        snprintf(out_extra, sizeof out_extra, "%s\\resources.txt", cache);
+        DeleteFileA(out_extra);
+        snprintf(out_extra, sizeof out_extra, "%s\\gather.txt", cache);
+        DeleteFileA(out_extra);
         DeleteFileA(stamp_path);
         wl_log("build: FAILED: %s (using the original dat)", err);
         return -1;

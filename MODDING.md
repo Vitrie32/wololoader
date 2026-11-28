@@ -1054,8 +1054,16 @@ Every script also gets a simple high-level API, written on top of `wl.*` (which 
 | Unit | `.Id`, `.X`, `.Y`, `.Type` (dat unit id), `.Class`, `.ClassName`, `.IsBuilding`, `.Built` (a finished building, not a foundation), `.Owner`, `:Delete()`, `:MoveTo(x, y)` (walk to a map tile; works for Gaia units too) |
 | `p:AddGold(n)`, `p:AddFood(n)`, `p:AddWood(n)`, `p:AddStone(n)`, `p:AddResource(res, n)`, `p:SetResource(res, n)`, `p:GetResource(res)` | read, add (or subtract), or set vanilla or custom resources by key/name or numeric id (multiplayer-safe lockstep commands) |
 | `Game.Resources()` | list all custom resources declared by enabled mods (`{ id, mod, key, name, icon, start, max, show, description }`) |
+| `Game.ResourceDeposit(key)` | Gaia deposit unit id for a gatherable custom resource (or `nil`) |
+| `Game.GatherInfo(key)` | `{ resource, deposit, male, female }` unit/resource ids for a gatherable custom resource (or `nil`) |
 | `Game.Mode()` | key (`"id"`) of the active custom lobby game mode, or `nil` for vanilla modes |
 | `Game.ModeEnemy()` | the active game mode's enemy player (`"enemy_player": true` modes), or `nil` |
+| `Game.MapSize()` | side of the (square) map in tiles, from the lobby map size (`nil` if unknown) |
+| `Game.OnMapClick(fn(x, y, button))` | map click event while `Game.SetMapClickCapture(true)` is active (`x`, `y` in tiles, `button` is `"left"` or `"right"`; left-button drag emits throttled clicks); returns a connection with `:Disconnect()` |
+| `Game.SetMapClickCapture(on)` | when `true`, captures map clicks (and left-button drags) in the main view for `Game.OnMapClick` instead of forwarding them to the game (reset to `false` on match start / restart) |
+| `Game.SetUnitControlDisabled(off)` | when `true`, disables manual right-click unit move/attack orders in the main view (reset to `false` on match start / restart) |
+| `Game.Restart()` | restarts the current single-player match on a fresh random map while keeping session values; returns `true` if queued (`false` in multiplayer or when unavailable) |
+| `Game.SetSession(key, value)`, `Game.GetSession(key)`, `Game.ClearSession()` | key-value store (up to 32 keys; numbers or strings, `nil` deletes a key) that survives `Game.Restart()` and is cleared automatically on a new lobby match |
 | `p:Win([team])`, `p:Defeat()` | mark a player (`1..8`) as winner (`team = true` also awards mutual allies with allied victory) or defeated immediately via lockstep commands |
 | `p:CreateUnit(unitId, x, y)` | create a unit (dat unit id, e.g. 125 Monk, 4 Archer) at tile x, y |
 | `p:Research(techId)` | finish a technology instantly (skipped if already researched) |
@@ -1067,7 +1075,8 @@ Every script also gets a simple high-level API, written on top of `wl.*` (which 
 | `local c = UI:CreateCounter(text)` | a line in the countdown area: `c:SetText(t)`, `c:Hide()`, `c:Show()`, `c:Destroy()`; several counters share the line, joined with "  \|  " |
 | `UI:CreateFrame(props)`, `UI:CreateLabel(props)`, `UI:CreateButton(props)`, `UI:CreateTextBox(props)` | on-screen panels, text and buttons that do **not** pause the game (see below) |
 | `UI.Ask(text)` | Yes/No dialog, returns true/false (nil in multiplayer); `UI.Ask(text, fn)` for a callback |
-| `Sound.Play(name)` | `Chat`, `CantDo`, `Tribute`, `Attack`, `TownBell`, `TownRecall`, `Objective`, `Relic` |
+| `Sound.Play(name)` | `Chat`, `CantDo`, `Tribute`, `Attack`, `TownBell`, `TownRecall`, `Objective`, `Relic`, `Villager` (Town Center villager spawn sound `5353.wav`) |
+| `Sound.PlayFile(path)` | play a WAV/MP3 sound file through the game's SFX channel (`path` relative to the game folder, e.g. `"resources/_common/drs/sounds/5353.wav"`); returns `true` on success |
 | `Time.Wait(s)`, `Time.After(s, fn)`, `Time.Every(s, fn)`, `Time.Cancel(h)` | timers in game seconds: they stop while the game is paused (F3, F10 menu) and follow the game speed (`Time.Wait` only inside events/timers) |
 
 `MOD.civs` lists the civ ids of your mod's own civilizations. Mod scripts run in every game, so a civ mod should check it, e.g. `if Game.LocalPlayer.Civ == MOD.civs[1] then ... end`.
@@ -1100,7 +1109,7 @@ Game.OnCommand("Trade", function(building)
 end)
 ```
 
-- **Parameters**: `building` (required integer unit id), `button` (required integer `1..15`; slot `15` is available on single-page buildings unless protected), `name` (required non-empty string), `icon` (optional integer frame in `50721.slp` or string name of a PNG in `<mod>/icons/commands/<name>.png` owned by the calling mod; default `32`, unknown names log once and fall back to `32`), `text` (optional string, default `name`), `help` (optional string, default `""`), `civ` (optional integer, default `-1` for any civilization), `page` (optional integer `>= 1`, default `1`), `condition` (optional string or `false`, default `name`), `condition_action` (`"disable"` default, or `"hide"`). Calling `Game.AddCommand` again with the same `name` from the same mod updates the button in place.
+- **Parameters**: `building` (required integer unit id), `button` (required integer `1..15`; slot `15` is available on single-page buildings unless protected), `name` (required non-empty string), `icon` (optional integer frame in `50721.slp` or string name of a PNG in `<mod>/icons/commands/<name>.png` owned by the calling mod; default `32`, unknown names log once and fall back to `32`), `text` (optional string, default `name`), `help` (optional string, default `""`), `civ` (optional integer, default `-1` for any civilization), `page` (optional integer `>= 1`, default `1`), `condition` (optional string or `false`, default `name`), `condition_action` (`"disable"` default, or `"hide"`), `shared` (optional boolean, default `false`: when `true`, allies of the building's owner who select it also see this button on the same page and can click it; they see only the shared buttons, none of the owner's own, and the handler runs on the clicking player's machine with `Game.LocalPlayer` = that player). Calling `Game.AddCommand` again with the same `name` from the same mod updates the button in place.
 - **Removing**: `Game.RemoveCommand(name)` removes a command registered by your mod (returns `true` if removed, `false` otherwise). Commands belong to the mod that registered them and are removed automatically on mod unload, hot reload, or full script restart. Adding, updating, or removing a command mid-game refreshes an already-open building panel immediately.
 - **Free slots & protected built-ins**: On the Market (`84`), `button = 10` (and `15` on a 1-page panel) is free; slots `6` and `11` hold the `"Sell"` and `"Buy"` labels and are protected. On the Town Center (`109`), `button = 4` is always free (`2, 3, 12, 13, 14` are free in normal games); `5` (Gather Point), `9` (Back to Work), `10` (Ungarrison), and `15` (Town Bell) are protected and never overwritten.
 - **Multiplayer**: Clicks run `Game.OnCommand` only on the clicking player's machine. Always apply gameplay changes through lockstep game commands (`AddGold`, `CreateUnit`, `Delete`, `MoveTo`, etc.) targeting `building.Owner` / `Game.LocalPlayer` rather than mutating shared Lua state directly.
@@ -1340,6 +1349,16 @@ Scriptorium includes a **Test it** button on each civilization row and in the ci
 
 ---
 
+## Multiplayer rehearsal (testing alone)
+
+Create an empty file `wololoader/mp_rehearsal.txt` in the game folder and restart: the main menu label ends with "MP rehearsal". A single-player game then takes Wololoader's multiplayer code paths, so a game mode can be checked without a second player:
+
+- the lobby applies a mode's rules the way a multiplayer host does (one locked team, the `enemy_player` computer slot, the mode's map and size, hidden map controls), and `Game.ModeEnemy()` is read from the lobby settings;
+- script commands wait the first 3 seconds of a match and are spread out, as in multiplayer;
+- `Game.IsMultiplayer()` returns `true`, so scripts take their multiplayer branches (hot reload and the Dev Panel follow the multiplayer rules: cheats only).
+
+The game itself stays single player (nothing goes over a network), so it does not replace a real match: it catches errors in your mode's multiplayer logic. Delete the file to turn it off.
+
 ## Hot Reload (Lua scripts)
 
 Wololoader automatically watches `<mod>/scripts/*.lua` (including subfolders) for every enabled mod while a game is running (checked about once per second with a 250 ms debounce so half-written saves are not loaded):
@@ -1417,9 +1436,60 @@ Add a `"resources"` array to `mod.json` (no civilization JSON is required):
 | `start` | `0` | Starting amount given to every civilization (including Gaia). |
 | `max` | `0` | Optional cap (`0` = no cap). Enforced deterministically on additions and `SetResource`. |
 | `show` | `true` | Whether to show the resource inline in the top resource bar (`false` keeps it in the `"Show all"` panel only). |
+| `hidden` | `false` | When `true`, hides the resource completely from the top bar, `+N` badge, and `"Show all"` panel (useful for internal / save-game state resources). |
+| `game_mode` | `""` | Optional custom game mode `id` (e.g. `"last_stand"`). When set, the resource is only shown in the HUD during that game mode. |
 | `description` | `""` | Optional tooltip text when hovering the resource in the top bar. |
+| `gather` | *(none)* | Optional object making the resource gatherable from Gaia map deposits by villagers; see [Gatherable custom resources](#gatherable-custom-resources). |
 
 IDs are assigned deterministically in sorted enabled-mod folder order, then declaration order, starting at `211`. The builder grows `civ.resources` identically on every civilization and writes `wololoader/cache/resources.txt` for the DLL.
+
+#### Gatherable custom resources
+
+Add an optional `"gather"` object inside a resource entry in `mod.json` to have the builder generate a Gaia map deposit and matching male/female villager miner units:
+
+```json
+{
+  "id": "crystal",
+  "name": "Crystal",
+  "icon": "icons/crystal.png",
+  "start": 0,
+  "show": true,
+  "gather": {
+    "deposit_name": "Crystal Deposit",
+    "amount": 800,
+    "copy_from": 66,
+    "miner_name": "Crystal Miner",
+    "work_rate": 0.45,
+    "carry": 10,
+    "drop_sites": [109, 584],
+    "minimap_color": 92,
+    "deposit_slp": 90001,
+    "carry_male_slp": 90002,
+    "carry_female_slp": 90003
+  }
+}
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `deposit_name` | `"<name> Deposit"` | Display and internal name of the Gaia deposit unit (1–128 chars, no tab/newline). |
+| `amount` | template's amount (`800` for Gold Mine `66`) | Starting resource amount stored in each deposit (`1..65535`). |
+| `copy_from` | `66` (Gold Mine) | Gaia deposit template unit ID to clone (e.g. `66` Gold Mine, `102` Stone Mine, `59` Forage Bush). Presence/absence per civ mirrors the template. |
+| `miner_name` | `"<name> Miner"` | Display and internal name of the male/female villager task-swap miners (1–128 chars, no tab/newline). |
+| `work_rate` | template's (`0.38`) | Gathering speed (`> 0` and `<= 1000`). |
+| `carry` | template's (`10`) | Villager carry capacity (`resource_capacity`, integer `1..32767`). |
+| `drop_sites` | `[109, 584]` (TC, Mining Camp) | List of 1 or 2 building unit IDs where villagers drop off the resource (e.g. `[109, 584]`, `[109, 68]`, or `[109]`). |
+| `minimap_color` | template's (`65`) | Optional palette index (`0..255`) for the deposit's minimap dot. |
+| `deposit_slp` | template's SLP (`2561`) | Optional custom SLP ID (`<mod>/resources/_common/drs/graphics/<id>.slp`) for the deposit's standing graphic. |
+| `carry_male_slp` | template's SLP (`2117`) | Optional custom SLP ID for the male miner's carrying animation. |
+| `carry_female_slp` | template's SLP (`2218`) | Optional custom SLP ID for the female miner's carrying animation. |
+
+For each gatherable resource, the builder deterministically allocates 3 `RESERVED` unit slots right after `unique_unit` and `custom_units` (`deposit`, `male miner`, `female miner`), clones the deposit in Gaia (`civ 0`) with `resource_storages[0]` set to the custom resource ID, clones the Gold Miner pair (`579`/`581`) in every civ with villagers with their Gather task (`type 5`) retargeted to the new deposit and custom resource (`resource_productivity_multiplier = -1`), and writes `key<TAB>resource_id<TAB>deposit_id<TAB>male_id<TAB>female_id` to `wololoader/cache/gather.txt`. See `wololoader/examples/CrystalMines/` for a complete example mod (including `scripts/main.lua` spawning deposits near each player's Town Center).
+
+At runtime Wololoader also:
+- **Unit info panel**: draws the resource's PNG icon and remaining/carried integer amount in the bottom-left unit panel when a custom deposit or a villager carrying that resource is selected (matching vanilla gold/stone placement).
+- **Random Map Scripts (RMS)**: appends `#const WL_DEPOSIT_<KEY> <deposit_id>` (with `<KEY>` uppercased) to a cached copy of `random_map.def` (`gamedata_x2` and `gamedata_x1`), so any `.rms` script can spawn deposits with `create_object WL_DEPOSIT_CRYSTAL` without hardcoding dynamic unit IDs.
+- **Lua helpers**: `Game.ResourceDeposit(key)` returns the deposit unit ID (or `nil`), and `Game.GatherInfo(key)` returns `{ resource = ..., deposit = ..., male = ..., female = ... }` (or `nil`).
 
 ### 2. Using custom resources in Civ JSON
 
@@ -1438,6 +1508,8 @@ Command panel and Tech Tree `<cost>` tooltips expand custom costs automatically 
 - `p:GetResource("faith")` — returns the player's current amount (accepts keys, vanilla names, or numeric IDs).
 - `p:AddResource("faith", 10)` / `p:SetResource("faith", 100)` — multiplayer-safe lockstep game commands (12-byte marked `0x05` packets with `int16` resource ID).
 - `Game.Resources()` — returns an array of `{ id, mod, key, name, icon, start, max, show, description }`.
+- `Game.ResourceDeposit(key)` — returns the Gaia deposit unit ID for a gatherable custom resource (or `nil`).
+- `Game.GatherInfo(key)` — returns `{ resource, deposit, male, female }` for a gatherable custom resource (or `nil`).
 - **HUD**: Visible custom resources are drawn in the top bar right of the vanilla resources using the game's font and colours. When they do not all fit (or hidden resources exist), a `"+N"` / `"All"` button opens a scrollable panel listing every custom resource (closed by clicking the button again, clicking `X`, or pressing `Esc`).
 
 See `wololoader/examples/FaithAndRelics/` for a complete working example.
@@ -1475,8 +1547,12 @@ Add a `"game_modes"` array to `mod.json`:
 | `description` | `""` | Hover tooltip shown in the lobby Game Mode dropdown. |
 | `script_event` | `true` | Marks the mode as script-driven (check `Game.Mode()` in `Game.OnStart`). |
 | `teams` | `""` | `"all"`: every player, computer players included, is put on one locked team at start (single player). |
-| `map` | *(none)* | The mode's own random map: `{ "script": "resources/_common/random-map-scripts/MyMap.rms", "base": "arena" }`. In a single-player lobby the mode selects it as the Custom map and keeps it selected (picking another map snaps back). If the script is not found in the lobby list, `base` (`arabia`, `fortress`, `arena` or `nomad`) is used and its script is served from the mod. In a multiplayer lobby the host picks the map by hand. Example: `examples/LastStand`. |
+| `map` | *(none)* | The mode's own random map: `{ "script": "resources/_common/random-map-scripts/MyMap.rms", "base": "arena", "min_size": "medium", "lock": true }`. In a single-player lobby the mode selects it as the Custom map and keeps it selected (picking another map snaps back). If `"lock": true` (or top-level `"map_lock": true`), Map Style and Location are hidden in the single-player lobby, and if `"min_size"` is set, Map Size is also hidden and locked to that size. If the script is not found in the lobby list, `base` (`arabia`, `fortress`, `arena` or `nomad`) is used and its script is served from the mod. In a multiplayer lobby the host picks the map by hand. Example: `examples/LastStand`. |
+| `default_visibility` | *(none)* | `"normal"` (fog of war), `"explored"` or `"all"`: the lobby's Reveal Map is set to it when the mode is picked (single player and the multiplayer host); players can still change it. |
 | `enemy_player` | `false` | `true`: at start (single player) one more computer player is added on its own team as the mode's enemy; Lua gets it with `Game.ModeEnemy()`. It is not defeated while it owns nothing, so the script can spawn its waves for it. Needs a free player slot (else `Game.ModeEnemy()` is `nil`). |
+| `reveal_map` | `false` | `true`: the match starts with the map fully visible (lobby Reveal Map = All Visible, no fog of war). Clash of Empires uses it. |
+| `player_count` | `0` | `2`..`8`: forces the exact player count in a single-player lobby (`0` keeps the lobby setting). With `player_count: 2` and `"enemy_player": true`, Player 1 is locked on Team 1 and Player 2 on Team 2 as `Game.ModeEnemy()`. When `player_count` is `2`..`8`, `teams: "all"` is not applied. |
+| `no_auto_defeat` | `false` | `true`: ignores the engine's automatic defeat check (e.g. when a player has no starting village or loses all units) until the match is won; Lua `p:Defeat()` still works. |
 
 *(Custom game modes are loaded at startup before the game initializes its mode table; toggling a mod that adds game modes requires restarting the game. If a player disables a mode mod whose ID was saved in their profile or a savegame, Wololoader automatically falls back to Random Map.)*
 

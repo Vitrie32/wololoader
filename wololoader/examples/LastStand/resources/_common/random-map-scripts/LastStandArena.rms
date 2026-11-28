@@ -72,7 +72,7 @@ endif
 
 <TERRAIN_GENERATION>
 
-/* forests outside the ring: cover for the Horde, wood for the players */
+/* forests outside the ring: cover for the Horde, wood for the players, with gaps between clumps */
 create_terrain FOREST
 {
   base_terrain                  GRASS
@@ -83,10 +83,54 @@ create_terrain FOREST
   set_scale_by_groups
 }
 
+/* secondary pine groves farther out for woodland variety */
+create_terrain PINE_FOREST
+{
+  base_terrain                  GRASS
+  spacing_to_other_terrain_types 5
+  land_percent                  4
+  number_of_clumps              8
+  set_avoid_player_start_areas
+  set_scale_by_groups
+}
+
+/* small ponds and shallow pools in the outer plains */
+create_terrain WATER
+{
+  base_terrain                  GRASS
+  spacing_to_other_terrain_types 4
+  land_percent                  1
+  number_of_clumps              2
+  set_avoid_player_start_areas
+  set_flat_terrain_only
+  set_scale_by_groups
+}
+
+create_terrain SHALLOW
+{
+  base_terrain                  GRASS
+  spacing_to_other_terrain_types 3
+  land_percent                  1
+  number_of_clumps              3
+  set_avoid_player_start_areas
+  set_flat_terrain_only
+  set_scale_by_groups
+}
+
+/* dirt, grass, leaf and worn road patches across the outer battlefield */
 create_terrain DIRT3
 {
   base_terrain                  GRASS
-  number_of_clumps              20
+  number_of_clumps              18
+  spacing_to_other_terrain_types 1
+  land_percent                  4
+  set_scale_by_size
+}
+
+create_terrain DIRT2
+{
+  base_terrain                  GRASS
+  number_of_clumps              14
   spacing_to_other_terrain_types 1
   land_percent                  3
   set_scale_by_size
@@ -97,7 +141,26 @@ create_terrain GRASS2
   base_terrain                  GRASS
   number_of_clumps              20
   spacing_to_other_terrain_types 1
+  land_percent                  4
+  set_scale_by_size
+}
+
+create_terrain LEAVES
+{
+  base_terrain                  GRASS
+  number_of_clumps              18
+  spacing_to_other_terrain_types 1
   land_percent                  3
+  set_scale_by_size
+}
+
+create_terrain ROAD2
+{
+  base_terrain                  GRASS
+  number_of_clumps              8
+  spacing_to_other_terrain_types 1
+  land_percent                  1
+  set_avoid_player_start_areas
   set_scale_by_size
 }
 
@@ -181,45 +244,481 @@ create_object STONE
   max_distance_to_players       13
 }
 
-/* more resources farther out: the players have to walk towards the Horde for them */
+/* one wild boar just outside each player's ring */
+create_object BOAR
+{
+  number_of_objects             1
+  set_gaia_object_only
+  set_place_for_every_player
+  min_distance_to_players       15
+  max_distance_to_players       22
+  min_distance_group_placement  6
+  terrain_to_place_on           GRASS
+}
+
+/* mid-ring resources outside the bases: defenders have to step out for them */
 create_object GOLD
 {
-  number_of_groups              3
-  number_of_objects             6
+  number_of_groups              2
+  number_of_objects             5
   group_placement_radius        3
   set_tight_grouping
   set_gaia_object_only
   set_scaling_to_player_number
-  min_distance_to_players       24
+  min_distance_to_players       22
   min_distance_group_placement  9
+  terrain_to_place_on           GRASS
 }
 
 create_object STONE
 {
   number_of_groups              2
-  number_of_objects             5
+  number_of_objects             4
   group_placement_radius        2
   set_tight_grouping
   set_gaia_object_only
   set_scaling_to_player_number
-  min_distance_to_players       24
+  min_distance_to_players       22
   min_distance_group_placement  9
+  terrain_to_place_on           GRASS
 }
 
 create_object DEER
 {
   number_of_groups              2
   number_of_objects             4
+  group_placement_radius        3
   set_loose_grouping
   set_gaia_object_only
   set_scaling_to_player_number
   min_distance_to_players       18
+  min_distance_group_placement  6
+  terrain_to_place_on           GRASS
 }
 
+/* relics placed in the outer ring, scaled with map size */
+if TINY_MAP
+create_object RELIC
+{
+  number_of_objects             4
+  min_distance_to_players       25
+  temp_min_distance_group_placement 20
+  terrain_to_place_on           GRASS
+}
+elseif SMALL_MAP
+create_object RELIC
+{
+  number_of_objects             4
+  min_distance_to_players       25
+  temp_min_distance_group_placement 20
+  terrain_to_place_on           GRASS
+}
+elseif MEDIUM_MAP
+create_object RELIC
+{
+  number_of_objects             5
+  min_distance_to_players       26
+  temp_min_distance_group_placement 22
+  terrain_to_place_on           GRASS
+}
+elseif LARGE_MAP
+create_object RELIC
+{
+  number_of_objects             5
+  min_distance_to_players       28
+  temp_min_distance_group_placement 24
+  terrain_to_place_on           GRASS
+}
+elseif HUGE_MAP
+create_object RELIC
+{
+  number_of_objects             6
+  min_distance_to_players       28
+  temp_min_distance_group_placement 26
+  terrain_to_place_on           GRASS
+}
+elseif GIGANTIC_MAP
+create_object RELIC
+{
+  number_of_objects             7
+  min_distance_to_players       30
+  temp_min_distance_group_placement 28
+  terrain_to_place_on           GRASS
+}
+else
+create_object RELIC
+{
+  number_of_objects             15
+  min_distance_to_players       32
+  temp_min_distance_group_placement 50
+  terrain_to_place_on           GRASS
+}
+endif
+
+/* extra gold farther out in Horde territory, scaled by map size */
+if TINY_MAP
+create_object GOLD
+{
+  number_of_groups              2
+  number_of_objects             3
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       36
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if SMALL_MAP
+create_object GOLD
+{
+  number_of_groups              2
+  number_of_objects             3
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       38
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if MEDIUM_MAP
+create_object GOLD
+{
+  number_of_groups              3
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       38
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if LARGE_MAP
+create_object GOLD
+{
+  number_of_groups              3
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       40
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if HUGE_MAP
+create_object GOLD
+{
+  number_of_groups              4
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       40
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if GIGANTIC_MAP
+create_object GOLD
+{
+  number_of_groups              5
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       42
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if LUDIKRIS_MAP
+create_object GOLD
+{
+  number_of_groups              16
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       45
+  temp_min_distance_group_placement 44
+  terrain_to_place_on           GRASS
+}
+endif
+
+/* extra stone farther out in Horde territory, scaled by map size */
+if TINY_MAP
+create_object STONE
+{
+  number_of_groups              1
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       36
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if SMALL_MAP
+create_object STONE
+{
+  number_of_groups              1
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       38
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if MEDIUM_MAP
+create_object STONE
+{
+  number_of_groups              2
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       38
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if LARGE_MAP
+create_object STONE
+{
+  number_of_groups              3
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       40
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if HUGE_MAP
+create_object STONE
+{
+  number_of_groups              4
+  number_of_objects             4
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       40
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if GIGANTIC_MAP
+create_object STONE
+{
+  number_of_groups              4
+  number_of_objects             5
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       42
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+endif
+
+if LUDIKRIS_MAP
+create_object STONE
+{
+  number_of_groups              12
+  number_of_objects             5
+  group_variance                1
+  group_placement_radius        2
+  set_tight_grouping
+  set_gaia_object_only
+  min_distance_to_players       45
+  temp_min_distance_group_placement 44
+  terrain_to_place_on           GRASS
+}
+endif
+
+/* extra deer herds and wild boars in the outer plains, scaled to map size */
+create_object DEER
+{
+  number_of_groups              2
+  number_of_objects             4
+  group_placement_radius        3
+  set_loose_grouping
+  set_gaia_object_only
+  set_scaling_to_map_size
+  min_distance_to_players       30
+  min_distance_group_placement  10
+  terrain_to_place_on           GRASS
+}
+
+create_object BOAR
+{
+  number_of_groups              2
+  number_of_objects             1
+  set_gaia_object_only
+  set_scaling_to_map_size
+  min_distance_to_players       28
+  min_distance_group_placement  12
+  terrain_to_place_on           GRASS
+}
+
+/* scattered trees, pond shore fish and hawks for atmosphere */
 create_object FOREST_TREE
 {
-  number_of_objects             30
+  number_of_objects             25
   set_gaia_object_only
-  min_distance_to_players       16
+  min_distance_to_players       18
+  min_distance_group_placement  2
   set_scaling_to_map_size
+  terrain_to_place_on           GRASS
+}
+
+create_object PINETREE
+{
+  number_of_objects             15
+  set_gaia_object_only
+  min_distance_to_players       24
+  min_distance_group_placement  2
+  set_scaling_to_map_size
+  terrain_to_place_on           GRASS
+}
+
+create_object SHORE_FISH
+{
+  number_of_objects             4
+  set_gaia_object_only
+  min_distance_group_placement  3
+  set_scaling_to_map_size
+}
+
+create_object HAWK
+{
+  number_of_objects             4
+  set_scaling_to_map_size
+}
+
+<ELEVATION_GENERATION>
+
+/* rolling hills across the outer grass plains, keeping the centre and player ring flat */
+create_elevation 4
+{
+  base_terrain                  GRASS
+  number_of_clumps              12
+  number_of_tiles               800
+  set_scale_by_groups
+  set_scale_by_size
+}
+
+/* a few higher hills in the outer ring that defenders can push out and hold */
+create_elevation 7
+{
+  base_terrain                  GRASS
+  number_of_clumps              5
+  number_of_tiles               400
+  set_scale_by_groups
+  set_scale_by_size
+}
+
+<CLIFF_GENERATION>
+
+/* well-spaced cliffs in the outer area creating natural choke points without sealing paths */
+if TINY_MAP
+  min_number_of_cliffs          3
+  max_number_of_cliffs          5
+  min_length_of_cliff           3
+  max_length_of_cliff           6
+elseif SMALL_MAP
+  min_number_of_cliffs          4
+  max_number_of_cliffs          6
+  min_length_of_cliff           3
+  max_length_of_cliff           7
+elseif MEDIUM_MAP
+  min_number_of_cliffs          5
+  max_number_of_cliffs          8
+  min_length_of_cliff           4
+  max_length_of_cliff           8
+elseif LARGE_MAP
+  min_number_of_cliffs          6
+  max_number_of_cliffs          9
+  min_length_of_cliff           4
+  max_length_of_cliff           8
+elseif HUGE_MAP
+  min_number_of_cliffs          8
+  max_number_of_cliffs          11
+  min_length_of_cliff           4
+  max_length_of_cliff           9
+elseif GIGANTIC_MAP
+  min_number_of_cliffs          9
+  max_number_of_cliffs          12
+  min_length_of_cliff           4
+  max_length_of_cliff           9
+else
+  min_number_of_cliffs          16
+  max_number_of_cliffs          24
+  min_length_of_cliff           5
+  max_length_of_cliff           12
+endif
+  cliff_curliness               10
+  min_distance_cliffs           5
+
+<CONNECTION_GENERATION>
+
+/* narrow roads linking the player ring around the Castle pad and keeping approaches open */
+create_connect_all_players_land
+{
+  replace_terrain WATER         SHALLOW
+  replace_terrain FOREST        ROAD2
+  replace_terrain PINE_FOREST   ROAD2
+  replace_terrain GRASS         ROAD2
+  terrain_cost    WATER         7
+  terrain_cost    SHALLOW       3
+  terrain_cost    FOREST        7
+  terrain_cost    PINE_FOREST   7
+  terrain_cost    DIRT          15
+  terrain_cost    GRASS         2
+  terrain_cost    GRASS2        2
+  terrain_cost    GRASS3        2
+  terrain_cost    DIRT2         2
+  terrain_cost    DIRT3         2
+  terrain_cost    LEAVES        2
+  terrain_cost    ROAD2         1
+  terrain_size    WATER         2       1
+  terrain_size    FOREST        2       1
+  terrain_size    PINE_FOREST   2       1
+  terrain_size    GRASS         1       0
+  terrain_size    GRASS2        0       0
+  terrain_size    GRASS3        0       0
+  terrain_size    DIRT          0       0
+  terrain_size    DIRT2         0       0
+  terrain_size    DIRT3         0       0
+  terrain_size    LEAVES        0       0
+  terrain_size    ROAD2         0       0
 }

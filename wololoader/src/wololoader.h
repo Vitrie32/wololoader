@@ -2,7 +2,7 @@
 #pragma once
 #include <windows.h>
 
-#define WOLOLOADER_VERSION "0.6.1"
+#define WOLOLOADER_VERSION "0.7.1"
 #define WL_MAX_MODS 256
 
 typedef struct {
@@ -117,7 +117,19 @@ const char *wl_gamemode_key_by_id(int mode_id);
 const char *wl_gamemode_current_key(void);
 int wl_gamemode_map_script(const char *file_name, char *out, size_t out_size); // current mode's .rms for a game map script
 int wl_gamemode_id_by_key(const char *key);
-int wl_gamemode_enemy_player(void);   // enemy player id of the match ("enemy_player" modes), 0 = none   // custom mode key -> mode id, -1 if unknown
+int wl_gamemode_enemy_player(void);
+int wl_mp_rehearsal(void);
+void wl_bp_panel_refresh(void *orig, void *screen);   // buildpage.c; orig = __thiscall(screen) panel refresh
+void wl_script_refresh_settings(void);   // script.c: refill MOD.settings tables (lobby host values)   // luagame.c: <root>\mp_rehearsal.txt -> single player takes our MP paths
+int wl_gamemode_map_tiles(void);   // map side in tiles from the lobby map size, 0 = unknown
+int wl_gamemode_set_enemy_player(int pid);  // a loaded game: the script restores the enemy player
+void wl_ui_set_map_capture(int on);
+void wl_ui_set_unit_control_disabled(int off);
+int wl_ui_request_restart(void);
+void wl_script_event_map_click(float tx, float ty, int button);
+void wl_script_clear_session(void);
+int wl_gamecmd_in_defeat(void);
+int wl_play_sfx_file(const char *path);
 
 // hotreload.c: Level 2 mod hot reload at the main menu (World == NULL)
 void wl_install_hotreload(void);
@@ -167,15 +179,29 @@ typedef struct {
     float start;
     float max;              // 0 = no cap
     int show;               // 1 = show in top bar
+    int hidden;             // 1 = hide from top bar and "Show all" panel completely
+    char game_mode[65];     // if non-empty, only show in HUD during this custom game mode
     char description[256];
 } WlResourceDef;
 
+typedef struct {
+    char key[65];           // resource key (col 0 of cache\gather.txt)
+    int resource_id;        // custom resource id >= 211 (col 1)
+    int deposit_id;         // Gaia deposit unit id (col 2)
+    int male_id;            // male miner unit id (col 3)
+    int female_id;          // female miner unit id (col 4)
+} WlGatherDef;
+
 void wl_install_resources(void);
-void wl_resources_ensure(void);          // lazy load cache\resources.txt (after wl_civs_ensure)
-void wl_resources_reload(void);          // reload cache\resources.txt
+void wl_resources_ensure(void);          // lazy load cache\resources.txt + gather.txt (after wl_civs_ensure)
+void wl_resources_reload(void);          // reload cache\resources.txt + gather.txt
 const WlResourceDef *wl_resources_list(int *out_count);
 const WlResourceDef *wl_resource_by_id(int id);
 int wl_resource_resolve(const char *key, const char *prefer_mod);
+const WlGatherDef *wl_gather_list(int *out_count);
+const WlGatherDef *wl_gather_by_resource(int resource_id);
+const WlGatherDef *wl_gather_by_deposit(int deposit_id);
+const WlGatherDef *wl_gather_by_key(const char *key, const char *prefer_mod);
 
 // resbar.c: custom resource top-bar HUD + "Show all" panel (driven by uikit.c)
 int  wl_resbar_active(void);
@@ -214,6 +240,7 @@ typedef struct {
     int (*defeat_player)(int pid);                                   // marked 0x05 defeat packet
     int (*player_civ)(int pid);                                      // civ id of a player, -1 if none
     int (*attack_unit)(int unit_id, int target_id);                  // game order (attack) command
+    const WlGatherDef *(*gather_by_key)(const char *key, const char *prefer_mod); // cache/gather.txt lookup
 } WlGameApi;
 void wl_script_set_game(const WlGameApi *api);
 const WlGameApi *wl_game_api(void);
@@ -251,6 +278,7 @@ void wl_install_file_hooks(void);
 void wl_files_clear_redirects(void);
 void wl_files_rebuild_assets(void);
 void wl_files_drs_fingerprints(unsigned long long pkg_fp[4], unsigned long long *iface_new_fp);
+void wl_files_sync_rms_defs(const WlGatherDef *defs, int count);
 
 // popcap.c: "1000" population option + lifted 500 clamps
 void wl_install_popcap(void);
@@ -309,6 +337,7 @@ typedef struct {
     char cond_action[16];   // "disable" or "hide"
     char cond_name[64];     // condition name (defaults to name)
     char mod[64];           // owning mod id
+    int shared;             // Game.AddCommand shared = true: allies of the owner see and use it too
 } WlRuntimeCmd;
 const WlLuaButton *wl_lua_buttons(int *n);   // civs.c: Lua buttons of mod buildings (cache\\commands.txt)
 const WlBuildingCmd *wl_building_commands(int *n);

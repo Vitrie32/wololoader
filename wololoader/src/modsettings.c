@@ -56,6 +56,40 @@ static void apply_value(WlSetting *s, const WlJsonVal *v, int is_default) {
     }
 }
 
+// Multiplayer session values: the lobby host's settings (mpcheck.c), used instead of the player's
+// own file until the player is back at the main menu. The player's files are never changed.
+#define SESSION_MAX 32
+static struct { char id[64]; char *json; } g_session[SESSION_MAX];
+static int g_session_n;
+
+void wl_settings_session_set(const char *mod_id, const char *json) {
+    int i;
+    for (i = 0; i < g_session_n; i++) if (strcmp(g_session[i].id, mod_id) == 0) break;
+    if (i == g_session_n) {
+        if (g_session_n >= SESSION_MAX) return;
+        snprintf(g_session[i].id, sizeof g_session[i].id, "%s", mod_id);
+        g_session[i].json = NULL;
+        g_session_n++;
+    }
+    free(g_session[i].json);
+    size_t n = strlen(json);
+    g_session[i].json = (char *)malloc(n + 1);
+    if (g_session[i].json) memcpy(g_session[i].json, json, n + 1);
+}
+
+int wl_settings_session_clear(void) {
+    int had = g_session_n;
+    for (int i = 0; i < g_session_n; i++) free(g_session[i].json);
+    g_session_n = 0;
+    return had;
+}
+
+static const char *session_json(const char *mod_id) {
+    for (int i = 0; i < g_session_n; i++)
+        if (strcmp(g_session[i].id, mod_id) == 0) return g_session[i].json;
+    return NULL;
+}
+
 int wl_settings_load(const WlMod *m, WlSetting *out, int max) {
     char path[MAX_PATH];
     snprintf(path, sizeof path, "%s\\mod.json", m->dir);
@@ -98,13 +132,41 @@ int wl_settings_load(const WlMod *m, WlSetting *out, int max) {
     }
     wl_json_free(root);
 
-    wl_settings_path(m, path, sizeof path);
-    WlJsonVal *user = read_json(path);
+    const char *sj = session_json(m->id);
+    WlJsonVal *user = NULL;
+    if (sj) {
+        char err[64];
+        user = wl_json_parse(sj, err, sizeof err);   // the lobby host's values
+    } else {
+        wl_settings_path(m, path, sizeof path);
+        user = read_json(path);
+    }
     if (user) {
         for (int i = 0; i < n; i++) apply_value(&out[i], wl_json_get(user, out[i].id), 0);
         wl_json_free(user);
     }
     return n;
+}
+
+// The effective values as compact JSON ({"id":value,...}, settings order); "" if the mod has none.
+int wl_settings_compact(const WlMod *m, char *out, size_t cap) {
+    static WlSetting set[WL_MAX_SETTINGS];
+    int n = wl_settings_load(m, set, WL_MAX_SETTINGS);
+    size_t len = 0;
+    out[0] = 0;
+    if (n <= 0) return 0;
+    len += snprintf(out + len, cap - len, "{");
+    for (int i = 0; i < n && len + 8 < cap; i++) {
+        len += snprintf(out + len, cap - len, "%s\"%s\":", i ? "," : "", set[i].id);
+        if (len >= cap) break;
+        if (set[i].type == WL_SET_BOOL) len += snprintf(out + len, cap - len, "%s", set[i].on ? "true" : "false");
+        else if (set[i].type == WL_SET_NUMBER) len += snprintf(out + len, cap - len, "%.10g", set[i].num);
+        else len += snprintf(out + len, cap - len, "\"%s\"", set[i].choices[set[i].choice]);
+        if (len >= cap) break;
+    }
+    if (len + 2 > cap) { out[0] = 0; return 0; }
+    len += snprintf(out + len, cap - len, "}");
+    return (int)len;
 }
 
 static void put_json_string(FILE *f, const char *s) {

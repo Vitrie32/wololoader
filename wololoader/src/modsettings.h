@@ -39,6 +39,12 @@ int wl_settings_load(const WlMod *m, WlSetting *out, int max);
 int wl_settings_save(const WlMod *m, const WlSetting *s, int n);
 // <wololoader>\settings\<mod id>.json
 void wl_settings_path(const WlMod *m, char *out, size_t cap);
+// Effective values as compact JSON ({"id":value,...}); returns its length, 0 if the mod has none.
+int wl_settings_compact(const WlMod *m, char *out, size_t cap);
+// Multiplayer: the lobby host's values for a mod (compact JSON) replace the player's file in
+// wl_settings_load until wl_settings_session_clear (back at the main menu). Returns how many were set.
+void wl_settings_session_set(const char *mod_id, const char *json);
+int wl_settings_session_clear(void);
 // Value as text for the UI ("On", "15", "Hard").
 void wl_setting_text(const WlSetting *s, char *out, size_t cap);
 // Moves a value one step: dir +1 / -1 (bool toggles, choice cycles, number clamps).
